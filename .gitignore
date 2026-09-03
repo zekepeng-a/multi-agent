@@ -1,0 +1,30 @@
+# Node
+node_modules/
+dist/
+
+# Runtime state (Source-of-Truth raw history + derived memory + working state).
+# The Agent Registry template is committed; all other .ai/ content is runtime state.
+.ai/*
+!.ai/agents/
+!.ai/agents/registry.json
+
+# Local env / secrets
+.env
+.credentials*
+*.key
+*.pem
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+
+# Examples runtime
+examples/*/.ai/

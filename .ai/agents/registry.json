@@ -1,0 +1,226 @@
+{
+  "version": 1,
+  "updatedAt": "2026-08-26",
+  "agents": [
+    {
+      "id": "manager",
+      "name": "Manager/CTO",
+      "role": "拆解/路由/审核/验收",
+      "capabilities": {
+        "reasoning": 5,
+        "planning": 5,
+        "architecture": 5,
+        "routing": 5,
+        "coding": 3,
+        "gui": 1
+      },
+      "status": "ready",
+      "backend": {
+        "type": "orchestrator",
+        "enabled": true
+      }
+    },
+    {
+      "id": "claude-code",
+      "name": "Claude Code",
+      "role": "主编码/分析/审查 Worker",
+      "capabilities": {
+        "coding": 5,
+        "refactoring": 5,
+        "repository_analysis": 5,
+        "analysis": 4,
+        "review": 4,
+        "architecture": 4,
+        "terminal": 5,
+        "gui": 1
+      },
+      "status": "ready",
+      "backend": {
+        "type": "claude-code",
+        "enabled": true,
+        "note": "外部 claude -p 进程（V0.2 自动后端）"
+      },
+      "tools": [
+        "Read",
+        "Glob",
+        "Grep",
+        "Write",
+        "Edit"
+      ],
+      "permissions": {
+        "mode": "restricted",
+        "sandbox": "inherit"
+      },
+      "skills": [],
+      "memory_scope": "project",
+      "modelNote": "（不传 --model，用 Claude settings 默认模型）"
+    },
+    {
+      "id": "dsh-analyst",
+      "name": "DSH Analyst",
+      "role": "分析/方案比较/风险",
+      "capabilities": {
+        "reasoning": 5,
+        "algorithm": 5,
+        "technical_analysis": 5,
+        "analysis": 5,
+        "coding": 4,
+        "gui": 1
+      },
+      "status": "ready",
+      "backend": {
+        "type": "dsh-subagent",
+        "enabled": false,
+        "note": "仅 DSH 会话内可 spawn，orchestrator 外部运行时不可用"
+      },
+      "model": "deepseek-v4-flash（由 DSH agent-default-model 决定）",
+      "tools": [
+        "全工具集"
+      ],
+      "permissions": {
+        "mode": "restricted"
+      },
+      "skills": [],
+      "memory_scope": "project"
+    },
+    {
+      "id": "dsh-reviewer",
+      "name": "DSH Reviewer",
+      "role": "审查/安全/性能",
+      "capabilities": {
+        "code_review": 5,
+        "review": 5,
+        "security": 4,
+        "performance": 4,
+        "coding": 3,
+        "gui": 1
+      },
+      "status": "ready",
+      "backend": {
+        "type": "dsh-subagent",
+        "enabled": false,
+        "note": "仅 DSH 会话内可 spawn，orchestrator 外部运行时不可用"
+      },
+      "model": "deepseek-v4-flash（由 DSH agent-default-model 决定）",
+      "tools": [
+        "全工具集"
+      ],
+      "permissions": {
+        "mode": "restricted"
+      },
+      "skills": [],
+      "memory_scope": "project"
+    },
+    {
+      "id": "doubao",
+      "name": "豆包电脑",
+      "role": "GUI/浏览器/桌面操作 Worker",
+      "capabilities": {
+        "gui": 5,
+        "browser": 5,
+        "desktop_operation": 5,
+        "coding": 2
+      },
+      "status": "manual",
+      "backend": {
+        "type": "manual",
+        "enabled": false,
+        "note": "人工粘贴通道（无 headless）"
+      },
+      "model": "豆包（GUI）",
+      "tools": [
+        "GUI"
+      ],
+      "permissions": {
+        "mode": "manual"
+      },
+      "skills": [],
+      "memory_scope": "user"
+    },
+    {
+      "id": "dsh-agent",
+      "name": "DSH Agent",
+      "role": "DSH headless Worker（DeepSeek 脑，全工具集，可执行命令）",
+      "capabilities": {
+        "analysis": 5,
+        "research": 5,
+        "reasoning": 5,
+        "coding": 4,
+        "review": 4,
+        "gui": 1
+      },
+      "status": "ready",
+      "backend": {
+        "type": "dsh-headless",
+        "enabled": true,
+        "note": "node <dsh>/lib/bin.js --profile headless"
+      },
+      "model": "deepseek-v4-flash（由 DSH agent-default-model 决定，executor 不传）",
+      "tools": [
+        "全工具集（standard preset）"
+      ],
+      "permissions": {
+        "mode": "full",
+        "sandbox": "inherit"
+      },
+      "skills": [],
+      "memory_scope": "project"
+    },
+    {
+      "id": "codex",
+      "name": "Codex",
+      "role": "Coding Worker（OpenRouter 后端）",
+      "capabilities": {
+        "coding": 5,
+        "refactoring": 4,
+        "analysis": 4,
+        "review": 4,
+        "terminal": 4,
+        "gui": 1
+      },
+      "model": "deepseek/deepseek-v4-pro",
+      "tools": [
+        "codex 自身工具集"
+      ],
+      "permissions": {
+        "mode": "full",
+        "sandbox": "bypass（外部沙箱内）"
+      },
+      "skills": [],
+      "memory_scope": "project",
+      "status": "ready",
+      "backend": {
+        "type": "codex",
+        "enabled": true,
+        "note": "codex exec（OpenRouter；沙箱内认证受限，见验收报告）"
+      }
+    },
+    {
+      "id": "architect",
+      "name": "Architect",
+      "role": "技术架构专家（Codex Runtime）",
+      "capabilities": {
+        "architecture": 5,
+        "coding": 5,
+        "analysis": 4,
+        "review": 3,
+        "gui": 1
+      },
+      "model": "deepseek/deepseek-v4-pro",
+      "tools": [
+        "codex 工具集"
+      ],
+      "permissions": {
+        "mode": "full"
+      },
+      "skills": [],
+      "memory_scope": "project",
+      "status": "ready",
+      "backend": {
+        "type": "codex",
+        "enabled": true,
+        "note": "Codex 作为 Architect Agent（非写死 Coder）"
+      }
+    }
+  ]
+}

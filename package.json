@@ -1,0 +1,19 @@
+{
+  "name": "dsh-multi-agent-runtime",
+  "version": "0.5.0",
+  "description": "A DSH-powered Multi-Agent Runtime: Planner, Agent Registry, Executor, Review Gate, Replanning, Memory Distiller + Retriever + Context Assembly, State Summary. Agent ≠ Model; Memory is a derived layer.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tests/unit/*.test.mjs tests/integration/*.test.mjs",
+    "test:unit": "node --test tests/unit/*.test.mjs",
+    "test:integration": "node --test tests/integration/*.test.mjs",
+    "orchestrator": "node orchestrator.mjs",
+    "distill": "node distiller.mjs",
+    "state-summary": "node state-summary.mjs"
+  },
+  "keywords": ["multi-agent", "orchestrator", "memory", "agent", "dsh"],
+  "license": "Apache-2.0"
+}
