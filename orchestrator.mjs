@@ -20,7 +20,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { resolveExecutor } from "./executors.mjs";
+import { resolveExecutor, stripBom } from "./executors.mjs";
 import { assembleContext } from "./context.mjs";
 import { generateStateSummary } from "./state-summary.mjs";
 import { distill } from "./distiller.mjs";
@@ -38,7 +38,7 @@ function log(...a) { console.log("[orch]", ...a); }
 function nowIso() { return new Date().toISOString().replace("T", " ").substring(0, 19); }
 
 function readJson(p, fallback) {
-  try { return JSON.parse(fs.readFileSync(p, "utf-8")); } catch { return fallback; }
+  try { return JSON.parse(stripBom(fs.readFileSync(p, "utf-8"))); } catch { return fallback; }
 }
 function writeJsonAtomic(p, data) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -158,7 +158,7 @@ async function runPlannerStage(prompt, resFile) {
     if (raw === null) return null;
     if (Array.isArray(raw)) return raw; // 数组格式（如 replan 输出）
     if (raw.tasks || raw.expert_consultations || raw.plan) return raw; // 对象格式
-    return JSON.parse(extractJson(fs.readFileSync(resFile, "utf-8")));
+    return JSON.parse(extractJson(stripBom(fs.readFileSync(resFile, "utf-8"))));
   } catch { return null; }
 }
 
@@ -215,7 +215,7 @@ async function plan(tasks, state, registry) {
   } catch (e) { logEvent(`state-summary 失败: ${e.message}`); }
 
   const s2 = await runPlannerStage(
-    `你是 Multi-Agent 系统的 Manager。目标：${goal}\n项目目录：${ROOT}\n项目上下文：\n${ctxText}\n\n专家意见（已咨询，直接采信）：\n${consultTexts.join("\n\n") || "（无专家咨询）"}\n\n[CURRENT TASK]\n${goal}\n\n[PROJECT STATE SUMMARY]\n${plannerSummaryText}\n\n[RELEVANT MEMORY（来自 Project Memory，括号内为来源 provenance；仅参考，不强制引用）]\n${plannerCtxText}\n\n综合生成结构化 Plan 与任务 DAG。用 Write 工具把结果 JSON 写入 ${stage2File}（只含 JSON 对象，无 markdown）：\n{"plan":{"goal":"…","assumptions":["…"],"expert_consultations":["…"],"risks":["…"]},"tasks":[{"id":"TASK-001","title":"…","description":"…","required_capability":"analysis|coding|review|research|architecture","dependencies":["TASK-00X"],"acceptance_criteria":["…"],"expected_output":"…","relevant_files":["…"],"constraints":["…"]}]}\n规则：1) id 递增；2) 依赖只能是已出现的任务 id，保证无环；3) 分析/架构任务在前，编码依赖它们，测试/审查依赖编码；4) 任务粒度适合单个 worker 独立完成；5) 验收标准必须可执行："run: node test.js"（exit 0）或 "file: src/x.js"（存在）；file: 只允许静态产物，禁止把运行时生成的数据文件（todos.json/*.db/日志）作为 file: 验收，这类用 run:。`,
+    `你是 Multi-Agent 系统的 Manager。目标：${goal}\n项目目录：${ROOT}\n项目上下文：\n${ctxText}\n\n专家意见（已咨询，直接采信）：\n${consultTexts.join("\n\n") || "（无专家咨询）"}\n\n[CURRENT TASK]\n${goal}\n\n[PROJECT STATE SUMMARY]\n${plannerSummaryText}\n\n[RELEVANT MEMORY（来自 Project Memory，括号内为来源 provenance；仅参考，不强制引用）]\n${plannerCtxText}\n\n综合生成结构化 Plan 与任务 DAG。用 Write 工具把结果 JSON 写入 ${stage2File}（只含 JSON 对象，无 markdown）：\n{"plan":{"goal":"…","assumptions":["…"],"expert_consultations":["…"],"risks":["…"],"architecture_decisions":[{"decision":"…","rationale":"…","alternatives":["…"]}]},"tasks":[{"id":"TASK-001","title":"…","description":"…","required_capability":"analysis|coding|review|research|architecture","dependencies":["TASK-00X"],"acceptance_criteria":["…"],"expected_output":"…","relevant_files":["…"],"constraints":["…"],"requires_review":true}]}\n规则：1) id 递增；2) 依赖只能是已出现的任务 id，保证无环；3) 分析/架构任务在前，编码依赖它们，测试/审查依赖编码；4) 任务粒度适合单个 worker 独立完成；5) 验收标准必须可执行："run: node test.js"（exit 0）或 "file: src/x.js"（存在）；file: 只允许静态产物，禁止把运行时生成的数据文件（todos.json/*.db/日志）作为 file: 验收，这类用 run:；6) requires_review 为布尔值，必须显式给出：涉及核心数据读写/持久化、对外 API、安全或权限、多模块集成关键路径、不可逆改动的任务设 true（worker 自报 completed 后仍由独立 Reviewer 核验）；纯内部、低风险、可由验收命令完全覆盖的简单任务设 false；7) plan.architecture_decisions 显式记录本规划中做出的关键架构/设计取舍（如数据模型与状态存储方式、复用现有模块还是新建、接口形态、扩展点选择），每条含 decision/rationale/alternatives；这些决策会沉淀为长期 Memory 供后续会话复用，没有关键取舍时给空数组。`,
     stage2File
   );
 
@@ -228,7 +228,7 @@ async function plan(tasks, state, registry) {
       tasks: [
         { id: "TASK-001", title: "分析需求与项目", description: `分析目标：${goal}`, required_capability: "analysis", dependencies: [], acceptance_criteria: ["file: .ai/proposals/analysis.md"], expected_output: "分析文档", relevant_files: [".ai/"], constraints: [] },
         { id: "TASK-002", title: "实现编码", description: `按分析结果实现：${goal}`, required_capability: "coding", dependencies: ["TASK-001"], acceptance_criteria: ["file: server.js"], expected_output: "实现文件（server.js）", relevant_files: [], constraints: [] },
-        { id: "TASK-003", title: "测试验证", description: "创建并运行测试", required_capability: "review", dependencies: ["TASK-002"], acceptance_criteria: ["run: node test.js"], expected_output: "test.js 且全部通过", relevant_files: [], constraints: [] },
+        { id: "TASK-003", title: "测试验证", description: "创建并运行测试", required_capability: "review", dependencies: ["TASK-002"], acceptance_criteria: ["run: node test.js"], expected_output: "test.js 且全部通过", relevant_files: [], constraints: [], requires_review: true },
       ],
     };
   }
@@ -238,6 +238,7 @@ async function plan(tasks, state, registry) {
     t.retry_count = 0;
     t.failure_reason = null;
     t.result = null;
+    t.requires_review = t.requires_review === true; // 规范化为布尔（Planner 漏给则默认不审查）
     t.created_at = now;
     t.started_at = null;
     t.completed_at = null;
@@ -455,7 +456,7 @@ function injectIncomingMessages(task) {
   for (const f of fs.readdirSync(dir)) {
     if (!f.endsWith(".json")) continue;
     try {
-      const m = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8"));
+      const m = JSON.parse(stripBom(fs.readFileSync(path.join(dir, f), "utf-8")));
       if (m.status && m.status !== "pending") continue;
       const match = (m.channel === "broadcast") || (m.to_task_id && m.to_task_id === task.id) || (m.to_agent_id && m.to_agent_id === task.assigned_agent) || (m.to_agent_id === "any");
       if (match) {
@@ -476,7 +477,7 @@ function collectWorkerMessages(task) {
   for (const f of fs.readdirSync(dir)) {
     if (!f.endsWith(".json")) continue;
     try {
-      const m = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8"));
+      const m = JSON.parse(stripBom(fs.readFileSync(path.join(dir, f), "utf-8")));
       if (m.status && m.status !== "pending") continue;
       if (m.from_agent_id === task.assigned_agent) {
         m.status = "delivered"; m.delivered_at = nowIso(); m.sourceTaskId = task.id;
@@ -597,7 +598,7 @@ async function doReplan(task, tasks, state, registry) {
     tasks.tasks.map((t) => ({ id: t.id, title: t.title, required_capability: t.required_capability, dependencies: t.dependencies, acceptance_criteria: t.acceptance_criteria, expected_output: t.expected_output, status: t.status, failure_reason: t.failure_reason || null })),
     null, 1
   );
-  const prompt = `你是 Multi-Agent 系统的 Manager。目标：${goal}。任务 ${task.id} 失败且重试耗尽，失败原因：${task.failure_reason}。\n当前任务集：\n${allJson.slice(0, 8000)}\n\n请进行**局部重规划**：只修改失败任务及其直接影响的任务，使计划可执行（修正矛盾/不可行的验收标准、拆分任务、更换 required_capability、调整依赖）。已完成任务保持原样。\n用 Write 工具把完整的新任务数组 JSON 写入 ${resFile}（只含 JSON 数组，无 markdown）：\n[{"id":"TASK-XX","title":"…","description":"…","required_capability":"…","dependencies":[],"acceptance_criteria":["run: node test.js"],"expected_output":"…","relevant_files":[],"constraints":[]}]\n规则：1) 失败的 ${task.id} 必须被修改为可执行版本（绝不能保留原验收）；2) 已完成任务保留原 id 与字段；3) 新增任务用新 id；4) 保证无环。`;
+  const prompt = `你是 Multi-Agent 系统的 Manager。目标：${goal}。任务 ${task.id} 失败且重试耗尽，失败原因：${task.failure_reason}。\n当前任务集：\n${allJson.slice(0, 8000)}\n\n请进行**局部重规划**：只修改失败任务及其直接影响的任务，使计划可执行（修正矛盾/不可行的验收标准、拆分任务、更换 required_capability、调整依赖）。已完成任务保持原样。\n用 Write 工具把完整的新任务数组 JSON 写入 ${resFile}（只含 JSON 数组，无 markdown）：\n[{"id":"TASK-XX","title":"…","description":"…","required_capability":"…","dependencies":[],"acceptance_criteria":["run: node test.js"],"expected_output":"…","relevant_files":[],"constraints":[],"requires_review":false}]\n规则：1) 失败的 ${task.id} 必须被修改为可执行版本（绝不能保留原验收）；2) 已完成任务保留原 id 与字段；3) 新增任务用新 id；4) 保证无环；5) requires_review 为布尔：涉及核心数据/对外 API/集成关键路径的任务设 true，其余 false。`;
   let s2 = await runPlannerStage(prompt, resFile);
   if (s2 && !Array.isArray(s2) && Array.isArray(s2.tasks)) s2 = s2.tasks; // 兼容 {tasks:[...]} 包装
   if (s2 && Array.isArray(s2) && s2.length > 0) {
@@ -607,6 +608,7 @@ async function doReplan(task, tasks, state, registry) {
     for (const t of s2) {
       const old = oldById.get(t.id);
       const nt = { ...t };
+      nt.requires_review = nt.requires_review === true; // 规范化为布尔（replan 新任务同样支持 Review Gate）
       if (old && old.status === "completed") {
         nt.status = "completed"; nt.completed_at = old.completed_at; nt.result = old.result; nt.retry_count = 0;
       } else if (old) {
@@ -839,7 +841,7 @@ async function main() {
         try { const r = JSON.parse(l); lines.push(`- **${r.taskId}** [${r.status}] agent=${r.agent} backend=${r.backend} files=${(r.filesChanged || []).join(",") || "无"}${r.review ? ` review=${r.review.verdict}` : ""}${r.outOfScope.length ? ` ⚠️超Scope:${r.outOfScope.join(",")}` : ""}`); } catch { /* 忽略 */ }
       }
     }
-    const msgs = (() => { const d = MSG_DIR(); if (!fs.existsSync(d)) return "（无消息）"; const ms = fs.readdirSync(d).filter((f) => f.endsWith(".json")); return ms.length ? ms.map((f) => { try { const m = JSON.parse(fs.readFileSync(path.join(d, f), "utf-8")); return `- [${m.from_agent_id}→${m.to_agent_id || m.to_task_id || "any"}] ${m.subject}: ${String(m.body || "").slice(0, 120)}`; } catch { return ""; } }).filter(Boolean).join("\n") : "（无消息）"; })();
+    const msgs = (() => { const d = MSG_DIR(); if (!fs.existsSync(d)) return "（无消息）"; const ms = fs.readdirSync(d).filter((f) => f.endsWith(".json")); return ms.length ? ms.map((f) => { try { const m = JSON.parse(stripBom(fs.readFileSync(path.join(d, f), "utf-8"))); return `- [${m.from_agent_id}→${m.to_agent_id || m.to_task_id || "any"}] ${m.subject}: ${String(m.body || "").slice(0, 120)}`; } catch { return ""; } }).filter(Boolean).join("\n") : "（无消息）"; })();
     const report = `# 执行验收报告（${nowIso()}）\n\n## 目标\n${goal}\n\n## Run 记录\n${lines.join("\n") || "（无）"}\n\n## Agent 消息\n${msgs}\n\n## 任务终态\n${summary}\n`;
     writeJsonAtomic(path.join(AI, "report.md"), report);
     log(`验收报告已生成 → ${path.join(AI, "report.md")}`);

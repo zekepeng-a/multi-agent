@@ -82,6 +82,7 @@ function existingIds(memoryDir) {
  * 1. Review FAIL  → lesson（来源：.ai/reviews/*.json verdict=FAIL）
  * 2. Evaluation   → lesson（来源：.ai/evaluations/*.json suggested_action=replan 或 verdict=FAIL）
  * 3. Replan       → decision（来源：.ai/tasks.json replan 记录 / .ai/results/_replan.json）
+ * 3b. Plan 决策   → decision（来源：.ai/tasks.json 的 plan.architecture_decisions）
  * 4. Consultation → knowledge（来源：.ai/consultations/*.md）+ decision（若含"建议/决策"语义可并）
  * 5. Agent 统计   → agent_memory（稳定统计：完成/失败任务数、参与角色；不记录模型临时输出）
  */
@@ -125,6 +126,19 @@ export async function distill({ workdir, verbose = false }) {
       source: { kind: "replan", file: ".ai/tasks.json" },
       tags: ["replan", "planning"],
       supersedes: tasks.replan_count > 1 ? `decision-${tasks.replan_count - 1}` : null,
+    }));
+  }
+  // 3b) Planner 架构决策 → decisions（plan.architecture_decisions；缺口 #3：关键设计取舍进入长期 Memory）
+  const planDecisions = (tasks.plan && Array.isArray(tasks.plan.architecture_decisions)) ? tasks.plan.architecture_decisions : [];
+  for (const ad of planDecisions) {
+    if (!ad || !ad.decision) continue;
+    const rationale = ad.rationale ? `\n理由：${ad.rationale}` : "";
+    const alts = Array.isArray(ad.alternatives) && ad.alternatives.length ? `\n备选方案：${ad.alternatives.join("；")}` : "";
+    entries.push(makeEntry("decision", {
+      title: `架构决策：${String(ad.decision).slice(0, 60)}`,
+      content: `决策：${ad.decision}${rationale}${alts}`.slice(0, 600),
+      source: { kind: "plan-decision", file: ".ai/tasks.json" },
+      tags: ["architecture", "planning"],
     }));
   }
   // 4) Consultations → knowledge

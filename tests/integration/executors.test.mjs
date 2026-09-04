@@ -8,7 +8,18 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-const { resolveExecutor, REGISTRY } = await import(pathToFileURL(path.join(ROOT, "executors.mjs")).href);
+const { resolveExecutor, stripBom } = await import(pathToFileURL(path.join(ROOT, "executors.mjs")).href);
+
+test("stripBom: 剥离 Codex 结果文件开头的 UTF-8 BOM（Bug #1 回归）", () => {
+  const withBom = "\uFEFF" + JSON.stringify({ status: "completed", summary: "ok" });
+  const parsed = JSON.parse(stripBom(withBom));
+  assert.equal(parsed.status, "completed", "带 BOM 的结果 JSON 剥离后必须可正常 parse（否则误判 malformed_result）");
+  assert.equal(stripBom('{"a":1}'), '{"a":1}', "无 BOM 字符串保持不变");
+  assert.equal(stripBom(""), "", "空串安全");
+  assert.equal(stripBom(null), null, "非字符串原样透传");
+  // BOM 只在开头时剥离，正文中的 U+FEFF 不动
+  assert.equal(stripBom('{"x":"a\uFEFFb"}'), '{"x":"a\uFEFFb"}', "仅剥离开头 BOM，不误伤正文");
+});
 
 test("Executor Resolver: 已知 backend 返回 executor 实例", () => {
   const e = resolveExecutor("claude-code");

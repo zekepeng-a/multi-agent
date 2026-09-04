@@ -43,6 +43,17 @@ export const ERROR_TYPES = Object.freeze({
   EXECUTION_FAILED: "execution_failed",
 });
 
+/**
+ * 剥离开头的 UTF-8 BOM（U+FEFF）。
+ * 部分 backend（如 Codex CLI）用 Write 写结果文件时默认带 BOM，
+ * 会让 JSON.parse 直接抛错并被误判为 malformed_result（Runtime Bug #1）。
+ * 对无 BOM 的字符串无副作用。
+ */
+export function stripBom(s) {
+  if (typeof s !== "string") return s;
+  return s.charCodeAt(0) === 0xfeff ? s.slice(1) : s;
+}
+
 export function normalizeError(err, taskId = "") {
   const e = err || {};
   const msg = e?.message || String(e) || "unknown";
@@ -133,13 +144,13 @@ async function executeWithResultFile(task, ctx, { spawnFn, timeoutMs, pollMs = 4
   }
   let raw;
   try {
-    raw = JSON.parse(fs.readFileSync(resFile, "utf-8"));
+    raw = JSON.parse(stripBom(fs.readFileSync(resFile, "utf-8")));
   } catch (e) {
     // 竞态修复：结果文件刚出现但可能半写（worker 仍在写入）→ 短等重试 3 次（各 1s）再判 malformed
     let parsed = null;
     for (let i = 0; i < 3 && parsed === null; i++) {
       await new Promise((r) => setTimeout(r, 1000));
-      try { parsed = JSON.parse(fs.readFileSync(resFile, "utf-8")); } catch { /* 仍半写 */ }
+      try { parsed = JSON.parse(stripBom(fs.readFileSync(resFile, "utf-8"))); } catch { /* 仍半写 */ }
     }
     if (parsed === null) {
       out.status = "failed";

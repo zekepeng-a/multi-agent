@@ -83,3 +83,42 @@ test("distill: 坏数据容错（不崩溃，跳过坏文件）", async () => {
   assert.ok(typeof r.added === "number");
   fs.rmSync(d, { recursive: true, force: true });
 });
+
+test("distill: plan.architecture_decisions → decision 蒸馏（缺口 #3 回归）", async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "distill-plan-"));
+  const ai = path.join(d, ".ai");
+  fs.mkdirSync(ai, { recursive: true });
+  fs.writeFileSync(path.join(ai, "tasks.json"), JSON.stringify({
+    goal: "学习记录",
+    replan_count: 0,
+    plan: { architecture_decisions: [
+      { decision: "学习状态用布尔 learned 字段", rationale: "最小侵入现有结构", alternatives: ["复用 mastery_level 枚举"] },
+    ] },
+    tasks: [],
+  }));
+  await distill({ workdir: d });
+  const decDir = path.join(ai, "memory", "decisions");
+  const files = fs.readdirSync(decDir).filter((f) => f.endsWith(".json"));
+  assert.equal(files.length, 1, "plan 架构决策应蒸馏为 1 条 decision");
+  const dec = JSON.parse(fs.readFileSync(path.join(decDir, files[0]), "utf-8"));
+  assert.equal(dec.source.kind, "plan-decision", "provenance 标记为 plan-decision");
+  assert.ok(dec.content.includes("learned"), "decision 内容含决策正文");
+  assert.ok(dec.content.includes("mastery_level"), "decision 内容含备选方案");
+  // 幂等：再蒸馏一次不新增
+  const r2 = await distill({ workdir: d });
+  assert.equal(r2.added, 0, "重复蒸馏不新增 decision");
+  assert.equal(fs.readdirSync(decDir).filter((f) => f.endsWith(".json")).length, 1);
+  fs.rmSync(d, { recursive: true, force: true });
+});
+
+test("distill: plan 无 architecture_decisions 时不产生 plan-decision（空态安全）", async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), "distill-plan-empty-"));
+  const ai = path.join(d, ".ai");
+  fs.mkdirSync(ai, { recursive: true });
+  fs.writeFileSync(path.join(ai, "tasks.json"), JSON.stringify({ goal: "t", replan_count: 0, plan: {}, tasks: [] }));
+  const r = await distill({ workdir: d });
+  const decDir = path.join(ai, "memory", "decisions");
+  assert.ok(!fs.existsSync(decDir) || fs.readdirSync(decDir).length === 0, "无架构决策时 decisions 为空");
+  assert.equal(r.added, 0, "无候选时不新增");
+  fs.rmSync(d, { recursive: true, force: true });
+});
