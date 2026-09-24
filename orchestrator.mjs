@@ -143,14 +143,25 @@ async function consultExpert(consult, registry, ctx) {
 }
 
 // ── V0.4-A：两阶段 Planner ───────────────────────────────────────────────────
-async function runPlannerStage(prompt, resFile) {
+/**
+ * 阶段1（专家判断）输出的语义完成判据：对象且含 goal_understanding 或 expert_consultations。
+ * 用于避免把「文件已稳定但内容仍为空对象」当作完成（Bug #7 同类问题）。
+ */
+export function semanticConsultationsComplete(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+  if (Array.isArray(parsed.expert_consultations)) return true;
+  return typeof parsed.goal_understanding === "string" && parsed.goal_understanding.trim().length > 0;
+}
+
+async function runPlannerStage(prompt, resFile, isComplete = null) {
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
   fs.rmSync(resFile, { force: true });
   const child = spawn(WORKER_CMD, ["-p", prompt, "--max-turns", "30", "--allowedTools", WORKER_TOOLS], { cwd: ROOT, stdio: "ignore" });
   child.on("error", (e) => logEvent(`planner: spawn 失败 ${e.message}`));
   const deadline = Date.now() + 7 * 60 * 1000; // 阶段2 含专家意见上下文，给足时间
   // Bug #4 修复：等待文件写完（大小稳定）再解析，避免读到半写内容而误判「未产出」
-  const raw = await waitForStableJson(resFile, deadline);
+  // Bug #7 修复：叠加语义完成谓词——文件稳定 ≠ 内容完成（如 {tasks:[]} 之类的中间态需继续等待）
+  const raw = await waitForStableJson(resFile, deadline, isComplete ? { isComplete } : {});
   if (raw === null) {
     if (fs.existsSync(resFile)) logEvent(`planner: ${path.basename(resFile)} 存在但无法解析（放弃）`);
     return null;
@@ -256,10 +267,16 @@ export function readJsonStrict(file) {
  * 等待文件写完并解析为 JSON（修复 Bug #4：planner 产物半写竞态）。
  * 完成判据：文件大小连续 stableSamples 次采样不变 **且** 解析成功。
  * deadline 到期后做最后一次尝试（文件已完整但仍未达稳定判据时）。
+ *
+ * V0.5.4（Bug #7）：通用能力保持不变；新增可选 `isComplete(parsed)` 语义完成谓词——
+ * 仅当「大小稳定 + JSON 可解析 + 语义完整」三者同时满足才返回。
+ * 调用方可借此表达「文件稳定 ≠ 内容完成」（例如 Planner 输出需 tasks 非空）。
+ * 谓词永不满足时，deadline 到期返回最后一次可解析的结果（由调用方决定是否降级）。
  */
-export async function waitForStableJson(file, deadline, { pollMs = 500, stableSamples = 3 } = {}) {
+export async function waitForStableJson(file, deadline, { pollMs = 500, stableSamples = 3, isComplete = null } = {}) {
   let lastSize = -1;
   let stable = 0;
+  let lastParsed = null;
   while (Date.now() < deadline) {
     if (fs.existsSync(file)) {
       let size = 0;
@@ -268,14 +285,33 @@ export async function waitForStableJson(file, deadline, { pollMs = 500, stableSa
         if (size === lastSize) stable++; else { stable = 0; lastSize = size; }
         if (stable >= stableSamples) {
           const parsed = readJsonStrict(file);
-          if (parsed !== null) return parsed;
-          stable = 0; // 大小稳定但暂不可解析：继续等待（LLM 追加写入）
+          if (parsed !== null) {
+            lastParsed = parsed;
+            if (typeof isComplete !== "function" || isComplete(parsed)) return parsed;
+          }
+          stable = 0; // 大小稳定但（不可解析 或 语义未完成）：继续等待（LLM 仍在写入）
         }
       }
     }
     await sleep(pollMs);
   }
-  return fs.existsSync(file) ? readJsonStrict(file) : null;
+  return lastParsed !== null ? lastParsed : (fs.existsSync(file) ? readJsonStrict(file) : null);
+}
+
+/**
+ * Planner 输出的「语义完成」判据（V0.5.4 / Bug #7）。
+ * 只有同时满足下列条件才算 Planner 输出完成，可被接受：
+ *  1) 顶层为对象（或为任务数组，兼容 replan 的数组形态）
+ *  2) `tasks` 字段存在且为数组
+ *  3) `tasks.length > 0`
+ *  4) 经既有 normalizePlannedTasks 过滤后仍存在合法任务（id 为非空字符串的对象）
+ * 用于区分「文件已稳定但内容是 {tasks:[]} 之类的中间态」与「真正写完」。
+ */
+export function semanticPlannerOutputComplete(parsed) {
+  if (!parsed) return false;
+  const raw = Array.isArray(parsed) ? parsed : parsed.tasks;
+  if (!Array.isArray(raw) || raw.length === 0) return false;
+  return normalizePlannedTasks(Array.isArray(parsed) ? { tasks: parsed } : parsed).tasks.length > 0;
 }
 
 /**
@@ -296,7 +332,8 @@ async function plan(tasks, state, registry) {
   const stage1File = path.join(RESULTS_DIR, "_plan1.json");
   const s1 = await runPlannerStage(
     `你是 Multi-Agent 系统的 Manager。目标：${goal}\n项目目录：${ROOT}\n项目上下文：\n${ctxText}\n\n判断该目标是否需要专家意见。用 Write 工具把结果 JSON 写入 ${stage1File}（只含 JSON 对象，无 markdown）：\n{"goal_understanding":"…","expert_consultations":[{"role":"architect|analyst|researcher","topic":"…","reason":"…","required_capability":"architecture|analysis|research"}]}\n规则：仅当任务确实需要（复杂架构→architect、复杂算法→analyst、外部资料→researcher）才列；不需要则为空数组。`,
-    stage1File
+    stage1File,
+    semanticConsultationsComplete
   );
   const consultations = (s1 && Array.isArray(s1.expert_consultations)) ? s1.expert_consultations : [];
 
@@ -342,7 +379,8 @@ async function plan(tasks, state, registry) {
 
   const s2 = await runPlannerStage(
     `你是 Multi-Agent 系统的 Manager。目标：${goal}\n项目目录：${ROOT}\n项目上下文：\n${ctxText}\n\n专家意见（已咨询，直接采信）：\n${consultTexts.join("\n\n") || "（无专家咨询）"}\n\n[CURRENT TASK]\n${goal}\n\n[PROJECT STATE SUMMARY]\n${plannerSummaryText}\n\n[RELEVANT MEMORY（来自 Project Memory，括号内为来源 provenance；仅参考，不强制引用）]\n${plannerCtxText}\n\n综合生成结构化 Plan 与任务 DAG。用 Write 工具把结果 JSON 写入 ${stage2File}（只含 JSON 对象，无 markdown）：\n{"plan":{"goal":"…","assumptions":["…"],"expert_consultations":["…"],"risks":["…"],"architecture_decisions":[{"decision":"…","rationale":"…","alternatives":["…"]}]},"tasks":[{"id":"TASK-001","title":"…","description":"…","required_capability":"analysis|coding|review|research|architecture","dependencies":["TASK-00X"],"acceptance_criteria":["…"],"expected_output":"…","relevant_files":["…"],"constraints":["…"],"requires_review":true}]}\n规则：1) id 递增；2) 依赖只能是已出现的任务 id，保证无环；3) 分析/架构任务在前，编码依赖它们，测试/审查依赖编码；4) 任务粒度适合单个 worker 独立完成；5) 验收标准必须可执行："run: node test.js"（exit 0）或 "file: src/x.js"（存在）；file: 只允许静态产物，禁止把运行时生成的数据文件（todos.json/*.db/日志）作为 file: 验收，这类用 run:；6) requires_review 为布尔值，必须显式给出：涉及核心数据读写/持久化、对外 API、安全或权限、多模块集成关键路径、不可逆改动的任务设 true（worker 自报 completed 后仍由独立 Reviewer 核验）；纯内部、低风险、可由验收命令完全覆盖的简单任务设 false；7) plan.architecture_decisions 显式记录本规划中做出的关键架构/设计取舍（如数据模型与状态存储方式、复用现有模块还是新建、接口形态、扩展点选择），每条含 decision/rationale/alternatives；这些决策会沉淀为长期 Memory 供后续会话复用，没有关键取舍时给空数组。`,
-    stage2File
+    stage2File,
+    semanticPlannerOutputComplete
   );
 
   let parsed = s2;
@@ -777,7 +815,7 @@ async function doReplan(task, tasks, state, registry) {
     null, 1
   );
   const prompt = `你是 Multi-Agent 系统的 Manager。目标：${goal}。任务 ${task.id} 失败且重试耗尽，失败原因：${task.failure_reason}。\n当前任务集：\n${allJson.slice(0, 8000)}\n\n请进行**局部重规划**：只修改失败任务及其直接影响的任务，使计划可执行（修正矛盾/不可行的验收标准、拆分任务、更换 required_capability、调整依赖）。已完成任务保持原样。\n用 Write 工具把完整的新任务数组 JSON 写入 ${resFile}（只含 JSON 数组，无 markdown）：\n[{"id":"TASK-XX","title":"…","description":"…","required_capability":"…","dependencies":[],"acceptance_criteria":["run: node test.js"],"expected_output":"…","relevant_files":[],"constraints":[],"requires_review":false}]\n规则：1) 失败的 ${task.id} 必须被修改为可执行版本（绝不能保留原验收）；2) 已完成任务保留原 id 与字段；3) 新增任务用新 id；4) 保证无环；5) requires_review 为布尔：涉及核心数据/对外 API/集成关键路径的任务设 true，其余 false。`;
-  let s2 = await runPlannerStage(prompt, resFile);
+  let s2 = await runPlannerStage(prompt, resFile, semanticPlannerOutputComplete);
   if (s2 && !Array.isArray(s2) && Array.isArray(s2.tasks)) s2 = s2.tasks; // 兼容 {tasks:[...]} 包装
   // Bug #5 修复：replan 输出同样过滤非法元素（占位符/非对象），异常不得崩溃
   if (Array.isArray(s2)) {
