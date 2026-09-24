@@ -20,6 +20,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { resolveExecutor, stripBom } from "./executors.mjs";
 import { assembleContext } from "./context.mjs";
 import { generateStateSummary } from "./state-summary.mjs";
@@ -77,7 +78,7 @@ const SKIP_PLAN = argv.includes("--skip-plan");
 const DRY_RUN = argv.includes("--dry-run");
 const maxRounds = parseInt(opt("--max-rounds") || "40", 10);
 
-if (!goal) { console.error("用法: node orchestrator.mjs \"<目标>\" --workdir <dir>"); process.exit(1); }
+// 注：goal 缺失的校验在 main() 内执行（避免被 import 时（如单元测试）触发 process.exit）
 
 // ── 状态读取 / 恢复 ─────────────────────────────────────────────────────────
 function load() {
@@ -148,18 +149,67 @@ async function runPlannerStage(prompt, resFile) {
   const child = spawn(WORKER_CMD, ["-p", prompt, "--max-turns", "30", "--allowedTools", WORKER_TOOLS], { cwd: ROOT, stdio: "ignore" });
   child.on("error", (e) => logEvent(`planner: spawn 失败 ${e.message}`));
   const deadline = Date.now() + 7 * 60 * 1000; // 阶段2 含专家意见上下文，给足时间
-  while (Date.now() < deadline) {
-    if (fs.existsSync(resFile)) break;
-    await sleep(RESULT_POLL_MS);
+  // Bug #4 修复：等待文件写完（大小稳定）再解析，避免读到半写内容而误判「未产出」
+  const raw = await waitForStableJson(resFile, deadline);
+  if (raw === null) {
+    if (fs.existsSync(resFile)) logEvent(`planner: ${path.basename(resFile)} 存在但无法解析（放弃）`);
+    return null;
   }
-  if (!fs.existsSync(resFile)) return null;
+  if (Array.isArray(raw)) return raw; // 数组格式（如 replan 输出）
+  return raw; // 对象格式（plan/consultations）
+}
+
+/**
+ * 严格解析 JSON 文件（剥离 BOM；失败时尝试从文本中提取 JSON 对象/数组）。
+ * @returns {object|Array|null} 解析结果，失败返回 null
+ */
+export function readJsonStrict(file) {
   try {
-    const raw = readJson(resFile, null);
-    if (raw === null) return null;
-    if (Array.isArray(raw)) return raw; // 数组格式（如 replan 输出）
-    if (raw.tasks || raw.expert_consultations || raw.plan) return raw; // 对象格式
-    return JSON.parse(extractJson(stripBom(fs.readFileSync(resFile, "utf-8"))));
+    const text = stripBom(fs.readFileSync(file, "utf-8"));
+    try { return JSON.parse(text); } catch { /* 尝试提取 */ }
+    const extracted = extractJson(text);
+    // extractJson 无匹配时返回 "{}"（长度 2）——此类兜底不是真实内容，视为解析失败
+    if (extracted && extracted.length > 2) {
+      try { return JSON.parse(extracted); } catch { /* 仍失败 */ }
+    }
+    return null;
   } catch { return null; }
+}
+
+/**
+ * 等待文件写完并解析为 JSON（修复 Bug #4：planner 产物半写竞态）。
+ * 完成判据：文件大小连续 stableSamples 次采样不变 **且** 解析成功。
+ * deadline 到期后做最后一次尝试（文件已完整但仍未达稳定判据时）。
+ */
+export async function waitForStableJson(file, deadline, { pollMs = 500, stableSamples = 3 } = {}) {
+  let lastSize = -1;
+  let stable = 0;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(file)) {
+      let size = 0;
+      try { size = fs.statSync(file).size; } catch { size = 0; }
+      if (size > 0) {
+        if (size === lastSize) stable++; else { stable = 0; lastSize = size; }
+        if (stable >= stableSamples) {
+          const parsed = readJsonStrict(file);
+          if (parsed !== null) return parsed;
+          stable = 0; // 大小稳定但暂不可解析：继续等待（LLM 追加写入）
+        }
+      }
+    }
+    await sleep(pollMs);
+  }
+  return fs.existsSync(file) ? readJsonStrict(file) : null;
+}
+
+/**
+ * 规范化 Planner/Replan 输出的任务数组（修复 Bug #5：LLM 占位符字符串导致崩溃）。
+ * 仅保留形如 {id: "<非空字符串>", ...} 的对象；其余记为 dropped。
+ */
+export function normalizePlannedTasks(parsed) {
+  const raw = parsed && Array.isArray(parsed.tasks) ? parsed.tasks : [];
+  const tasks = raw.filter((t) => t && typeof t === "object" && !Array.isArray(t) && typeof t.id === "string" && t.id.trim().length > 0);
+  return { tasks, dropped: raw.length - tasks.length, total: raw.length };
 }
 
 async function plan(tasks, state, registry) {
@@ -220,6 +270,22 @@ async function plan(tasks, state, registry) {
   );
 
   let parsed = s2;
+  // Bug #5 修复：Planner 输出可能含占位符字符串（如 "__TASK007__"）或非对象元素——
+  // 先离线校验与过滤，任何异常都不得让 orchestrator 崩溃（崩溃前必须能回退 DAG）。
+  try {
+    if (parsed && !Array.isArray(parsed) && Array.isArray(parsed.tasks)) {
+      const norm = normalizePlannedTasks(parsed);
+      if (norm.dropped > 0) logEvent(`plan: 丢弃 ${norm.dropped}/${norm.total} 个非法任务元素（LLM 占位符/格式错误）`);
+      parsed = { ...parsed, tasks: norm.tasks };
+    } else if (Array.isArray(parsed)) {
+      const norm = normalizePlannedTasks({ tasks: parsed });
+      if (norm.dropped > 0) logEvent(`plan: 丢弃 ${norm.dropped}/${norm.total} 个非法任务元素（LLM 占位符/格式错误）`);
+      parsed = { tasks: norm.tasks };
+    }
+  } catch (e) {
+    logEvent(`plan: 任务规范化异常（回退 DAG）: ${e.message}`);
+    parsed = null;
+  }
   if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
     // 回退：用简单规则生成一个最小 DAG（保证可闭环）
     logEvent("plan: 阶段2 失败，使用回退 DAG");
@@ -601,6 +667,12 @@ async function doReplan(task, tasks, state, registry) {
   const prompt = `你是 Multi-Agent 系统的 Manager。目标：${goal}。任务 ${task.id} 失败且重试耗尽，失败原因：${task.failure_reason}。\n当前任务集：\n${allJson.slice(0, 8000)}\n\n请进行**局部重规划**：只修改失败任务及其直接影响的任务，使计划可执行（修正矛盾/不可行的验收标准、拆分任务、更换 required_capability、调整依赖）。已完成任务保持原样。\n用 Write 工具把完整的新任务数组 JSON 写入 ${resFile}（只含 JSON 数组，无 markdown）：\n[{"id":"TASK-XX","title":"…","description":"…","required_capability":"…","dependencies":[],"acceptance_criteria":["run: node test.js"],"expected_output":"…","relevant_files":[],"constraints":[],"requires_review":false}]\n规则：1) 失败的 ${task.id} 必须被修改为可执行版本（绝不能保留原验收）；2) 已完成任务保留原 id 与字段；3) 新增任务用新 id；4) 保证无环；5) requires_review 为布尔：涉及核心数据/对外 API/集成关键路径的任务设 true，其余 false。`;
   let s2 = await runPlannerStage(prompt, resFile);
   if (s2 && !Array.isArray(s2) && Array.isArray(s2.tasks)) s2 = s2.tasks; // 兼容 {tasks:[...]} 包装
+  // Bug #5 修复：replan 输出同样过滤非法元素（占位符/非对象），异常不得崩溃
+  if (Array.isArray(s2)) {
+    const norm = normalizePlannedTasks({ tasks: s2 });
+    if (norm.dropped > 0) logEvent(`replan: 丢弃 ${norm.dropped}/${norm.total} 个非法任务元素（LLM 占位符/格式错误）`);
+    s2 = norm.tasks;
+  }
   if (s2 && Array.isArray(s2) && s2.length > 0) {
     const now = nowIso();
     const oldById = new Map(tasks.tasks.map((t) => [t.id, t]));
@@ -739,6 +811,7 @@ async function runTask(task, registry, ctx, tasksRef, stateRef) {
 
 // ── Manager Loop ─────────────────────────────────────────────────────────────
 async function main() {
+  if (!goal) { console.error('用法: node orchestrator.mjs "<目标>" --workdir <dir>'); process.exit(1); }
   fs.mkdirSync(AI, { recursive: true });
   log(`orchestrator 启动  goal=${goal}  root=${ROOT}`);
   logEvent(`start goal=${goal}`);
@@ -849,4 +922,12 @@ async function main() {
   log(`状态已保存 → ${TASKS_FILE}`);
 }
 
-main().catch((e) => { console.error("orchestrator 崩溃:", e); logEvent(`crash ${e.stack}`); process.exit(1); });
+// 入口守卫：直接执行 `node orchestrator.mjs ...` 时运行 main()；
+// 被 import（单元测试、其他模块）时不自动运行。用 argv[1] 与模块真实路径比较（比 endsWith 可靠）。
+const isDirectRun = (() => {
+  if (!process.argv[1]) return false;
+  try { return path.resolve(process.argv[1]) === fileURLToPath(import.meta.url); } catch { return false; }
+})();
+if (isDirectRun) {
+  main().catch((e) => { console.error("orchestrator 崩溃:", e); logEvent(`crash ${e.stack}`); process.exit(1); });
+}
