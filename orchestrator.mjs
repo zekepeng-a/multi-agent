@@ -160,6 +160,82 @@ async function runPlannerStage(prompt, resFile) {
 }
 
 /**
+ * 规范化验收命令（Bug #6 修复；确定性规则，不调用 LLM）。
+ *
+ * 背景：Planner 常在 `run:` 后附加自然语言说明，例如
+ *   `node scripts/x.test.mjs（exit 0，佐证本任务未触碰任何代码）`
+ * 整串执行会得到 `Cannot find module '...（exit'`，使实际已完成的任务验收必败。
+ *
+ * 规则（引号感知）：
+ *  1) 仅在**引号外**识别说明起点：中文字符/全角标点、或「前有空白且非 shell 语法的 `(`」
+ *  2) 从说明起点截断，保留其前的真实命令
+ *  3) 引号内的中文/括号/参数一律保留（不破坏合法命令）
+ *  4) 校验：空命令、引号不配对、剥离后仍含裸中文 → invalid（拒绝执行并给出结构化错误）
+ *
+ * @param {string} raw 原始验收条目（run: 之后的内容）
+ * @returns {{valid:boolean, command:string, raw:string, stripped:string|null, code?:string, reason?:string}}
+ */
+export function normalizeRunCommand(raw) {
+  const original = String(raw == null ? "" : raw);
+  const text = original.trim();
+  if (text === "") return { valid: false, command: "", raw: original, stripped: null, code: "empty_command", reason: "验收命令为空" };
+
+  // 引号感知扫描：返回引号外文本（用于判定与校验）、引号是否配对、说明起点
+  const scan = (s, findCut) => {
+    let inSingle = false, inDouble = false, inBacktick = false;
+    let outside = "";
+    let cutAt = -1;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      const prev = i > 0 ? s[i - 1] : "";
+      if (ch === "\\" && !inSingle) { i++; outside += " "; continue; } // 转义：跳过下一字符
+      if (ch === "'" && !inDouble && !inBacktick) { inSingle = !inSingle; continue; }
+      if (ch === '"' && !inSingle && !inBacktick) { inDouble = !inDouble; continue; }
+      if (ch === "`" && !inSingle) { inBacktick = !inBacktick; continue; }
+      if (inSingle || inDouble || inBacktick) { outside += " "; continue; } // 引号内一律保留（不参与判定）
+      if (findCut && cutAt < 0) {
+        const isCjk = /[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(ch);
+        const isHalfParenWithSpace = ch === "(" && /\s/.test(prev);
+        if (isCjk || isHalfParenWithSpace) cutAt = i;
+      }
+      outside += ch;
+    }
+    return { outside, unbalanced: inSingle || inDouble || inBacktick, cutAt };
+  };
+
+  const first = scan(text, true);
+  let command = text;
+  let stripped = null;
+  if (first.cutAt >= 0) {
+    stripped = text.slice(first.cutAt).trim();
+    command = text.slice(0, first.cutAt).trim().replace(/[;,、]+$/, "").trim();
+  }
+
+  const second = scan(command, false); // 截断后重新扫描（校验只看引号外）
+  if (second.unbalanced) return { valid: false, command, raw: original, stripped, code: "unbalanced_quotes", reason: "命令引号不配对" };
+  if (command === "") return { valid: false, command: "", raw: original, stripped, code: "empty_after_strip", reason: "剥离说明文字后命令为空" };
+  // 引号外仍含自然语言（中文/全角）→ 拒绝执行（引号内的中文是合法参数，不在此列）
+  if (/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/.test(second.outside)) {
+    return { valid: false, command, raw: original, stripped, code: "non_command_text", reason: "命令中仍含自然语言文本" };
+  }
+  return { valid: true, command, raw: original, stripped };
+}
+
+/**
+ * 分类 Reviewer 执行结果（V0.5.3：区分「进程/基础设施失败」与「真实 verdict FAIL」）。
+ * 安全语义不变：任何非 verdict 结果都不得 PASS。
+ * @returns {{kind:"verdict"|"process_failure"|"timeout"|"invalid_verdict", verdict?:object, code:string, reason:string, detail:string}}
+ */
+export function classifyReviewOutcome({ exitCode = null, timedOut = false, raw = null, resFileExists = false, stderrTail = "" } = {}) {
+  const valid = raw && (raw.verdict === "PASS" || raw.verdict === "FAIL");
+  if (valid) return { kind: "verdict", verdict: raw, code: "ok", reason: "有效 verdict", detail: "" };
+  if (resFileExists && raw && !valid) return { kind: "invalid_verdict", code: "invalid_verdict", reason: "Reviewer 产出的 verdict 非法（既非 PASS 也非 FAIL）", detail: String(raw.verdict || raw).slice(0, 200) };
+  if (timedOut) return { kind: "timeout", code: "review_timeout", reason: "Reviewer 超时未产出 verdict", detail: "" };
+  if (exitCode === null) return { kind: "process_failure", code: "review_process_nofile", reason: "Reviewer 进程未产出结果文件且未正常退出", detail: String(stderrTail).slice(-300) };
+  return { kind: "process_failure", code: "review_process_exit", reason: `Reviewer 进程异常退出（exit ${exitCode}）且无结果文件`, detail: String(stderrTail).slice(-300) };
+}
+
+/**
  * 严格解析 JSON 文件（剥离 BOM；失败时尝试从文本中提取 JSON 对象/数组）。
  * @returns {object|Array|null} 解析结果，失败返回 null
  */
@@ -481,7 +557,19 @@ function validateTask(task) {
   for (const c of checks) {
     // 支持形如 `run: node test.js` / `file: src/x.js` / 普通文本说明
     let ok;
-    if (c.startsWith("run:")) { const r = runCmd(c.slice(4).trim(), ROOT); ok = r.code === 0; pass.push({ c, ok, ev: ok ? `exit 0` : `exit ${r.code}: ${r.err.slice(0, 200)}` }); }
+    if (c.startsWith("run:")) {
+      // Bug #6 修复：先规范化（剥离自然语言说明），非法命令拒绝执行（结构化错误）；原始文本保留在 detail 便于审计
+      const norm = normalizeRunCommand(c.slice(4));
+      if (!norm.valid) {
+        pass.push({ c, ok: false, ev: `拒绝执行[${norm.code}]: ${norm.reason}（原始: ${norm.raw.slice(0, 80)}）` });
+        logEvent(`validation-reject ${task.id} ${norm.code}: ${norm.raw.slice(0, 120)}`);
+        continue;
+      }
+      const r = runCmd(norm.command, ROOT);
+      ok = r.code === 0;
+      const cleaned = norm.stripped ? `（已剥离说明: ${norm.stripped.slice(0, 60)}）` : "";
+      pass.push({ c, ok, ev: ok ? `exit 0${cleaned}` : `exit ${r.code}: ${r.err.slice(0, 200)}${cleaned}` });
+    }
     else if (c.startsWith("file:")) { ok = fs.existsSync(path.join(ROOT, c.slice(5).trim())); pass.push({ c, ok, ev: ok ? "存在" : "缺失" }); }
     else { pass.push({ c, ok: true, ev: "人工核对项（自动通过）" }); }
   }
@@ -605,25 +693,47 @@ async function reviewTask(task, ctx) {
   const rules = (task.review_rules || []).join("; ") || "检查产出是否符合任务要求与验收标准，是否存在明显缺陷";
   const prompt = `你是 Review Gate（独立 Reviewer）。对任务 ${task.id} 的产出做严格审查。\n任务：${task.title}\n约束/验收：${(task.constraints || []).join("; ")}${(task.acceptance_criteria || []).join(" | ")}\n改动文件：${files}\nReview 规则（必须逐条检查）：${rules}\n用 Read 工具读取改动文件核验。用 Write 工具把 verdict JSON 写入 ${resFile}（只含 JSON 对象，无 markdown）：{"verdict":"PASS|FAIL","reason":"…","checks":[{"name":"…","pass":true|false}]}`;
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
-  fs.rmSync(resFile, { force: true });
-  const child = spawn(WORKER_CMD, ["-p", prompt, "--max-turns", "20", "--allowedTools", "Read,Glob,Grep,Write"], { cwd: ROOT, stdio: "ignore" });
-  child.on("error", () => {});
-  const deadline = Date.now() + 3 * 60 * 1000;
-  while (Date.now() < deadline) {
-    if (fs.existsSync(resFile)) break;
-    await sleep(RESULT_POLL_MS);
+  // V0.5.3：Reviewer 稳定性——超时可配（默认 8 分钟，原 3 分钟对复杂评审不足）、有限重试、捕获诊断信息
+  const reviewTimeoutMs = parseInt(process.env.DSH_ORCH_REVIEW_TIMEOUT_MS || String(8 * 60 * 1000), 10);
+  const MAX_REVIEW_ATTEMPTS = parseInt(process.env.DSH_ORCH_REVIEW_ATTEMPTS || "2", 10);
+  let outcome = null;
+  for (let attempt = 1; attempt <= MAX_REVIEW_ATTEMPTS; attempt++) {
+    fs.rmSync(resFile, { force: true });
+    let exitCode = null;
+    let exited = false;
+    let stderrTail = "";
+    // 原实现用 stdio:"ignore" 丢弃退出码与 stderr，导致无法区分「进程失败/超时/非法 verdict」
+    const child = spawn(WORKER_CMD, ["-p", prompt, "--max-turns", "20", "--allowedTools", "Read,Glob,Grep,Write"], { cwd: ROOT, stdio: ["ignore", "ignore", "pipe"] });
+    child.stderr.on("data", (d) => { stderrTail = (stderrTail + d.toString()).slice(-2000); });
+    child.on("error", (e) => { stderrTail += ` [spawn error] ${e.message}`; exited = true; if (exitCode === null) exitCode = -1; });
+    child.on("exit", (code) => { exitCode = code; exited = true; });
+    const deadline = Date.now() + reviewTimeoutMs;
+    let timedOut = false;
+    while (Date.now() < deadline) {
+      if (fs.existsSync(resFile)) break;
+      if (exited && typeof exitCode === "number" && exitCode !== 0) break; // 异常退出：立即判定，不空等至超时
+      await sleep(Math.min(RESULT_POLL_MS, 2000));
+    }
+    if (!fs.existsSync(resFile) && Date.now() >= deadline) timedOut = true;
+    const resFileExists = fs.existsSync(resFile);
+    const raw = resFileExists ? readJson(resFile, null) : null;
+    outcome = classifyReviewOutcome({ exitCode, timedOut, raw, resFileExists, stderrTail });
+    if (outcome.kind === "verdict") break;
+    if (attempt < MAX_REVIEW_ATTEMPTS) {
+      logEvent(`review-retry ${task.id} attempt=${attempt} code=${outcome.code}${outcome.detail ? ` detail=${String(outcome.detail).slice(0, 160)}` : ""}`);
+    }
+    try { child.kill("SIGKILL"); } catch { /* 已退出 */ }
   }
-  let verdict = null;
-  if (fs.existsSync(resFile)) {
-    try {
-      const r = readJson(resFile, null);
-      if (r && (r.verdict === "PASS" || r.verdict === "FAIL")) verdict = r; // 仅接受有效 verdict
-    } catch { /* 解析失败视为无 verdict */ }
-  }
-  if (!verdict) verdict = { verdict: "FAIL", reason: "Reviewer 未产出有效 verdict（保守判定 FAIL，不默认通过）" }; // P0-04-FIX
   fs.mkdirSync(REVIEWS_DIR(), { recursive: true });
-  writeJsonAtomic(path.join(REVIEWS_DIR(), `${task.id}.json`), { taskId: task.id, ...verdict, reviewedAt: nowIso() });
-  return verdict;
+  const base = { taskId: task.id, reviewedAt: nowIso(), reviewKind: outcome.kind, reviewCode: outcome.code };
+  if (outcome.kind === "verdict") {
+    writeJsonAtomic(path.join(REVIEWS_DIR(), `${task.id}.json`), { ...base, ...outcome.verdict });
+    return { ...outcome.verdict, kind: "verdict", code: "ok", detail: "" };
+  }
+  // 非 verdict：结构化错误落盘。安全语义不变——绝不允许 PASS。
+  const reason = `Reviewer 不可用（${outcome.code}）: ${outcome.reason}`;
+  writeJsonAtomic(path.join(REVIEWS_DIR(), `${task.id}.json`), { ...base, verdict: "FAIL", reason, detail: outcome.detail || "" });
+  return { verdict: "FAIL", reason, kind: outcome.kind, code: outcome.code, detail: outcome.detail || "" };
 }
 
 // ── V0.4-B：Evaluator（失败分类） + Replanning（局部重规划） ─────────────────
@@ -631,10 +741,12 @@ const MAX_REPLAN = 2;
 let replanCount = 0;
 
 /** 失败分类：临时执行失败（retry）vs 计划问题（replan）。综合全部失败历史。 */
-function evaluateFailure(task, registry) {
+export function evaluateFailure(task, registry) {
   const history = (task.failure_history || []).concat(task.failure_reason || "").join(" ").toLowerCase();
   let suggested = "retry";
-  if (history.includes("backend_unavailable")) {
+  if (history.includes("review-unavailable")) {
+    suggested = "retry"; // V0.5.3：Reviewer 基础设施失败（进程/超时/非法 verdict）→ 重试，绝不判为计划问题（避免 replan 循环）
+  } else if (history.includes("backend_unavailable")) {
     suggested = "replan"; // backend 不可用 = 计划/路由问题
   } else if ((history.includes("验收未通过") && (task.retry_count || 0) >= MAX_RETRY) || (history.includes("review-fail") && (task.retry_count || 0) >= 1)) {
     suggested = "replan"; // 验收矛盾（重试耗尽）/ Review 否决（重试 1 次后）→ 计划问题
@@ -738,7 +850,15 @@ async function runTask(task, registry, ctx, tasksRef, stateRef) {
       if (task.requires_review) {
         const rv = await reviewTask(task, ctx);
         recordRun(task, "review", { review: rv, messages, outOfScope: scopeViolations(task) });
-        if (rv.verdict === "FAIL") {
+        if (rv.kind && rv.kind !== "verdict") {
+          // V0.5.3：Reviewer 基础设施失败（进程/超时/非法 verdict）。安全语义不变（绝不允许 PASS），
+          // 但不用 `review-fail:` 前缀，避免被 Evaluator 判为「计划问题」而进入无意义的 retry→replan 循环。
+          task.status = "failed";
+          task.failure_reason = `review-unavailable: ${rv.code} ${rv.reason}`;
+          task.failure_history = [...(task.failure_history || []), task.failure_reason];
+          log(`⚠️ ${task.id} Review 不可用（${rv.kind}/${rv.code}）：${rv.reason}`);
+          logEvent(`review-unavailable ${task.id} ${rv.kind} ${rv.code}`);
+        } else if (rv.verdict === "FAIL") {
           task.status = "failed";
           task.failure_reason = `review-fail: ${rv.reason}`;
           task.failure_history = [...(task.failure_history || []), task.failure_reason];
