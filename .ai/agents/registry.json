@@ -178,7 +178,7 @@
         "terminal": 4,
         "gui": 1
       },
-      "model": "deepseek/deepseek-v4-pro",
+      "model": "deepseek-v4-pro",
       "tools": [
         "codex 自身工具集"
       ],
@@ -206,7 +206,7 @@
         "review": 3,
         "gui": 1
       },
-      "model": "deepseek/deepseek-v4-pro",
+      "model": "deepseek-v4-pro",
       "tools": [
         "codex 工具集"
       ],
