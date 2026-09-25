@@ -62,7 +62,9 @@ export function assembleContext({ workdir, currentTask, budgetChars = 6000, topK
     used += cost;
   }
 
-  const fmt = (arr) => arr.map((r) => `- [${r.type}/${r.score}] ${r.title}\n  ${String(r.content).slice(0, 300)}\n  (来源: ${r.provenance?.kind || "unknown"} ${r.provenance?.file || ""} ${r.provenance?.task_id ? "task=" + r.provenance.task_id : ""})`).join("\n");
+  // V0.5.7（Memory Use Attribution）：注入文本必须携带 memory_id，Planner 才能在自己的输出里
+  // 以 `plan.memory_refs[].memory_id` 精确引用本轮 Context 中的条目（可审计、可校验）。
+  const fmt = (arr) => arr.map((r) => `- [${r.type}/${r.score}] memory_id=${r.id} ${r.title}\n  ${String(r.content).slice(0, 300)}\n  (来源: ${r.provenance?.kind || "unknown"} ${r.provenance?.file || ""} ${r.provenance?.task_id ? "task=" + r.provenance.task_id : ""})`).join("\n");
   const sections = {
     currentTask: taskSection,
     decisions: fmt(byType.decision),

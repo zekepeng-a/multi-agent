@@ -392,6 +392,7 @@ async function plan(tasks, state, registry) {
   // ── V0.5-P0-03：Planner Context（Project State Summary + Relevant Memory，Budget 内） ──
   let plannerCtxText = "（无 Project Memory）";
   let plannerSummaryText = "（无 state.summary）";
+  let contextMemoryIds = []; // V0.5.7：本轮进入 Planner Context 的 memory_id 集合
   try {
     const memCtx = assembleContext({
       workdir: ROOT,
@@ -410,6 +411,8 @@ async function plan(tasks, state, registry) {
       memCtx.sections.agentMemory || "（无）",
     ].join("\n");
     logEvent(`planner-context memory=${memCtx.selected.length} chars=${memCtx.usedChars}/${memCtx.budgetChars} truncated=${memCtx.truncated}`);
+    // V0.5.7：记录本轮实际进入 Planner Context 的 memory_id（attribution 校验的唯一合法来源）
+    contextMemoryIds = memCtx.selected.map((s) => s.id);
   } catch (e) { logEvent(`planner-context 组装失败: ${e.message}`); }
   try {
     plannerSummaryText = generateStateSummary({ workdir: ROOT, write: false });
@@ -418,7 +421,7 @@ async function plan(tasks, state, registry) {
   } catch (e) { logEvent(`state-summary 失败: ${e.message}`); }
 
   const s2 = await runPlannerStage(
-    `你是 Multi-Agent 系统的 Manager。目标：${goal}\n项目目录：${ROOT}\n项目上下文：\n${ctxText}\n\n专家意见（已咨询，直接采信）：\n${consultTexts.join("\n\n") || "（无专家咨询）"}\n\n[CURRENT TASK]\n${goal}\n\n[PROJECT STATE SUMMARY]\n${plannerSummaryText}\n\n[RELEVANT MEMORY（来自 Project Memory，括号内为来源 provenance；仅参考，不强制引用）]\n${plannerCtxText}\n\n综合生成结构化 Plan 与任务 DAG。用 Write 工具把结果 JSON 写入 ${stage2File}（只含 JSON 对象，无 markdown）：\n{"plan":{"goal":"…","assumptions":["…"],"expert_consultations":["…"],"risks":["…"],"architecture_decisions":[{"decision":"…","rationale":"…","alternatives":["…"]}]},"tasks":[{"id":"TASK-001","title":"…","description":"…","required_capability":"analysis|coding|review|research|architecture","dependencies":["TASK-00X"],"acceptance_criteria":["…"],"expected_output":"…","relevant_files":["…"],"constraints":["…"],"requires_review":true}]}\n规则：1) id 递增；2) 依赖只能是已出现的任务 id，保证无环；3) 分析/架构任务在前，编码依赖它们，测试/审查依赖编码；4) 任务粒度适合单个 worker 独立完成；5) 验收标准必须可执行："run: node test.js"（exit 0）或 "file: src/x.js"（存在）；file: 只允许静态产物，禁止把运行时生成的数据文件（todos.json/*.db/日志）作为 file: 验收，这类用 run:；6) requires_review 为布尔值，必须显式给出：涉及核心数据读写/持久化、对外 API、安全或权限、多模块集成关键路径、不可逆改动的任务设 true（worker 自报 completed 后仍由独立 Reviewer 核验）；纯内部、低风险、可由验收命令完全覆盖的简单任务设 false；7) plan.architecture_decisions 显式记录本规划中做出的关键架构/设计取舍（如数据模型与状态存储方式、复用现有模块还是新建、接口形态、扩展点选择），每条含 decision/rationale/alternatives；这些决策会沉淀为长期 Memory 供后续会话复用，没有关键取舍时给空数组。`,
+    `你是 Multi-Agent 系统的 Manager。目标：${goal}\n项目目录：${ROOT}\n项目上下文：\n${ctxText}\n\n专家意见（已咨询，直接采信）：\n${consultTexts.join("\n\n") || "（无专家咨询）"}\n\n[CURRENT TASK]\n${goal}\n\n[PROJECT STATE SUMMARY]\n${plannerSummaryText}\n\n[RELEVANT MEMORY（来自 Project Memory，括号内为来源 provenance；仅参考，不强制引用）]\n${plannerCtxText}\n\n综合生成结构化 Plan 与任务 DAG。用 Write 工具把结果 JSON 写入 ${stage2File}（只含 JSON 对象，无 markdown）：\n{"plan":{"goal":"…","assumptions":["…"],"expert_consultations":["…"],"risks":["…"],"architecture_decisions":[{"decision":"…","rationale":"…","alternatives":["…"]}],"memory_refs":[{"memory_id":"decision-xxxx","affected_output":"TASK-002","stance":"adopted|rejected|modified|superseded","effect":"…","reason":"…"}]},"tasks":[{"id":"TASK-001","title":"…","description":"…","required_capability":"analysis|coding|review|research|architecture","dependencies":["TASK-00X"],"acceptance_criteria":["…"],"expected_output":"…","relevant_files":["…"],"constraints":["…"],"requires_review":true}]}\n规则：1) id 递增；2) 依赖只能是已出现的任务 id，保证无环；3) 分析/架构任务在前，编码依赖它们，测试/审查依赖编码；4) 任务粒度适合单个 worker 独立完成；5) 验收标准必须可执行："run: node test.js"（exit 0）或 "file: src/x.js"（存在）；file: 只允许静态产物，禁止把运行时生成的数据文件（todos.json/*.db/日志）作为 file: 验收，这类用 run:；6) requires_review 为布尔值，必须显式给出：涉及核心数据读写/持久化、对外 API、安全或权限、多模块集成关键路径、不可逆改动的任务设 true（worker 自报 completed 后仍由独立 Reviewer 核验）；纯内部、低风险、可由验收命令完全覆盖的简单任务设 false；7) plan.architecture_decisions 显式记录本规划中做出的关键架构/设计取舍（如数据模型与状态存储方式、复用现有模块还是新建、接口形态、扩展点选择），每条含 decision/rationale/alternatives；这些决策会沉淀为长期 Memory 供后续会话复用，没有关键取舍时给空数组；8) plan.memory_refs 记录你**实际使用**了上面 [RELEVANT MEMORY] 中的哪些条目（这是审计声明，不是形式要求）：仅当你确实依据某条 memory 做出了本计划中的具体取舍时才列入，未使用就写空数组，禁止为了填空而引用。每条：memory_id 必须逐字取自上面列出的条目（形如 decision-xxxxxxxx / knowledge-xxxxxxxx / agent_memory-xxx；禁止编造或引用未列出的 ID），affected_output 必须是本输出中可定位的稳定标识（TASK-00X / architecture_decisions[i] / assumptions[i] / risks[i]），stance 取 adopted|rejected|modified|superseded（**推翻或修正历史决策同样属于"使用"**，请如实标注 rejected/modified 并说明理由），effect 写明具体继承的设计约束/禁止条件/技术规则（禁止"帮助了规划"这类空泛描述），reason 简述依据。`,
     stage2File,
     semanticPlannerOutputComplete
   );
@@ -439,6 +442,32 @@ async function plan(tasks, state, registry) {
   } catch (e) {
     logEvent(`plan: 任务规范化异常（回退 DAG）: ${e.message}`);
     parsed = null;
+  }
+  // V0.5.7：Memory Use Attribution —— 校验 Planner 的 memory_refs 声明并落盘审计（仅审计，不改变采纳逻辑）
+  if (parsed && Array.isArray(parsed.tasks) && parsed.tasks.length > 0) {
+    try {
+      const rawRefs = parsed.plan && parsed.plan.memory_refs;
+      const attr = validateMemoryRefs(rawRefs, { contextMemoryIds, plan: parsed });
+      if (parsed.plan && typeof parsed.plan === "object") {
+        parsed.plan = { ...parsed.plan, memory_refs: attr.valid, memory_refs_rejected: attr.invalid };
+      }
+      logEvent(`memory-attribution declared=${attr.summary.declared} valid=${attr.summary.validCount} invalid=${attr.summary.invalidCount} context=${attr.summary.contextMemoryCount} unused=${attr.summary.contextUnusedCount}`);
+      for (const inv of attr.invalid) logEvent(`memory-attribution-reject ${inv.code}: ${inv.memory_id || "(no id)"} → ${String(inv.affected_output || "").slice(0, 40)}`);
+      try {
+        fs.mkdirSync(RESULTS_DIR, { recursive: true });
+        writeJsonAtomic(path.join(RESULTS_DIR, "_memory-attribution.json"), {
+          goal,
+          at: nowIso(),
+          contextMemoryIds,
+          declared: Array.isArray(rawRefs) ? rawRefs : [],
+          valid: attr.valid,
+          invalid: attr.invalid,
+          summary: attr.summary,
+        });
+      } catch (e) { logEvent(`memory-attribution 落盘失败: ${e.message}`); }
+    } catch (e) {
+      logEvent(`memory-attribution 校验异常（不影响规划）: ${e.message}`);
+    }
   }
   if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
     // 回退：用简单规则生成一个最小 DAG（保证可闭环）
@@ -809,6 +838,86 @@ export function truncateMiddle(text, max) {
  *  - stderr：同上，上限 maxStderr（默认 400 字符）
  *  - 整块上限 maxTotal（默认 2400 字符，超出则整体中间截断）
  */
+/**
+ * 校验 Planner 的 Memory 使用声明（V0.5.7 / `plan.memory_refs`）。
+ *
+ * 定位（重要）：**Attribution 是审计声明，不是 Runtime 判定的因果真理。**
+ * Runtime 只做机械可验证的检查，绝不把「Planner 声称用过」当成「Memory 造成了该决策」：
+ *  1) `memory_id` 必须逐字属于**本轮 Planner Context**（而不是历史 Memory 库里的任意条目）
+ *  2) `affected_output` 必须能定位到最终 Planner 输出中的稳定标识
+ *     （`TASK-xxx` / `architecture_decisions[i]` / `assumptions[i]` / `risks[i]`）
+ *  3) `stance ∈ {adopted, rejected, modified, superseded}`（缺省按 adopted 处理并标注）
+ *  4) `effect` 必须是具体描述（拒绝空泛套话，如「帮助了规划」）
+ * 非法引用不被静默接受：进入 `invalid[]` 并携带结构化 code。
+ *
+ * @param {Array} refs Planner 原始声明（`plan.memory_refs`）
+ * @param {{contextMemoryIds?: string[], plan?: object}} opts
+ * @returns {{valid: Array, invalid: Array, summary: object}}
+ */
+export function validateMemoryRefs(refs, { contextMemoryIds = [], plan = null } = {}) {
+  const ctxIds = new Set((contextMemoryIds || []).map(String));
+  const planRoot = (plan && plan.plan) || {};
+  const tasks = (plan && plan.tasks) || [];
+  const taskIds = new Set(tasks.map((t) => String((t && t.id) || "")));
+  const counts = {
+    architecture_decisions: (planRoot.architecture_decisions || []).length,
+    assumptions: (planRoot.assumptions || []).length,
+    risks: (planRoot.risks || []).length,
+  };
+  const STANCES = ["adopted", "rejected", "modified", "superseded"];
+  const VAGUE = /^(帮助|有帮|参考|相关|有用|用于规划|遵循了规划|overall|help(s|ed)?|used|n\/a)$/i;
+
+  const valid = [];
+  const invalid = [];
+  const list = Array.isArray(refs) ? refs : [];
+  if (refs != null && !Array.isArray(refs)) invalid.push({ code: "not_an_array", reason_text: "plan.memory_refs 必须是数组" });
+
+  for (const r of list) {
+    if (!r || typeof r !== "object" || Array.isArray(r)) { invalid.push({ raw: r, code: "malformed_ref", reason_text: "每条引用必须是对象" }); continue; }
+    const entry = {
+      memory_id: String(r.memory_id || "").trim(),
+      affected_output: String(r.affected_output || "").trim(),
+      stance: String(r.stance || "adopted").trim().toLowerCase(),
+      effect: String(r.effect || "").trim(),
+      reason: String(r.reason || "").trim(),
+      explicit_stance: Boolean(r.stance),
+    };
+    if (!entry.memory_id) { invalid.push({ ...entry, code: "missing_memory_id", reason_text: "缺少 memory_id" }); continue; }
+    if (!ctxIds.has(entry.memory_id)) { invalid.push({ ...entry, code: "invalid_memory_reference", reason_text: "memory_id 不属于本轮 Planner Context（可能引用了历史库条目或编造）" }); continue; }
+    if (!entry.affected_output) { invalid.push({ ...entry, code: "missing_affected_output", reason_text: "缺少 affected_output" }); continue; }
+
+    let locatable = false;
+    const mDec = entry.affected_output.match(/^architecture_decisions\[(\d+)\]$/);
+    const mAsm = entry.affected_output.match(/^assumptions\[(\d+)\]$/);
+    const mRisk = entry.affected_output.match(/^risks\[(\d+)\]$/);
+    if (/^TASK-[\w-]+$/.test(entry.affected_output)) locatable = taskIds.has(entry.affected_output);
+    else if (mDec) locatable = Number(mDec[1]) < counts.architecture_decisions;
+    else if (mAsm) locatable = Number(mAsm[1]) < counts.assumptions;
+    else if (mRisk) locatable = Number(mRisk[1]) < counts.risks;
+    else if (/^plan\./i.test(entry.affected_output)) locatable = true;
+    if (!locatable) { invalid.push({ ...entry, code: "invalid_affected_output", reason_text: "affected_output 无法定位到输出中的稳定标识（允许 TASK-xxx / architecture_decisions[i] / assumptions[i] / risks[i]）" }); continue; }
+
+    if (!STANCES.includes(entry.stance)) { invalid.push({ ...entry, code: "invalid_stance", reason_text: `stance 非法（允许 ${STANCES.join("|")}）` }); continue; }
+    if (entry.effect.length < 6 || VAGUE.test(entry.effect)) { invalid.push({ ...entry, code: "vague_effect", reason_text: "effect 过于空泛，必须写明具体继承/禁止/规则" }); continue; }
+
+    valid.push(entry);
+  }
+
+  const usedIds = new Set(valid.map((v) => v.memory_id));
+  return {
+    valid,
+    invalid,
+    summary: {
+      declared: list.length,
+      validCount: valid.length,
+      invalidCount: invalid.length,
+      contextMemoryCount: ctxIds.size,
+      contextUnusedCount: [...ctxIds].filter((id) => !usedIds.has(id)).length,
+      stances: valid.reduce((acc, v) => { acc[v.stance] = (acc[v.stance] || 0) + 1; return acc; }, {}),
+    },
+  };
+}
+
 export function formatValidationEvidence(validation, { maxTotal = 2400, maxStdout = 600, maxStderr = 400 } = {}) {
   if (!validation || !Array.isArray(validation.checks) || validation.checks.length === 0) return "";
   const total = validation.checks.length;
