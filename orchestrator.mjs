@@ -630,8 +630,9 @@ async function dispatchAndCollect(task, contract) {
 // ── 验收 ─────────────────────────────────────────────────────────────────────
 function validateTask(task) {
   const checks = task.acceptance_criteria || [];
-  if (checks.length === 0) return { pass: true, detail: "无验收命令，默认通过" };
+  if (checks.length === 0) return { pass: true, detail: "无验收命令，默认通过", checks: [] };
   const pass = [];
+  const structured = []; // V0.5.6（Bug #9）：结构化验收证据，供 Review Gate 复用（不重跑命令）
   for (const c of checks) {
     // 支持形如 `run: node test.js` / `file: src/x.js` / 普通文本说明
     let ok;
@@ -640,6 +641,7 @@ function validateTask(task) {
       const norm = normalizeRunCommand(c.slice(4));
       if (!norm.valid) {
         pass.push({ c, ok: false, ev: `拒绝执行[${norm.code}]: ${norm.reason}（原始: ${norm.raw.slice(0, 80)}）` });
+        structured.push({ kind: "run", raw: c, command: null, exitCode: null, stdout: "", stderr: "", status: "REJECTED", reason: `${norm.code}: ${norm.reason}` });
         logEvent(`validation-reject ${task.id} ${norm.code}: ${norm.raw.slice(0, 120)}`);
         continue;
       }
@@ -647,11 +649,28 @@ function validateTask(task) {
       ok = r.code === 0;
       const cleaned = norm.stripped ? `（已剥离说明: ${norm.stripped.slice(0, 60)}）` : "";
       pass.push({ c, ok, ev: ok ? `exit 0${cleaned}` : `exit ${r.code}: ${r.err.slice(0, 200)}${cleaned}` });
+      structured.push({
+        kind: "run",
+        raw: c,
+        command: norm.command,
+        strippedNote: norm.stripped || null,
+        exitCode: typeof r.code === "number" ? r.code : null,
+        stdout: String(r.out || ""),
+        stderr: String(r.err || ""),
+        status: ok ? "PASS" : "FAIL",
+      });
     }
-    else if (c.startsWith("file:")) { ok = fs.existsSync(path.join(ROOT, c.slice(5).trim())); pass.push({ c, ok, ev: ok ? "存在" : "缺失" }); }
-    else { pass.push({ c, ok: true, ev: "人工核对项（自动通过）" }); }
+    else if (c.startsWith("file:")) {
+      ok = fs.existsSync(path.join(ROOT, c.slice(5).trim()));
+      pass.push({ c, ok, ev: ok ? "存在" : "缺失" });
+      structured.push({ kind: "file", raw: c, path: c.slice(5).trim(), status: ok ? "PASS" : "FAIL", detail: ok ? "文件存在" : "文件缺失" });
+    }
+    else {
+      pass.push({ c, ok: true, ev: "人工核对项（自动通过）" });
+      structured.push({ kind: "manual", raw: c, status: "MANUAL", detail: "人工核对项（自动通过）" });
+    }
   }
-  return { pass: pass.every((p) => p.ok), detail: pass.map((p) => `${p.ok ? "✓" : "✗"} ${p.c} ${p.ev}`).join("; ") };
+  return { pass: pass.every((p) => p.ok), detail: pass.map((p) => `${p.ok ? "✓" : "✗"} ${p.c} ${p.ev}`).join("; "), checks: structured };
 }
 
 // ── P0-04：并行执行 ─────────────────────────────────────────────────────────
@@ -764,12 +783,77 @@ function scopeViolations(task) {
   });
 }
 
-/** Review Gate：独立 Reviewer 对任务产出给结构化 verdict（PASS/FAIL） */
-async function reviewTask(task, ctx) {
-  const resFile = path.join(RESULTS_DIR, `_review-${task.id}.json`);
+/**
+ * 中间截断（保留首尾最有价值信息）。
+ * @returns {string}
+ */
+export function truncateMiddle(text, max) {
+  const s = String(text == null ? "" : text);
+  if (s.length <= max) return s;
+  const head = Math.ceil(max * 0.65);
+  const tail = Math.max(0, max - head);
+  const cut = s.length - (head + tail);
+  return `${s.slice(0, head)}\n…[truncated ${cut} chars]…\n${tail > 0 ? s.slice(-tail) : ""}`;
+}
+
+/**
+ * 把 validateTask() 的结构化结果格式化为注入 Reviewer 的客观证据块（V0.5.6 / Bug #9）。
+ *
+ * 语义边界（重要）：
+ *  - 本块只陈述**调度器实际执行得到的事实**（command / exit_code / stdout / stderr / status）；
+ *  - 它**不构成通过结论**，不得替代 Review Gate；Reviewer 必须结合产出物与 Review 规则独立判断；
+ *  - 与 Worker 自述（可能包含"未执行/失败"等描述）**并列呈现**，冲突由 Reviewer 自行裁定。
+ *
+ * 截断策略（确定性，无需新日志系统）：
+ *  - stdout：首 65% + 尾 35%，上限 maxStdout（默认 600 字符）
+ *  - stderr：同上，上限 maxStderr（默认 400 字符）
+ *  - 整块上限 maxTotal（默认 2400 字符，超出则整体中间截断）
+ */
+export function formatValidationEvidence(validation, { maxTotal = 2400, maxStdout = 600, maxStderr = 400 } = {}) {
+  if (!validation || !Array.isArray(validation.checks) || validation.checks.length === 0) return "";
+  const total = validation.checks.length;
+  const okCount = validation.checks.filter((c) => c.status === "PASS").length;
+  const lines = [`[VALIDATION EVIDENCE（调度器实际执行结果，客观事实；与 Worker 自述独立）]`];
+  lines.push(`validation_status: ${validation.pass ? "PASS" : "FAIL"}（${okCount}/${total} 项通过）`);
+  lines.push(`note: 本证据不构成通过结论；请结合产出物与 Review 规则独立判断。`);
+  validation.checks.forEach((c, i) => {
+    lines.push("");
+    lines.push(`--- 验收项 ${i + 1}/${total} ---`);
+    lines.push(`criterion: ${String(c.raw || "").slice(0, 200)}`);
+    if (c.kind === "run") {
+      lines.push(`command: ${c.command || "(未执行：命令被拒绝)"}`);
+      lines.push(`exit_code: ${c.exitCode === null ? "n/a" : c.exitCode}`);
+      lines.push(`status: ${c.status}`);
+      if (c.reason) lines.push(`reject_reason: ${c.reason}`);
+      if (c.strippedNote) lines.push(`note: 已从原命令剥离说明文字「${String(c.strippedNote).slice(0, 80)}」`);
+      if (c.stdout) lines.push(`stdout:\n${truncateMiddle(c.stdout, maxStdout)}`);
+      if (c.stderr) lines.push(`stderr:\n${truncateMiddle(c.stderr, maxStderr)}`);
+    } else {
+      lines.push(`status: ${c.status}`);
+      if (c.detail) lines.push(`detail: ${c.detail}`);
+    }
+  });
+  return truncateMiddle(lines.join("\n"), maxTotal);
+}
+
+/**
+ * 构造 Review Gate 的 Reviewer prompt（V0.5.6 / Bug #9：把调度器验收证据交给 Reviewer）。
+ * 同时保留 Worker 原始报告（task.result）——两组信息并列，冲突由 Reviewer 裁定。
+ */
+export function buildReviewPrompt(task, validation, resFile) {
   const files = ((task.result && task.result.modified_files) || []).join(", ") || "(无文件变更)";
   const rules = (task.review_rules || []).join("; ") || "检查产出是否符合任务要求与验收标准，是否存在明显缺陷";
-  const prompt = `你是 Review Gate（独立 Reviewer）。对任务 ${task.id} 的产出做严格审查。\n任务：${task.title}\n约束/验收：${(task.constraints || []).join("; ")}${(task.acceptance_criteria || []).join(" | ")}\n改动文件：${files}\nReview 规则（必须逐条检查）：${rules}\n用 Read 工具读取改动文件核验。用 Write 工具把 verdict JSON 写入 ${resFile}（只含 JSON 对象，无 markdown）：{"verdict":"PASS|FAIL","reason":"…","checks":[{"name":"…","pass":true|false}]}`;
+  const workerSummary = task.result && task.result.summary ? String(task.result.summary).slice(0, 800) : "(无)";
+  const workerTests = ((task.result && task.result.tests) || []).map((t) => `${t.name || "?"}=${t.result || "?"}`).join(", ") || "(无)";
+  const workerIssues = ((task.result && task.result.issues) || []).map((x) => String(x).slice(0, 200)).join("; ") || "(无)";
+  const evidence = formatValidationEvidence(validation);
+  return `你是 Review Gate（独立 Reviewer）。对任务 ${task.id} 的产出做严格审查。\n任务：${task.title}\n约束/验收：${(task.constraints || []).join("; ")}${(task.acceptance_criteria || []).join(" | ")}\n改动文件：${files}\nReview 规则（必须逐条检查）：${rules}\n\n[WORKER REPORT（Worker 自述，可能有误或受限；仅供参考）]\nsummary: ${workerSummary}\ntests: ${workerTests}\nissues: ${workerIssues}\n${evidence ? `\n${evidence}\n` : "\n[VALIDATION EVIDENCE]\n（本任务无已执行的验收命令，无法提供客观执行证据）\n"}\n判断要求：基于「产出物 + WORKER REPORT + VALIDATION EVIDENCE + Review 规则」独立判断；当 Worker 自述与调度器执行证据冲突时，以可复核的事实为准并在 reason 中说明。用 Read 工具读取改动文件核验。用 Write 工具把 verdict JSON 写入 ${resFile}（只含 JSON 对象，无 markdown）：{"verdict":"PASS|FAIL","reason":"…","checks":[{"name":"…","pass":true|false}]}`;
+}
+
+/** Review Gate：独立 Reviewer 对任务产出给结构化 verdict（PASS/FAIL） */
+async function reviewTask(task, ctx, validation = null) {
+  const resFile = path.join(RESULTS_DIR, `_review-${task.id}.json`);
+  const prompt = buildReviewPrompt(task, validation, resFile);
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
   // V0.5.3：Reviewer 稳定性——超时可配（默认 8 分钟，原 3 分钟对复杂评审不足）、有限重试、捕获诊断信息
   const reviewTimeoutMs = parseInt(process.env.DSH_ORCH_REVIEW_TIMEOUT_MS || String(8 * 60 * 1000), 10);
@@ -926,8 +1010,8 @@ async function runTask(task, registry, ctx, tasksRef, stateRef) {
     if (v.pass) {
       // V0.4-C：Review Gate —— 执行成功且命令验收通过后，仍需独立 Review（todo→running→review→done）
       if (task.requires_review) {
-        const rv = await reviewTask(task, ctx);
-        recordRun(task, "review", { review: rv, messages, outOfScope: scopeViolations(task) });
+        const rv = await reviewTask(task, ctx, v); // V0.5.6（Bug #9）：把调度器已执行的验收证据交给 Reviewer（复用，不重跑）
+        recordRun(task, "review", { review: rv, validation: { pass: v.pass, checks: v.checks }, messages, outOfScope: scopeViolations(task) });
         if (rv.kind && rv.kind !== "verdict") {
           // V0.5.3：Reviewer 基础设施失败（进程/超时/非法 verdict）。安全语义不变（绝不允许 PASS），
           // 但不用 `review-fail:` 前缀，避免被 Evaluator 判为「计划问题」而进入无意义的 retry→replan 循环。
