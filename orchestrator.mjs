@@ -161,9 +161,21 @@ async function runPlannerStage(prompt, resFile, isComplete = null) {
   const deadline = Date.now() + 7 * 60 * 1000; // 阶段2 含专家意见上下文，给足时间
   // Bug #4 修复：等待文件写完（大小稳定）再解析，避免读到半写内容而误判「未产出」
   // Bug #7 修复：叠加语义完成谓词——文件稳定 ≠ 内容完成（如 {tasks:[]} 之类的中间态需继续等待）
-  const raw = await waitForStableJson(resFile, deadline, isComplete ? { isComplete } : {});
+  // Bug #8 修复：陈旧非法 JSON 提前失败（区分于"仍在写入"，不再空等 deadline）；仅增加错误分类
+  let staleInfo = null;
+  const raw = await waitForStableJson(resFile, deadline, {
+    ...(isComplete ? { isComplete } : {}),
+    onStaleInvalid: (info) => { staleInfo = info; },
+  });
   if (raw === null) {
-    if (fs.existsSync(resFile)) logEvent(`planner: ${path.basename(resFile)} 存在但无法解析（放弃）`);
+    if (staleInfo) {
+      // 文件已长期稳定但内容永久非法 → 提前放弃（旧行为：空等至 420s deadline）
+      logEvent(`planner-output-invalid ${path.basename(resFile)} size=${staleInfo.size} invalidStable=${staleInfo.invalidStable} elapsed=${(staleInfo.elapsedMs / 1000).toFixed(1)}s`);
+    } else if (Date.now() >= deadline) {
+      logEvent(`planner-output-timeout ${path.basename(resFile)}（deadline 到期仍未获得可用输出）`);
+    } else if (fs.existsSync(resFile)) {
+      logEvent(`planner: ${path.basename(resFile)} 存在但无法解析（放弃）`);
+    }
     return null;
   }
   if (Array.isArray(raw)) return raw; // 数组格式（如 replan 输出）
@@ -272,24 +284,52 @@ export function readJsonStrict(file) {
  * 仅当「大小稳定 + JSON 可解析 + 语义完整」三者同时满足才返回。
  * 调用方可借此表达「文件稳定 ≠ 内容完成」（例如 Planner 输出需 tasks 非空）。
  * 谓词永不满足时，deadline 到期返回最后一次可解析的结果（由调用方决定是否降级）。
+ *
+ * V0.5.5（Bug #8）：新增「陈旧非法 JSON」判定——区分「仍在写的半写」与「已停止变化但内容永久非法」：
+ *  - 文件大小**发生变化** ⇒ 视为仍在写入：重置非法计数（完整保留 Bug #4 半写保护）
+ *  - 大小稳定且解析失败 ⇒ 累计 invalidStable；达到 invalidStableSamples 仍非法
+ *    ⇒ 判定 `stale_invalid_json`，**提前返回 null**（不再空等 deadline），并通过 onStaleInvalid
+ *    回调报告原因（错误分类；不改变调用方既有的失败/降级语义，不引入新重试）
+ *  - 「合法但语义未完成（Bug #7）」仍继续等待，与陈旧非法互不影响
+ *
+ * @param {string} file
+ * @param {number} deadline epoch ms
+ * @param {object} [opts]
+ * @param {number} [opts.pollMs=500]
+ * @param {number} [opts.stableSamples=3]          大小连续不变次数（"稳定"判据）
+ * @param {number} [opts.invalidStableSamples=10]  "稳定但非法"连续次数上限（stale 判据）
+ * @param {Function|null} [opts.isComplete]        语义完成谓词（Bug #7）
+ * @param {Function|null} [opts.onStaleInvalid]    陈旧非法回调 (info) => void
  */
-export async function waitForStableJson(file, deadline, { pollMs = 500, stableSamples = 3, isComplete = null } = {}) {
+export async function waitForStableJson(file, deadline, { pollMs = 500, stableSamples = 3, invalidStableSamples = parseInt(process.env.DSH_ORCH_PLANNER_INVALID_STABLE_SAMPLES || "10", 10), isComplete = null, onStaleInvalid = null } = {}) {
+  const startedAt = Date.now();
   let lastSize = -1;
   let stable = 0;
   let lastParsed = null;
+  let invalidStable = 0; // "大小稳定但不可解析"累计次数（文件一变化即清零 ⇒ 半写不会被误判）
   while (Date.now() < deadline) {
     if (fs.existsSync(file)) {
       let size = 0;
       try { size = fs.statSync(file).size; } catch { size = 0; }
       if (size > 0) {
-        if (size === lastSize) stable++; else { stable = 0; lastSize = size; }
+        if (size === lastSize) stable++; else { stable = 0; lastSize = size; invalidStable = 0; }
         if (stable >= stableSamples) {
           const parsed = readJsonStrict(file);
           if (parsed !== null) {
+            invalidStable = 0;
             lastParsed = parsed;
             if (typeof isComplete !== "function" || isComplete(parsed)) return parsed;
+          } else {
+            // 大小稳定但不可解析：先按 Bug #4 继续等待；若长期稳定不变 ⇒ 陈旧非法（Bug #8）提前放弃
+            invalidStable++;
+            if (invalidStable >= invalidStableSamples) {
+              if (typeof onStaleInvalid === "function") {
+                onStaleInvalid({ reason: "stale_invalid_json", file, size, invalidStable, elapsedMs: Date.now() - startedAt });
+              }
+              return null;
+            }
           }
-          stable = 0; // 大小稳定但（不可解析 或 语义未完成）：继续等待（LLM 仍在写入）
+          stable = 0; // 大小稳定但（不可解析 或 语义未完成）：继续等待
         }
       }
     }
