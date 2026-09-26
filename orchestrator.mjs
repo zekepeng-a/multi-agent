@@ -155,29 +155,51 @@ export function semanticConsultationsComplete(parsed) {
 
 async function runPlannerStage(prompt, resFile, isComplete = null) {
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
-  fs.rmSync(resFile, { force: true });
-  const child = spawn(WORKER_CMD, ["-p", prompt, "--max-turns", "30", "--allowedTools", WORKER_TOOLS], { cwd: ROOT, stdio: "ignore" });
+  // ── V0.5.8（Bug #10）Two-Phase Planner Output Publish ──────────────────────
+  // DRAFT(.tmp) → VALIDATED(形状+语义完整) → FINALIZED(done 标记/稳定回退) → PUBLISH(final)
+  // 关键：LLM **只**被允许写 .tmp；final 由 Runtime 校验后原子发布 ⇒ 采纳内容与发布内容恒等。
+  const tmpFile = `${resFile}.tmp`;
+  const doneFile = `${resFile}.done`;
+  // 本轮开始前清理：旧 final/tmp/done 一律不得污染本次运行（旧 plan 绝不能被采纳）
+  for (const f of [resFile, tmpFile, doneFile]) { try { fs.rmSync(f, { force: true }); } catch { /* 不存在 */ } }
+
+  const finalizeInstruction = `\n\n【发布协议（必须遵守，不得省略）】\n1) 结果 JSON **只写入** ${tmpFile}（不要写 ${resFile}，不要创建其它结果文件）；\n2) 确认 ${tmpFile} 已完整写入（JSON 合法、无占位符、无待填字段）之后，**再用 Write 工具写入完成标记** ${doneFile}（内容写 ok 即可）；\n3) 若被中断或无法完成，不要写完成标记。`;
+  const effectivePrompt = `${String(prompt).split(resFile).join(tmpFile)}${finalizeInstruction}`;
+
+  const child = spawn(WORKER_CMD, ["-p", effectivePrompt, "--max-turns", "30", "--allowedTools", WORKER_TOOLS], { cwd: ROOT, stdio: "ignore" });
   child.on("error", (e) => logEvent(`planner: spawn 失败 ${e.message}`));
   const deadline = Date.now() + 7 * 60 * 1000; // 阶段2 含专家意见上下文，给足时间
   // Bug #4 修复：等待文件写完（大小稳定）再解析，避免读到半写内容而误判「未产出」
   // Bug #7 修复：叠加语义完成谓词——文件稳定 ≠ 内容完成（如 {tasks:[]} 之类的中间态需继续等待）
-  // Bug #8 修复：陈旧非法 JSON 提前失败（区分于"仍在写入"，不再空等 deadline）；仅增加错误分类
+  // Bug #8 修复：陈旧非法 JSON 提前失败（区分于"仍在写入"，不再空等 deadline）
+  // Bug #10 修复：只有 FINALIZED artifact 才被采纳（形状完整 + done 标记/稳定回退），骨架一律继续等待
   let staleInfo = null;
-  const raw = await waitForStableJson(resFile, deadline, {
-    ...(isComplete ? { isComplete } : {}),
+  const fin = await waitForFinalizedPlannerOutput({
+    tmpFile,
+    doneFile,
+    deadline,
+    isComplete,
     onStaleInvalid: (info) => { staleInfo = info; },
   });
-  if (raw === null) {
+  if (!fin.ok) {
     if (staleInfo) {
-      // 文件已长期稳定但内容永久非法 → 提前放弃（旧行为：空等至 420s deadline）
-      logEvent(`planner-output-invalid ${path.basename(resFile)} size=${staleInfo.size} invalidStable=${staleInfo.invalidStable} elapsed=${(staleInfo.elapsedMs / 1000).toFixed(1)}s`);
+      logEvent(`planner-output-invalid ${path.basename(tmpFile)} size=${staleInfo.size} invalidStable=${staleInfo.invalidStable} elapsed=${(staleInfo.elapsedMs / 1000).toFixed(1)}s`);
     } else if (Date.now() >= deadline) {
-      logEvent(`planner-output-timeout ${path.basename(resFile)}（deadline 到期仍未获得可用输出）`);
-    } else if (fs.existsSync(resFile)) {
-      logEvent(`planner: ${path.basename(resFile)} 存在但无法解析（放弃）`);
+      logEvent(`planner-output-timeout ${path.basename(tmpFile)}（deadline 到期仍未获得形状完整且已完成的输出）`);
+    } else {
+      logEvent(`planner-output-not-finalized ${path.basename(tmpFile)} reason=${fin.reason}`);
     }
+    try { fs.rmSync(tmpFile, { force: true }); } catch { /* 清理 */ }
     return null;
   }
+  // PUBLISH：原子发布 tmp → final（final 只可能是校验通过的完整内容）
+  let mode = "n/a";
+  try { mode = publishPlannerOutput(tmpFile, resFile); }
+  catch (e) { logEvent(`planner-publish 失败: ${e.message}`); return null; }
+  try { fs.rmSync(doneFile, { force: true }); } catch { /* 清理标记 */ }
+  const size = (() => { try { return fs.statSync(resFile).size; } catch { return -1; } })();
+  logEvent(`planner-finalized ${path.basename(resFile)} mode=${fin.mode} publish=${mode} size=${size} elapsed=${(fin.meta.elapsedMs / 1000).toFixed(1)}s`);
+  const raw = fin.parsed;
   if (Array.isArray(raw)) return raw; // 数组格式（如 replan 输出）
   return raw; // 对象格式（plan/consultations）
 }
@@ -256,6 +278,135 @@ export function classifyReviewOutcome({ exitCode = null, timedOut = false, raw =
   if (timedOut) return { kind: "timeout", code: "review_timeout", reason: "Reviewer 超时未产出 verdict", detail: "" };
   if (exitCode === null) return { kind: "process_failure", code: "review_process_nofile", reason: "Reviewer 进程未产出结果文件且未正常退出", detail: String(stderrTail).slice(-300) };
   return { kind: "process_failure", code: "review_process_exit", reason: `Reviewer 进程异常退出（exit ${exitCode}）且无结果文件`, detail: String(stderrTail).slice(-300) };
+}
+
+/**
+ * Planner 输出的「形状完整性」判据（V0.5.8 / Bug #10：拦截合法但不完整的**中间骨架**）。
+ *
+ * 与 V0.5.4 的 semanticPlannerOutputComplete 的区别：
+ *  - 语义谓词只回答「有没有任务」（骨架也满足）
+ *  - 本谓词额外要求「内容不像未填充的模板」：tasks 非空且 normalize 后有合法任务、
+ *    plan/architecture_decisions/memory_refs 类型正确、**递归扫描无占位符形态**
+ *    （`@M1@` / `__TASK007__` / `@MR1@` 等）、每个任务 id/title 非占位符。
+ * 真正的完成语义仍由 done 标记或稳定回退确认，见 waitForFinalizedPlannerOutput()。
+ */
+export function plannerOutputShapeComplete(parsed) {
+  if (!parsed) return false;
+  const root = Array.isArray(parsed) ? { tasks: parsed } : parsed;
+  if (!semanticPlannerOutputComplete(root)) return false;
+  const norm = normalizePlannedTasks(root);
+  if (norm.tasks.length === 0) return false;
+
+  const PLACEHOLDER = /^(?:@[\w]{1,12}@|__[A-Za-z0-9_]{1,24}__|\{\{[\w\s-]{1,24}\}\}|<[A-Za-z0-9_\-\s]{1,24}>|\.\.\.|…)$/;
+  const isPlaceholder = (v) => typeof v === "string" && PLACEHOLDER.test(v.trim());
+  const scan = (node, depth = 0) => {
+    if (depth > 6 || node == null) return false;
+    if (typeof node === "string") return isPlaceholder(node);
+    if (Array.isArray(node)) return node.some((x) => scan(x, depth + 1));
+    if (typeof node === "object") return Object.values(node).some((x) => scan(x, depth + 1));
+    return false;
+  };
+
+  if (root.plan && typeof root.plan !== "object") return false;
+  if (root.plan && root.plan.architecture_decisions !== undefined && !Array.isArray(root.plan.architecture_decisions)) return false;
+  if (root.plan && root.plan.memory_refs !== undefined && !Array.isArray(root.plan.memory_refs)) return false;
+  for (const t of norm.tasks) {
+    if (isPlaceholder(t.id) || isPlaceholder(String(t.title || ""))) return false;
+  }
+  // 只扫描「plan 全部字段 + normalize 后的合法任务」：
+  // tasks 数组里会被 normalize 丢弃的非法元素（如 "__TASK007__"）属 Bug #5 的过滤对象，不视为"骨架未填"。
+  return !scan({ plan: root.plan || {}, tasks: norm.tasks });
+}
+
+/**
+ * 等待 Planner 输出的**最终发布版本**（V0.5.8 / Bug #10 Finalization Protocol）。
+ *
+ * 生命周期：DRAFT(.tmp) → VALIDATED(形状完整) → FINALIZED(done 标记或稳定回退) → 由调用方 publish
+ *
+ * 阶段 A：等待 `tmpFile` 稳定且**形状完整**（占位符骨架 / tasks 为空的中间态均继续等待）
+ * 阶段 B：等待显式完成标记 `doneFile`（LLM 写完 .tmp 后再写它）：
+ *         - 出现 ⇒ mode="marker"
+ *         - 未出现但 .tmp 约 8s 完全未变且形状完整 ⇒ mode="stability_fallback"（记录降级）
+ * 失败分类：timeout / stale_invalid（沿用 Bug #8 的 stale 判据）
+ */
+export async function waitForFinalizedPlannerOutput({
+  tmpFile,
+  doneFile,
+  deadline,
+  pollMs = 500,
+  stableSamples = 3,
+  invalidStableSamples = parseInt(process.env.DSH_ORCH_PLANNER_INVALID_STABLE_SAMPLES || "10", 10),
+  isComplete = null,
+  markerWaitMs = parseInt(process.env.DSH_ORCH_PLANNER_MARKER_WAIT_MS || "45000", 10),
+  onStaleInvalid = null,
+} = {}) {
+  const startedAt = Date.now();
+  // 形状校验只适用于「tasks 形态」的输出（阶段2 / replan）。
+  // 阶段1 的输出是 { goal_understanding, expert_consultations }（无 tasks），其完整性由调用方的
+  // isComplete（semanticConsultationsComplete）判定 —— 否则阶段1 永远无法通过形状校验。
+  const shapeCheck = (p) => {
+    if (!p) return false;
+    const isTaskShaped = Array.isArray(p) || (typeof p === "object" && Array.isArray(p.tasks));
+    return isTaskShaped ? plannerOutputShapeComplete(p) : true;
+  };
+  const shapePredicate = (p) => shapeCheck(p) && (typeof isComplete !== "function" || isComplete(p));
+
+  // 阶段 A：等 .tmp 稳定 + 形状完整
+  let staleInfo = null;
+  const parsed = await waitForStableJson(tmpFile, deadline, {
+    pollMs,
+    stableSamples,
+    invalidStableSamples,
+    isComplete: shapePredicate,
+    onStaleInvalid: (info) => { staleInfo = info; if (typeof onStaleInvalid === "function") onStaleInvalid(info); },
+  });
+  if (parsed === null || !shapeCheck(parsed)) {
+    return { ok: false, reason: staleInfo ? "stale_invalid_json" : "timeout", meta: { elapsedMs: Date.now() - startedAt, staleInfo } };
+  }
+
+  // 阶段 B：等显式完成标记（有限等待；未出现则按稳定回退，仍需形状完整）
+  // 注意：每个出口都必须**重新读取** .tmp —— 阶段 A 拿到的是当时的内容，文件可能在之后被更新为最终版本。
+  const markerDeadline = Math.min(deadline, Date.now() + markerWaitMs);
+  let lastSize = -1;
+  let unchanged = 0;
+  const unchangedNeeded = Math.max(2, Math.ceil(8000 / pollMs));
+  const reread = () => {
+    const fresh = readJsonStrict(tmpFile);
+    return fresh && shapeCheck(fresh) && (typeof isComplete !== "function" || isComplete(fresh)) ? fresh : null;
+  };
+  while (Date.now() < markerDeadline) {
+    if (fs.existsSync(doneFile)) {
+      const fresh = reread();
+      if (fresh) return { ok: true, parsed: fresh, mode: "marker", meta: { elapsedMs: Date.now() - startedAt } };
+      // done 已出现但内容尚未通过形状校验（写作者仍在收尾）⇒ 继续等待
+    }
+    let size = -1;
+    try { size = fs.statSync(tmpFile).size; } catch { size = -1; }
+    if (size === lastSize) unchanged++; else { unchanged = 0; lastSize = size; }
+    if (unchanged >= unchangedNeeded) {
+      const fresh = reread();
+      if (fresh) return { ok: true, parsed: fresh, mode: "stability_fallback", meta: { elapsedMs: Date.now() - startedAt, note: "done 标记未出现，按稳定回退发布" } };
+    }
+    await sleep(pollMs);
+  }
+  const fresh = reread();
+  if (fresh) return { ok: true, parsed: fresh, mode: "stability_fallback", meta: { elapsedMs: Date.now() - startedAt, note: "done 标记等待超时，按稳定回退发布" } };
+  return { ok: false, reason: "timeout", meta: { elapsedMs: Date.now() - startedAt } };
+}
+
+/**
+ * 原子发布 Planner 输出（V0.5.8）：tmp → final。
+ * 优先 fs.renameSync（同分区原子替换；Windows 下 Node 采用覆盖语义）；
+ * 失败时回退 copy+rm（final 仍只会是校验通过的完整内容）。
+ * @returns {"rename"|"copy"}
+ */
+export function publishPlannerOutput(tmpFile, finalFile) {
+  try { fs.renameSync(tmpFile, finalFile); return "rename"; }
+  catch (e) {
+    fs.copyFileSync(tmpFile, finalFile);
+    try { fs.rmSync(tmpFile, { force: true }); } catch { /* 已消失 */ }
+    return "copy";
+  }
 }
 
 /**
