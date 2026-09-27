@@ -48,6 +48,9 @@ The **model is configuration**, never hard-coded to a role. Editing `registry.js
 - Run observability (`.ai/runs/*.json` + JSONL + auto-generated report)
 - **Project Memory** (derived layer): Distiller → `memory/{decisions,knowledge,lessons,agents}` → Retriever (BM25-like) → Context Assembly (token budget) → State Summary → Planner
 - Lifecycle auto-refresh of Memory + State Summary after every batch
+- **Planner artifact lifecycle** (R1, V0.5.9): single owner `planner-lifecycle.mjs`; explicit `DRAFT → VALIDATED → FINALIZED → PUBLISHED → ACCEPTED`; the LLM may only write `.tmp`, the runtime validates and publishes; `finalizationMode` (`marker` | `stability_fallback`) is recorded on the artifact itself
+- **Artifact identity** (R3, V0.5.9): `planId` / `parentPlanId` / `rootPlanId` / `planDigest` written to the plan artifact, `tasks.json`, `_memory-attribution.json` and `runs/*.json`; `verifyArtifactIdentity()` mechanically checks the chain (I-PLAN-1..5) and reports `identity_mismatch` instead of silently accepting
+- **Memory use attribution** (V0.5.7): the Planner declares `plan.memory_refs` (auditable self-attribution); the runtime validates each reference against the memories that actually entered the current planner context
 
 ## System architecture
 
@@ -145,6 +148,8 @@ See **[docs/limitations.md](docs/limitations.md)**.
 ## Repository layout
 
 ```
+planner-lifecycle.mjs # Planner artifact lifecycle + Plan identity (R1/R3, V0.5.9)
+file-wait.mjs         # Generic file-wait utilities (stable-JSON wait, atomic publish)
 orchestrator.mjs      # Manager: planning, scheduling, review, replan, run records
 executors.mjs         # Executor adapters (claude-code / dsh-headless / codex)
 distiller.mjs         # Raw history → derived project memory
@@ -152,5 +157,5 @@ retriever.mjs         # BM25-like retrieval over memory
 context.mjs           # Context assembly with token budget
 state-summary.mjs     # Project state summary generator
 tests/                # unit + integration (node:test)
-docs/                 # architecture, memory, installation, configuration, usage, testing, limitations
+docs/                 # architecture, memory, installation, configuration, usage, testing, limitations, releases/
 ```

@@ -43,15 +43,29 @@ The single decision and scheduling hub. Owns:
 
 It is the **only** orchestrator. Nothing else schedules tasks.
 
-## 2. Planner (inside Manager)
+## 2. Planner (Manager orchestration + `planner-lifecycle.mjs`)
 
-Not an independent orchestrator. It is `plan()` within the Manager:
+Not an independent orchestrator. Planning itself is `plan()` within the Manager; its **artifact lifecycle and identity are owned by `planner-lifecycle.mjs`** (R1/R3, V0.5.9):
 
 1. **Phase 1** asks the session brain (Manager LLM) whether expert opinions are needed → `expert_consultations`.
 2. For each consultation, `consultExpert()` dispatches a **real** task to the matched expert Agent (Architect → Codex etc.) and stores the opinion.
 3. **Phase 2** feeds the expert opinions plus **relevant memory** and the **state summary** into the LLM to produce a structured Plan + task DAG.
 
 Planner output = `tasks` array with dependencies, capabilities, acceptance criteria.
+
+**Lifecycle (frozen, R1)** — stage 1 / stage 2 / replan all go through the same entry point (`runPlannerStage` → `finalizePlannerOutput`):
+
+```
+DRAFT(.tmp, written by the LLM only)
+  → VALIDATED(validatePlannerArtifact(kind=stage1|stage2|replan))
+  → FINALIZED(.done marker, or degraded stability_fallback)
+  → PUBLISHED(publishPlannerArtifact: identity injected, final written)
+  → ACCEPTED(consumed by the Manager as the same artifact)
+```
+
+The generic file-wait helper (`file-wait.mjs`) contains **no** planner semantics; the domain validators live only in `planner-lifecycle.mjs`.
+
+**Artifact identity (frozen, R3)**: every planner artifact carries `planId`, `parentPlanId`, `rootPlanId`, `planDigest` and `finalizationMode`. The same identity is written to `tasks.json` (`plan.*`), `_memory-attribution.json` and `runs/*.json`, so `Plan → Task → Run` is traceable. `verifyArtifactIdentity()` checks I-PLAN-1..5 and reports `identity_mismatch` rather than silently accepting a mismatched artifact.
 
 ## 3. Agent Registry (`.ai/agents/registry.json`)
 
