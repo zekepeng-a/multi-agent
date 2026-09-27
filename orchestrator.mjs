@@ -25,6 +25,34 @@ import { resolveExecutor, stripBom } from "./executors.mjs";
 import { assembleContext } from "./context.mjs";
 import { generateStateSummary } from "./state-summary.mjs";
 import { distill } from "./distiller.mjs";
+// R1（V0.5.9）：通用文件等待工具——**不含 Planner 领域知识**
+import { sleep, readJsonStrict, publishFile } from "./file-wait.mjs";
+// R1 + R3（V0.5.9）：Planner Artifact Lifecycle 与 Plan Identity 的唯一 owner
+// 注：仅 import 编排真正使用的符号；其余经下方 re-export 暴露（兼容既有 API）
+import {
+  ARTIFACT_KIND, normalizePlannedTasks, semanticConsultationsComplete,
+  buildPlanId, planIdentityOf, verifyArtifactIdentity,
+  finalizePlannerOutput, publishPlannerArtifact,
+} from "./planner-lifecycle.mjs";
+// 兼容导出：既有测试仍从 orchestrator 取这些符号（实现已迁至 file-wait / planner-lifecycle）
+export { readJsonStrict, waitForStableJson } from "./file-wait.mjs";
+export {
+  normalizePlannedTasks, semanticPlannerOutputComplete, plannerOutputShapeComplete,
+  semanticConsultationsComplete, buildPlanId, computePlanDigest, planIdentityOf, verifyArtifactIdentity,
+  validatePlannerArtifact, canonicalizePlannerArtifact, attachPlanIdentity,
+  finalizePlannerOutput, publishPlannerArtifact, ARTIFACT_KIND, PLANNER_PHASE, FINALIZATION_MODE,
+} from "./planner-lifecycle.mjs";
+/** 兼容层：委托 lifecycle 的 finalizePlannerOutput，保持 V0.5.8 的返回字段（mode/parsed/reason） */
+export async function waitForFinalizedPlannerOutput(opts = {}) {
+  const { tmpFile, doneFile, deadline, pollMs, stableSamples, invalidStableSamples, isComplete, markerWaitMs, onStaleInvalid } = opts;
+  const kind = isComplete === semanticConsultationsComplete ? ARTIFACT_KIND.STAGE1 : ARTIFACT_KIND.STAGE2;
+  const r = await finalizePlannerOutput({ tmpFile, doneFile, kind, deadline, pollMs, stableSamples, invalidStableSamples, markerWaitMs, onStaleInvalid });
+  return { ok: r.ok, parsed: r.parsed, mode: r.finalizationMode, reason: r.reason, phase: r.phase, meta: r.meta };
+}
+/** 兼容层：tmp → final 原子发布（无身份注入；带身份的发布为 publishPlannerArtifact） */
+export function publishPlannerOutput(tmpFile, finalFile) {
+  return publishFile(tmpFile, finalFile);
+}
 
 // ── 常量与限制 ──────────────────────────────────────────────────────────────
 const MAX_RETRY = 2;
@@ -58,7 +86,7 @@ function runCmd(cmd, cwd, timeoutMs = 120000) {
   fs.rmSync(tmpOut, { force: true });
   return { code: r.status, out, err: out };
 }
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// sleep 由 ./file-wait.mjs 提供（R1：通用工具统一来源）
 
 // ── 参数 ────────────────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -142,22 +170,20 @@ async function consultExpert(consult, registry, ctx) {
   }
 }
 
-// ── V0.4-A：两阶段 Planner ───────────────────────────────────────────────────
-/**
- * 阶段1（专家判断）输出的语义完成判据：对象且含 goal_understanding 或 expert_consultations。
- * 用于避免把「文件已稳定但内容仍为空对象」当作完成（Bug #7 同类问题）。
- */
-export function semanticConsultationsComplete(parsed) {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-  if (Array.isArray(parsed.expert_consultations)) return true;
-  return typeof parsed.goal_understanding === "string" && parsed.goal_understanding.trim().length > 0;
-}
 
-async function runPlannerStage(prompt, resFile, isComplete = null) {
+/**
+ * Planner 阶段的**唯一执行入口**（R1）：stage1 / stage2 / replan 全部经由本函数。
+ * 生命周期委托 planner-lifecycle.mjs（DRAFT → VALIDATED → FINALIZED → PUBLISHED），
+ * 本函数只负责：写协议 prompt、spawn worker、失败的日志分类、返回已发布的 artifact（含身份）。
+ *
+ * @param {string} prompt
+ * @param {string} resFile final 路径
+ * @param {{kind:string, planId:string, parentPlanId?:string|null, rootPlanId?:string|null}} identity
+ * @returns {Promise<object|Array|null>} 已发布 artifact（plan.planId / plan.planDigest 已注入）
+ */
+async function runPlannerStage(prompt, resFile, identity = {}) {
+  const { kind = ARTIFACT_KIND.STAGE2, planId, parentPlanId = null, rootPlanId = null } = identity;
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
-  // ── V0.5.8（Bug #10）Two-Phase Planner Output Publish ──────────────────────
-  // DRAFT(.tmp) → VALIDATED(形状+语义完整) → FINALIZED(done 标记/稳定回退) → PUBLISH(final)
-  // 关键：LLM **只**被允许写 .tmp；final 由 Runtime 校验后原子发布 ⇒ 采纳内容与发布内容恒等。
   const tmpFile = `${resFile}.tmp`;
   const doneFile = `${resFile}.done`;
   // 本轮开始前清理：旧 final/tmp/done 一律不得污染本次运行（旧 plan 绝不能被采纳）
@@ -168,40 +194,37 @@ async function runPlannerStage(prompt, resFile, isComplete = null) {
 
   const child = spawn(WORKER_CMD, ["-p", effectivePrompt, "--max-turns", "30", "--allowedTools", WORKER_TOOLS], { cwd: ROOT, stdio: "ignore" });
   child.on("error", (e) => logEvent(`planner: spawn 失败 ${e.message}`));
-  const deadline = Date.now() + 7 * 60 * 1000; // 阶段2 含专家意见上下文，给足时间
-  // Bug #4 修复：等待文件写完（大小稳定）再解析，避免读到半写内容而误判「未产出」
-  // Bug #7 修复：叠加语义完成谓词——文件稳定 ≠ 内容完成（如 {tasks:[]} 之类的中间态需继续等待）
-  // Bug #8 修复：陈旧非法 JSON 提前失败（区分于"仍在写入"，不再空等 deadline）
-  // Bug #10 修复：只有 FINALIZED artifact 才被采纳（形状完整 + done 标记/稳定回退），骨架一律继续等待
+  const deadline = Date.now() + 7 * 60 * 1000;
+  // 生命周期（含 Bug #4 半写 / #7 语义 / #8 陈旧非法 / #10 骨架拦截）全部由 lifecycle 模块负责
   let staleInfo = null;
-  const fin = await waitForFinalizedPlannerOutput({
+  const fin = await finalizePlannerOutput({
     tmpFile,
     doneFile,
+    kind,
     deadline,
-    isComplete,
     onStaleInvalid: (info) => { staleInfo = info; },
   });
   if (!fin.ok) {
     if (staleInfo) {
-      logEvent(`planner-output-invalid ${path.basename(tmpFile)} size=${staleInfo.size} invalidStable=${staleInfo.invalidStable} elapsed=${(staleInfo.elapsedMs / 1000).toFixed(1)}s`);
+      logEvent(`planner-output-invalid ${path.basename(tmpFile)} kind=${kind} size=${staleInfo.size} invalidStable=${staleInfo.invalidStable} elapsed=${(staleInfo.elapsedMs / 1000).toFixed(1)}s`);
     } else if (Date.now() >= deadline) {
-      logEvent(`planner-output-timeout ${path.basename(tmpFile)}（deadline 到期仍未获得形状完整且已完成的输出）`);
+      logEvent(`planner-output-timeout ${path.basename(tmpFile)} kind=${kind}（deadline 到期仍未获得领域校验通过的输出）`);
     } else {
-      logEvent(`planner-output-not-finalized ${path.basename(tmpFile)} reason=${fin.reason}`);
+      logEvent(`planner-output-not-finalized ${path.basename(tmpFile)} kind=${kind} phase=${fin.phase} reason=${fin.reason}`);
     }
     try { fs.rmSync(tmpFile, { force: true }); } catch { /* 清理 */ }
     return null;
   }
-  // PUBLISH：原子发布 tmp → final（final 只可能是校验通过的完整内容）
-  let mode = "n/a";
-  try { mode = publishPlannerOutput(tmpFile, resFile); }
-  catch (e) { logEvent(`planner-publish 失败: ${e.message}`); return null; }
+  // PUBLISHED：注入身份（R3）并写入 final —— final 只可能是领域校验通过的完整内容
+  let pub;
+  try {
+    pub = publishPlannerArtifact(tmpFile, resFile, { planId, parentPlanId, rootPlanId, finalizationMode: fin.finalizationMode });
+  } catch (e) { logEvent(`planner-publish 失败: ${e.message}`); return null; }
+  if (!pub.ok) { logEvent(`planner-publish 未产出 artifact: ${pub.reason}`); return null; }
   try { fs.rmSync(doneFile, { force: true }); } catch { /* 清理标记 */ }
   const size = (() => { try { return fs.statSync(resFile).size; } catch { return -1; } })();
-  logEvent(`planner-finalized ${path.basename(resFile)} mode=${fin.mode} publish=${mode} size=${size} elapsed=${(fin.meta.elapsedMs / 1000).toFixed(1)}s`);
-  const raw = fin.parsed;
-  if (Array.isArray(raw)) return raw; // 数组格式（如 replan 输出）
-  return raw; // 对象格式（plan/consultations）
+  logEvent(`planner-published ${path.basename(resFile)} kind=${kind} planId=${pub.planId} digest=${pub.planDigest} mode=${fin.finalizationMode} size=${size} elapsed=${(fin.meta.elapsedMs / 1000).toFixed(1)}s`);
+  return pub.artifact; // 已含 plan.planId / plan.planDigest / plan.finalizationMode
 }
 
 /**
@@ -280,240 +303,12 @@ export function classifyReviewOutcome({ exitCode = null, timedOut = false, raw =
   return { kind: "process_failure", code: "review_process_exit", reason: `Reviewer 进程异常退出（exit ${exitCode}）且无结果文件`, detail: String(stderrTail).slice(-300) };
 }
 
-/**
- * Planner 输出的「形状完整性」判据（V0.5.8 / Bug #10：拦截合法但不完整的**中间骨架**）。
- *
- * 与 V0.5.4 的 semanticPlannerOutputComplete 的区别：
- *  - 语义谓词只回答「有没有任务」（骨架也满足）
- *  - 本谓词额外要求「内容不像未填充的模板」：tasks 非空且 normalize 后有合法任务、
- *    plan/architecture_decisions/memory_refs 类型正确、**递归扫描无占位符形态**
- *    （`@M1@` / `__TASK007__` / `@MR1@` 等）、每个任务 id/title 非占位符。
- * 真正的完成语义仍由 done 标记或稳定回退确认，见 waitForFinalizedPlannerOutput()。
- */
-export function plannerOutputShapeComplete(parsed) {
-  if (!parsed) return false;
-  const root = Array.isArray(parsed) ? { tasks: parsed } : parsed;
-  if (!semanticPlannerOutputComplete(root)) return false;
-  const norm = normalizePlannedTasks(root);
-  if (norm.tasks.length === 0) return false;
 
-  const PLACEHOLDER = /^(?:@[\w]{1,12}@|__[A-Za-z0-9_]{1,24}__|\{\{[\w\s-]{1,24}\}\}|<[A-Za-z0-9_\-\s]{1,24}>|\.\.\.|…)$/;
-  const isPlaceholder = (v) => typeof v === "string" && PLACEHOLDER.test(v.trim());
-  const scan = (node, depth = 0) => {
-    if (depth > 6 || node == null) return false;
-    if (typeof node === "string") return isPlaceholder(node);
-    if (Array.isArray(node)) return node.some((x) => scan(x, depth + 1));
-    if (typeof node === "object") return Object.values(node).some((x) => scan(x, depth + 1));
-    return false;
-  };
 
-  if (root.plan && typeof root.plan !== "object") return false;
-  if (root.plan && root.plan.architecture_decisions !== undefined && !Array.isArray(root.plan.architecture_decisions)) return false;
-  if (root.plan && root.plan.memory_refs !== undefined && !Array.isArray(root.plan.memory_refs)) return false;
-  for (const t of norm.tasks) {
-    if (isPlaceholder(t.id) || isPlaceholder(String(t.title || ""))) return false;
-  }
-  // 只扫描「plan 全部字段 + normalize 后的合法任务」：
-  // tasks 数组里会被 normalize 丢弃的非法元素（如 "__TASK007__"）属 Bug #5 的过滤对象，不视为"骨架未填"。
-  return !scan({ plan: root.plan || {}, tasks: norm.tasks });
-}
 
-/**
- * 等待 Planner 输出的**最终发布版本**（V0.5.8 / Bug #10 Finalization Protocol）。
- *
- * 生命周期：DRAFT(.tmp) → VALIDATED(形状完整) → FINALIZED(done 标记或稳定回退) → 由调用方 publish
- *
- * 阶段 A：等待 `tmpFile` 稳定且**形状完整**（占位符骨架 / tasks 为空的中间态均继续等待）
- * 阶段 B：等待显式完成标记 `doneFile`（LLM 写完 .tmp 后再写它）：
- *         - 出现 ⇒ mode="marker"
- *         - 未出现但 .tmp 约 8s 完全未变且形状完整 ⇒ mode="stability_fallback"（记录降级）
- * 失败分类：timeout / stale_invalid（沿用 Bug #8 的 stale 判据）
- */
-export async function waitForFinalizedPlannerOutput({
-  tmpFile,
-  doneFile,
-  deadline,
-  pollMs = 500,
-  stableSamples = 3,
-  invalidStableSamples = parseInt(process.env.DSH_ORCH_PLANNER_INVALID_STABLE_SAMPLES || "10", 10),
-  isComplete = null,
-  markerWaitMs = parseInt(process.env.DSH_ORCH_PLANNER_MARKER_WAIT_MS || "45000", 10),
-  onStaleInvalid = null,
-} = {}) {
-  const startedAt = Date.now();
-  // 形状校验只适用于「tasks 形态」的输出（阶段2 / replan）。
-  // 阶段1 的输出是 { goal_understanding, expert_consultations }（无 tasks），其完整性由调用方的
-  // isComplete（semanticConsultationsComplete）判定 —— 否则阶段1 永远无法通过形状校验。
-  const shapeCheck = (p) => {
-    if (!p) return false;
-    const isTaskShaped = Array.isArray(p) || (typeof p === "object" && Array.isArray(p.tasks));
-    return isTaskShaped ? plannerOutputShapeComplete(p) : true;
-  };
-  const shapePredicate = (p) => shapeCheck(p) && (typeof isComplete !== "function" || isComplete(p));
 
-  // 阶段 A：等 .tmp 稳定 + 形状完整
-  let staleInfo = null;
-  const parsed = await waitForStableJson(tmpFile, deadline, {
-    pollMs,
-    stableSamples,
-    invalidStableSamples,
-    isComplete: shapePredicate,
-    onStaleInvalid: (info) => { staleInfo = info; if (typeof onStaleInvalid === "function") onStaleInvalid(info); },
-  });
-  if (parsed === null || !shapeCheck(parsed)) {
-    return { ok: false, reason: staleInfo ? "stale_invalid_json" : "timeout", meta: { elapsedMs: Date.now() - startedAt, staleInfo } };
-  }
 
-  // 阶段 B：等显式完成标记（有限等待；未出现则按稳定回退，仍需形状完整）
-  // 注意：每个出口都必须**重新读取** .tmp —— 阶段 A 拿到的是当时的内容，文件可能在之后被更新为最终版本。
-  const markerDeadline = Math.min(deadline, Date.now() + markerWaitMs);
-  let lastSize = -1;
-  let unchanged = 0;
-  const unchangedNeeded = Math.max(2, Math.ceil(8000 / pollMs));
-  const reread = () => {
-    const fresh = readJsonStrict(tmpFile);
-    return fresh && shapeCheck(fresh) && (typeof isComplete !== "function" || isComplete(fresh)) ? fresh : null;
-  };
-  while (Date.now() < markerDeadline) {
-    if (fs.existsSync(doneFile)) {
-      const fresh = reread();
-      if (fresh) return { ok: true, parsed: fresh, mode: "marker", meta: { elapsedMs: Date.now() - startedAt } };
-      // done 已出现但内容尚未通过形状校验（写作者仍在收尾）⇒ 继续等待
-    }
-    let size = -1;
-    try { size = fs.statSync(tmpFile).size; } catch { size = -1; }
-    if (size === lastSize) unchanged++; else { unchanged = 0; lastSize = size; }
-    if (unchanged >= unchangedNeeded) {
-      const fresh = reread();
-      if (fresh) return { ok: true, parsed: fresh, mode: "stability_fallback", meta: { elapsedMs: Date.now() - startedAt, note: "done 标记未出现，按稳定回退发布" } };
-    }
-    await sleep(pollMs);
-  }
-  const fresh = reread();
-  if (fresh) return { ok: true, parsed: fresh, mode: "stability_fallback", meta: { elapsedMs: Date.now() - startedAt, note: "done 标记等待超时，按稳定回退发布" } };
-  return { ok: false, reason: "timeout", meta: { elapsedMs: Date.now() - startedAt } };
-}
 
-/**
- * 原子发布 Planner 输出（V0.5.8）：tmp → final。
- * 优先 fs.renameSync（同分区原子替换；Windows 下 Node 采用覆盖语义）；
- * 失败时回退 copy+rm（final 仍只会是校验通过的完整内容）。
- * @returns {"rename"|"copy"}
- */
-export function publishPlannerOutput(tmpFile, finalFile) {
-  try { fs.renameSync(tmpFile, finalFile); return "rename"; }
-  catch (e) {
-    fs.copyFileSync(tmpFile, finalFile);
-    try { fs.rmSync(tmpFile, { force: true }); } catch { /* 已消失 */ }
-    return "copy";
-  }
-}
-
-/**
- * 严格解析 JSON 文件（剥离 BOM；失败时尝试从文本中提取 JSON 对象/数组）。
- * @returns {object|Array|null} 解析结果，失败返回 null
- */
-export function readJsonStrict(file) {
-  try {
-    const text = stripBom(fs.readFileSync(file, "utf-8"));
-    try { return JSON.parse(text); } catch { /* 尝试提取 */ }
-    const extracted = extractJson(text);
-    // extractJson 无匹配时返回 "{}"（长度 2）——此类兜底不是真实内容，视为解析失败
-    if (extracted && extracted.length > 2) {
-      try { return JSON.parse(extracted); } catch { /* 仍失败 */ }
-    }
-    return null;
-  } catch { return null; }
-}
-
-/**
- * 等待文件写完并解析为 JSON（修复 Bug #4：planner 产物半写竞态）。
- * 完成判据：文件大小连续 stableSamples 次采样不变 **且** 解析成功。
- * deadline 到期后做最后一次尝试（文件已完整但仍未达稳定判据时）。
- *
- * V0.5.4（Bug #7）：通用能力保持不变；新增可选 `isComplete(parsed)` 语义完成谓词——
- * 仅当「大小稳定 + JSON 可解析 + 语义完整」三者同时满足才返回。
- * 调用方可借此表达「文件稳定 ≠ 内容完成」（例如 Planner 输出需 tasks 非空）。
- * 谓词永不满足时，deadline 到期返回最后一次可解析的结果（由调用方决定是否降级）。
- *
- * V0.5.5（Bug #8）：新增「陈旧非法 JSON」判定——区分「仍在写的半写」与「已停止变化但内容永久非法」：
- *  - 文件大小**发生变化** ⇒ 视为仍在写入：重置非法计数（完整保留 Bug #4 半写保护）
- *  - 大小稳定且解析失败 ⇒ 累计 invalidStable；达到 invalidStableSamples 仍非法
- *    ⇒ 判定 `stale_invalid_json`，**提前返回 null**（不再空等 deadline），并通过 onStaleInvalid
- *    回调报告原因（错误分类；不改变调用方既有的失败/降级语义，不引入新重试）
- *  - 「合法但语义未完成（Bug #7）」仍继续等待，与陈旧非法互不影响
- *
- * @param {string} file
- * @param {number} deadline epoch ms
- * @param {object} [opts]
- * @param {number} [opts.pollMs=500]
- * @param {number} [opts.stableSamples=3]          大小连续不变次数（"稳定"判据）
- * @param {number} [opts.invalidStableSamples=10]  "稳定但非法"连续次数上限（stale 判据）
- * @param {Function|null} [opts.isComplete]        语义完成谓词（Bug #7）
- * @param {Function|null} [opts.onStaleInvalid]    陈旧非法回调 (info) => void
- */
-export async function waitForStableJson(file, deadline, { pollMs = 500, stableSamples = 3, invalidStableSamples = parseInt(process.env.DSH_ORCH_PLANNER_INVALID_STABLE_SAMPLES || "10", 10), isComplete = null, onStaleInvalid = null } = {}) {
-  const startedAt = Date.now();
-  let lastSize = -1;
-  let stable = 0;
-  let lastParsed = null;
-  let invalidStable = 0; // "大小稳定但不可解析"累计次数（文件一变化即清零 ⇒ 半写不会被误判）
-  while (Date.now() < deadline) {
-    if (fs.existsSync(file)) {
-      let size = 0;
-      try { size = fs.statSync(file).size; } catch { size = 0; }
-      if (size > 0) {
-        if (size === lastSize) stable++; else { stable = 0; lastSize = size; invalidStable = 0; }
-        if (stable >= stableSamples) {
-          const parsed = readJsonStrict(file);
-          if (parsed !== null) {
-            invalidStable = 0;
-            lastParsed = parsed;
-            if (typeof isComplete !== "function" || isComplete(parsed)) return parsed;
-          } else {
-            // 大小稳定但不可解析：先按 Bug #4 继续等待；若长期稳定不变 ⇒ 陈旧非法（Bug #8）提前放弃
-            invalidStable++;
-            if (invalidStable >= invalidStableSamples) {
-              if (typeof onStaleInvalid === "function") {
-                onStaleInvalid({ reason: "stale_invalid_json", file, size, invalidStable, elapsedMs: Date.now() - startedAt });
-              }
-              return null;
-            }
-          }
-          stable = 0; // 大小稳定但（不可解析 或 语义未完成）：继续等待
-        }
-      }
-    }
-    await sleep(pollMs);
-  }
-  return lastParsed !== null ? lastParsed : (fs.existsSync(file) ? readJsonStrict(file) : null);
-}
-
-/**
- * Planner 输出的「语义完成」判据（V0.5.4 / Bug #7）。
- * 只有同时满足下列条件才算 Planner 输出完成，可被接受：
- *  1) 顶层为对象（或为任务数组，兼容 replan 的数组形态）
- *  2) `tasks` 字段存在且为数组
- *  3) `tasks.length > 0`
- *  4) 经既有 normalizePlannedTasks 过滤后仍存在合法任务（id 为非空字符串的对象）
- * 用于区分「文件已稳定但内容是 {tasks:[]} 之类的中间态」与「真正写完」。
- */
-export function semanticPlannerOutputComplete(parsed) {
-  if (!parsed) return false;
-  const raw = Array.isArray(parsed) ? parsed : parsed.tasks;
-  if (!Array.isArray(raw) || raw.length === 0) return false;
-  return normalizePlannedTasks(Array.isArray(parsed) ? { tasks: parsed } : parsed).tasks.length > 0;
-}
-
-/**
- * 规范化 Planner/Replan 输出的任务数组（修复 Bug #5：LLM 占位符字符串导致崩溃）。
- * 仅保留形如 {id: "<非空字符串>", ...} 的对象；其余记为 dropped。
- */
-export function normalizePlannedTasks(parsed) {
-  const raw = parsed && Array.isArray(parsed.tasks) ? parsed.tasks : [];
-  const tasks = raw.filter((t) => t && typeof t === "object" && !Array.isArray(t) && typeof t.id === "string" && t.id.trim().length > 0);
-  return { tasks, dropped: raw.length - tasks.length, total: raw.length };
-}
 
 async function plan(tasks, state, registry) {
   if (tasks.tasks && tasks.tasks.length > 0) { log("tasks.json 已有任务，跳过拆解"); return tasks; }
@@ -521,10 +316,15 @@ async function plan(tasks, state, registry) {
 
   const ctxText = buildContext();
   const stage1File = path.join(RESULTS_DIR, "_plan1.json");
+  // R3：本次 run 的 Plan 序号（持久化在 state，保证跨轮不重复）
+  const planSeq = Number(state.planSeq || 0) + 1;
+  state.planSeq = planSeq;
+  const stage1PlanId = buildPlanId({ kind: ARTIFACT_KIND.STAGE1, seq: planSeq });
+  const stage2PlanId = buildPlanId({ kind: ARTIFACT_KIND.STAGE2, seq: planSeq });
   const s1 = await runPlannerStage(
     `你是 Multi-Agent 系统的 Manager。目标：${goal}\n项目目录：${ROOT}\n项目上下文：\n${ctxText}\n\n判断该目标是否需要专家意见。用 Write 工具把结果 JSON 写入 ${stage1File}（只含 JSON 对象，无 markdown）：\n{"goal_understanding":"…","expert_consultations":[{"role":"architect|analyst|researcher","topic":"…","reason":"…","required_capability":"architecture|analysis|research"}]}\n规则：仅当任务确实需要（复杂架构→architect、复杂算法→analyst、外部资料→researcher）才列；不需要则为空数组。`,
     stage1File,
-    semanticConsultationsComplete
+    { kind: ARTIFACT_KIND.STAGE1, planId: stage1PlanId, parentPlanId: null, rootPlanId: stage1PlanId }
   );
   const consultations = (s1 && Array.isArray(s1.expert_consultations)) ? s1.expert_consultations : [];
 
@@ -574,7 +374,7 @@ async function plan(tasks, state, registry) {
   const s2 = await runPlannerStage(
     `你是 Multi-Agent 系统的 Manager。目标：${goal}\n项目目录：${ROOT}\n项目上下文：\n${ctxText}\n\n专家意见（已咨询，直接采信）：\n${consultTexts.join("\n\n") || "（无专家咨询）"}\n\n[CURRENT TASK]\n${goal}\n\n[PROJECT STATE SUMMARY]\n${plannerSummaryText}\n\n[RELEVANT MEMORY（来自 Project Memory，括号内为来源 provenance；仅参考，不强制引用）]\n${plannerCtxText}\n\n综合生成结构化 Plan 与任务 DAG。用 Write 工具把结果 JSON 写入 ${stage2File}（只含 JSON 对象，无 markdown）：\n{"plan":{"goal":"…","assumptions":["…"],"expert_consultations":["…"],"risks":["…"],"architecture_decisions":[{"decision":"…","rationale":"…","alternatives":["…"]}],"memory_refs":[{"memory_id":"decision-xxxx","affected_output":"TASK-002","stance":"adopted|rejected|modified|superseded","effect":"…","reason":"…"}]},"tasks":[{"id":"TASK-001","title":"…","description":"…","required_capability":"analysis|coding|review|research|architecture","dependencies":["TASK-00X"],"acceptance_criteria":["…"],"expected_output":"…","relevant_files":["…"],"constraints":["…"],"requires_review":true}]}\n规则：1) id 递增；2) 依赖只能是已出现的任务 id，保证无环；3) 分析/架构任务在前，编码依赖它们，测试/审查依赖编码；4) 任务粒度适合单个 worker 独立完成；5) 验收标准必须可执行："run: node test.js"（exit 0）或 "file: src/x.js"（存在）；file: 只允许静态产物，禁止把运行时生成的数据文件（todos.json/*.db/日志）作为 file: 验收，这类用 run:；6) requires_review 为布尔值，必须显式给出：涉及核心数据读写/持久化、对外 API、安全或权限、多模块集成关键路径、不可逆改动的任务设 true（worker 自报 completed 后仍由独立 Reviewer 核验）；纯内部、低风险、可由验收命令完全覆盖的简单任务设 false；7) plan.architecture_decisions 显式记录本规划中做出的关键架构/设计取舍（如数据模型与状态存储方式、复用现有模块还是新建、接口形态、扩展点选择），每条含 decision/rationale/alternatives；这些决策会沉淀为长期 Memory 供后续会话复用，没有关键取舍时给空数组；8) plan.memory_refs 记录你**实际使用**了上面 [RELEVANT MEMORY] 中的哪些条目（这是审计声明，不是形式要求）：仅当你确实依据某条 memory 做出了本计划中的具体取舍时才列入，未使用就写空数组，禁止为了填空而引用。每条：memory_id 必须逐字取自上面列出的条目（形如 decision-xxxxxxxx / knowledge-xxxxxxxx / agent_memory-xxx；禁止编造或引用未列出的 ID），affected_output 必须是本输出中可定位的稳定标识（TASK-00X / architecture_decisions[i] / assumptions[i] / risks[i]），stance 取 adopted|rejected|modified|superseded（**推翻或修正历史决策同样属于"使用"**，请如实标注 rejected/modified 并说明理由），effect 写明具体继承的设计约束/禁止条件/技术规则（禁止"帮助了规划"这类空泛描述），reason 简述依据。`,
     stage2File,
-    semanticPlannerOutputComplete
+    { kind: ARTIFACT_KIND.STAGE2, planId: stage2PlanId, parentPlanId: null, rootPlanId: stage2PlanId }
   );
 
   let parsed = s2;
@@ -609,6 +409,9 @@ async function plan(tasks, state, registry) {
         writeJsonAtomic(path.join(RESULTS_DIR, "_memory-attribution.json"), {
           goal,
           at: nowIso(),
+          // R3：审计产物携带 Plan 身份（与 accepted artifact 同源，可机械校验 I-PLAN-4）
+          planId: (parsed.plan && parsed.plan.planId) || null,
+          planDigest: (parsed.plan && parsed.plan.planDigest) || null,
           contextMemoryIds,
           declared: Array.isArray(rawRefs) ? rawRefs : [],
           valid: attr.valid,
@@ -616,9 +419,24 @@ async function plan(tasks, state, registry) {
           summary: attr.summary,
         });
       } catch (e) { logEvent(`memory-attribution 落盘失败: ${e.message}`); }
+      // R3：机械校验 published(磁盘 final) / accepted(内存) / attribution(刚落盘) 的身份一致性
+      try {
+        const publishedOnDisk = readJsonStrict(stage2File);
+        const attributionOnDisk = readJsonStrict(path.join(RESULTS_DIR, "_memory-attribution.json"));
+        const v = verifyArtifactIdentity({ published: publishedOnDisk, accepted: parsed, attribution: attributionOnDisk });
+        const id = planIdentityOf(parsed);
+        logEvent(`plan-identity ${v.status} planId=${id.planId || "?"} digest=${id.planDigest || "?"}${v.ok ? "" : " errors=" + v.errors.map((e) => `${e.code}@${e.where}`).join("|")}`);
+      } catch (e) { logEvent(`plan-identity 校验异常: ${e.message}`); }
     } catch (e) {
       logEvent(`memory-attribution 校验异常（不影响规划）: ${e.message}`);
     }
+  }
+  // R3：把生效 Plan 身份登记到 state 与模块级（recordRun 据此写入 run.planId）
+  if (parsed && parsed.plan && parsed.plan.planId) {
+    currentPlanId = parsed.plan.planId;
+    state.planId = parsed.plan.planId;
+    state.planDigest = parsed.plan.planDigest || null;
+    state.rootPlanId = parsed.plan.rootPlanId || parsed.plan.planId;
   }
   if (!parsed || !Array.isArray(parsed.tasks) || parsed.tasks.length === 0) {
     // 回退：用简单规则生成一个最小 DAG（保证可闭环）
@@ -857,6 +675,8 @@ function validateTask(task) {
 const MAX_PARALLEL = parseInt(process.env.DSH_ORCH_MAX_PARALLEL || "3", 10); // 并发上限
 const PLANNER_CONTEXT_BUDGET = 6000; // V0.5-P0-03：Planner Memory Context 预算（字符估算）
 let workerCalls = 0; // 模块级：runTask 并行批次共享（单线程自增无竞态）
+// R3（V0.5.9）：当前生效的 Plan 身份 —— 使 runs/*.json 能回溯到 owning plan（I-PLAN-5）
+let currentPlanId = null;
 
 /** 任务涉及的路径集合（relevant_files + 形如路径的 expected_output） */
 function taskFiles(t) {
@@ -927,6 +747,7 @@ function recordRun(task, phase, extra = {}) {
   const runId = `${task.id}-${Date.now()}`;
   const run = {
     runId,
+    planId: extra.planId || task.planId || currentPlanId || null, // R3：run → owning plan（I-PLAN-5）
     taskId: task.id,
     agent: task.assigned_agent,
     backend: task.backendType,
@@ -1199,7 +1020,17 @@ async function doReplan(task, tasks, state, registry) {
     null, 1
   );
   const prompt = `你是 Multi-Agent 系统的 Manager。目标：${goal}。任务 ${task.id} 失败且重试耗尽，失败原因：${task.failure_reason}。\n当前任务集：\n${allJson.slice(0, 8000)}\n\n请进行**局部重规划**：只修改失败任务及其直接影响的任务，使计划可执行（修正矛盾/不可行的验收标准、拆分任务、更换 required_capability、调整依赖）。已完成任务保持原样。\n用 Write 工具把完整的新任务数组 JSON 写入 ${resFile}（只含 JSON 数组，无 markdown）：\n[{"id":"TASK-XX","title":"…","description":"…","required_capability":"…","dependencies":[],"acceptance_criteria":["run: node test.js"],"expected_output":"…","relevant_files":[],"constraints":[],"requires_review":false}]\n规则：1) 失败的 ${task.id} 必须被修改为可执行版本（绝不能保留原验收）；2) 已完成任务保留原 id 与字段；3) 新增任务用新 id；4) 保证无环；5) requires_review 为布尔：涉及核心数据/对外 API/集成关键路径的任务设 true，其余 false。`;
-  let s2 = await runPlannerStage(prompt, resFile, semanticPlannerOutputComplete);
+  // R3：Replan 拥有**新的 planId**，并记录 parentPlanId（形成 P1 → P2 → P3 链）
+  const parentPlanId = (tasks.plan && tasks.plan.planId) || null;
+  const replanSeq = Number(state && state.planSeq ? state.planSeq : 0) + 1;
+  if (state) state.planSeq = replanSeq;
+  const replanPlanId = buildPlanId({ kind: ARTIFACT_KIND.REPLAN, seq: replanSeq });
+  let s2 = await runPlannerStage(prompt, resFile, {
+    kind: ARTIFACT_KIND.REPLAN,
+    planId: replanPlanId,
+    parentPlanId,
+    rootPlanId: (tasks.plan && tasks.plan.rootPlanId) || parentPlanId || replanPlanId,
+  });
   if (s2 && !Array.isArray(s2) && Array.isArray(s2.tasks)) s2 = s2.tasks; // 兼容 {tasks:[...]} 包装
   // Bug #5 修复：replan 输出同样过滤非法元素（占位符/非对象），异常不得崩溃
   if (Array.isArray(s2)) {
