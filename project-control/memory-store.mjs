@@ -4,8 +4,6 @@ import {
   TaskStatus,
   RunStatus,
   AttemptStatus,
-  EvidenceStatus,
-  VerificationVerdict,
   now,
 } from "./domain.mjs";
 
@@ -47,7 +45,9 @@ export class MemoryStore {
   }
 
   getRunsForTask(taskId) {
-    return [...this.runs.values()].filter((run) => run.taskId === taskId).map(structuredClone);
+    return [...this.runs.values()]
+      .filter((run) => run.taskId === taskId)
+      .map((run) => structuredClone(run));
   }
 
   getAttempt(id) {
@@ -67,32 +67,52 @@ export class MemoryStore {
   }
 
   updateTask(id, expectedVersion, patch, { commandId = null } = {}) {
-    return this.#mutateVersioned(this.tasks, id, expectedVersion, patch, "task.updated", commandId);
+    return this.#mutateVersioned(
+      this.tasks,
+      id,
+      expectedVersion,
+      patch,
+      "task.updated",
+      "updateTask",
+      commandId,
+    );
   }
 
   createRun(run, { commandId = null } = {}) {
-    this.#idempotent(commandId, "createRun", run.id);
+    const replay = this.#replayCommand(commandId, "createRun");
+    if (replay) return this.getRun(replay);
     if (this.runs.has(run.id)) throw new Error(`run already exists: ${run.id}`);
     this.runs.set(run.id, structuredClone(run));
     this.#event("run.created", run.id, { taskId: run.taskId }, commandId);
-    this.#rememberCommand(commandId, run.id);
+    this.#rememberCommand(commandId, "createRun", run.id);
     return structuredClone(run);
   }
 
   updateRun(id, expectedVersion, patch, { commandId = null } = {}) {
-    return this.#mutateVersioned(this.runs, id, expectedVersion, patch, "run.updated", commandId);
+    return this.#mutateVersioned(
+      this.runs,
+      id,
+      expectedVersion,
+      patch,
+      "run.updated",
+      "updateRun",
+      commandId,
+    );
   }
 
   createAttempt(attempt, { commandId = null } = {}) {
-    this.#idempotent(commandId, "createAttempt", attempt.id);
+    const replay = this.#replayCommand(commandId, "createAttempt");
+    if (replay) return this.getAttempt(replay);
     if (this.attempts.has(attempt.id)) throw new Error(`attempt already exists: ${attempt.id}`);
     this.attempts.set(attempt.id, structuredClone(attempt));
     this.#event("attempt.created", attempt.id, { runId: attempt.runId }, commandId);
-    this.#rememberCommand(commandId, attempt.id);
+    this.#rememberCommand(commandId, "createAttempt", attempt.id);
     return structuredClone(attempt);
   }
 
   updateAttempt(id, patch, { commandId = null } = {}) {
+    const replay = this.#replayCommand(commandId, "updateAttempt");
+    if (replay) return this.getAttempt(replay);
     const current = this.#required(this.attempts, id, "attempt");
     const next = { ...current, ...structuredClone(patch) };
     if (next.status === AttemptStatus.RUNNING && !next.startedAt) next.startedAt = now();
@@ -101,11 +121,13 @@ export class MemoryStore {
     }
     this.attempts.set(id, next);
     this.#event("attempt.updated", id, { status: next.status }, commandId);
+    this.#rememberCommand(commandId, "updateAttempt", id);
     return structuredClone(next);
   }
 
   recordEvidence(evidence, { commandId = null } = {}) {
-    this.#idempotent(commandId, "recordEvidence", evidence.id);
+    const replay = this.#replayCommand(commandId, "recordEvidence");
+    if (replay) return this.getEvidence(replay);
     if (this.evidence.has(evidence.id)) throw new Error(`evidence already exists: ${evidence.id}`);
     this.evidence.set(evidence.id, structuredClone(evidence));
     this.#event("evidence.recorded", evidence.id, {
@@ -114,12 +136,13 @@ export class MemoryStore {
       acceptanceVersion: evidence.acceptanceVersion,
       revision: evidence.revision,
     }, commandId);
-    this.#rememberCommand(commandId, evidence.id);
+    this.#rememberCommand(commandId, "recordEvidence", evidence.id);
     return structuredClone(evidence);
   }
 
   recordVerification(verification, { commandId = null } = {}) {
-    this.#idempotent(commandId, "recordVerification", verification.id);
+    const replay = this.#replayCommand(commandId, "recordVerification");
+    if (replay) return this.getVerification(replay);
     if (this.verifications.has(verification.id)) throw new Error(`verification already exists: ${verification.id}`);
     const acceptance = this.#required(this.acceptances, verification.acceptanceId, "acceptance");
     if (acceptance.version !== verification.acceptanceVersion) {
@@ -127,8 +150,10 @@ export class MemoryStore {
     }
     for (const evidenceId of verification.evidenceIds) {
       const evidence = this.#required(this.evidence, evidenceId, "evidence");
-      if (evidence.acceptanceId !== verification.acceptanceId ||
-          evidence.acceptanceVersion !== verification.acceptanceVersion) {
+      if (
+        evidence.acceptanceId !== verification.acceptanceId ||
+        evidence.acceptanceVersion !== verification.acceptanceVersion
+      ) {
         throw new InvariantError("verification evidence does not match acceptance contract");
       }
     }
@@ -137,31 +162,42 @@ export class MemoryStore {
       acceptanceId: verification.acceptanceId,
       verdict: verification.verdict,
     }, commandId);
-    this.#rememberCommand(commandId, verification.id);
+    this.#rememberCommand(commandId, "recordVerification", verification.id);
     return structuredClone(verification);
   }
 
   acceptTask(taskId, expectedVersion, { verificationId, commandId = null } = {}) {
-    this.#idempotent(commandId, "acceptTask", taskId);
+    const replay = this.#replayCommand(commandId, "acceptTask");
+    if (replay) return this.getTask(replay);
     const task = this.#required(this.tasks, taskId, "task");
-    if (task.version !== expectedVersion) throw new ConflictError(`task ${taskId} expected v${expectedVersion}, current v${task.version}`);
+    if (task.version !== expectedVersion) {
+      throw new ConflictError(`task ${taskId} expected v${expectedVersion}, current v${task.version}`);
+    }
     const verification = this.#required(this.verifications, verificationId, "verification");
     const acceptance = this.#required(this.acceptances, task.acceptanceId, "acceptance");
-    if (verification.acceptanceId !== acceptance.id ||
-        verification.acceptanceVersion !== acceptance.version ||
-        verification.verdict !== VerificationVerdict.PASS) {
+    if (
+      verification.acceptanceId !== acceptance.id ||
+      verification.acceptanceVersion !== acceptance.version ||
+      verification.verdict !== "PASS"
+    ) {
       throw new InvariantError("task cannot be accepted by this verification");
     }
-    const next = { ...task, status: TaskStatus.ACCEPTED, version: task.version + 1, updatedAt: now() };
+    const next = {
+      ...task,
+      status: TaskStatus.ACCEPTED,
+      version: task.version + 1,
+      updatedAt: now(),
+    };
     this.tasks.set(taskId, next);
     this.acceptances.set(acceptance.id, { ...acceptance, status: "PASSED", updatedAt: now() });
     this.#event("task.accepted", taskId, { verificationId, version: next.version }, commandId);
-    this.#rememberCommand(commandId, taskId);
+    this.#rememberCommand(commandId, "acceptTask", taskId);
     return structuredClone(next);
   }
 
-  #mutateVersioned(map, id, expectedVersion, patch, eventType, commandId) {
-    this.#idempotent(commandId, eventType, id);
+  #mutateVersioned(map, id, expectedVersion, patch, eventType, operation, commandId) {
+    const replay = this.#replayCommand(commandId, operation);
+    if (replay) return structuredClone(this.#required(map, replay, "aggregate"));
     const current = this.#required(map, id, "aggregate");
     if (current.version !== expectedVersion) {
       throw new ConflictError(`${id} expected v${expectedVersion}, current v${current.version}`);
@@ -174,25 +210,23 @@ export class MemoryStore {
     };
     map.set(id, next);
     this.#event(eventType, id, { version: next.version, patch: structuredClone(patch) }, commandId);
-    this.#rememberCommand(commandId, id);
+    this.#rememberCommand(commandId, operation, id);
     return structuredClone(next);
   }
 
-  #idempotent(commandId, operation, resultId) {
-    if (!commandId) return;
+  #replayCommand(commandId, operation) {
+    if (!commandId) return null;
     const existing = this.commands.get(commandId);
-    if (existing) {
-      if (existing.operation !== operation) {
-        throw new InvariantError(`command ${commandId} was already used for another operation`);
-      }
-      return existing.resultId;
+    if (!existing) return null;
+    if (existing.operation !== operation) {
+      throw new InvariantError(`command ${commandId} was already used for another operation`);
     }
-    return null;
+    return existing.resultId;
   }
 
-  #rememberCommand(commandId, resultId) {
+  #rememberCommand(commandId, operation, resultId) {
     if (commandId && !this.commands.has(commandId)) {
-      this.commands.set(commandId, { operation: "mutation", resultId });
+      this.commands.set(commandId, { operation, resultId });
     }
   }
 
