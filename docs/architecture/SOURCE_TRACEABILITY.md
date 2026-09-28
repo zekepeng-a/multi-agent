@@ -728,3 +728,171 @@ Next target:
 - Compare the above systems' **command/event/state boundaries and controller authority boundaries**.
 - Search for counterexamples or incompatible designs.
 - Stop archaeology when new sources no longer reveal a new invariant, authority boundary, failure mode, or materially different persistence/recovery strategy.
+
+
+---
+
+## 18. Command → Event → State → Controller boundary comparison
+
+This pass intentionally looked for architectures that disagree with a simple mutable-state control plane.
+
+### Hyperkernel: strongest counterexample against collapsing Command/Event/State
+
+Source:
+- Repository: `hnordt/hyperkernel`
+- `AGENTS.md`
+- `docs/design/0006-error-handling-and-recovery.md`
+- `docs/design/0008-process-orchestration-and-actor-model.md`
+
+Observed design/proposed contract:
+- Commands record intent; events record accepted facts; projections expose derived read models.
+- A committed state-changing command emits events atomically rather than directly mutating a projection/authoritative table.
+- Rejected commands emit no domain-state event.
+- Optimistic concurrency is part of command acceptance.
+- An unconfirmed outcome is a durable safety state requiring reconciliation.
+- Replay must not redispatch external effects.
+- The proposed actor/process layer explicitly remains below the command/event/projection contracts; its design record is still a draft/evaluation boundary.
+
+Important limitation:
+- Hyperkernel's actor/process orchestration material is explicitly draft, so it is evidence of a design hypothesis, not proof of production maturity.
+
+Meaning:
+- Command, Event, Projection/State, and long-running Process are useful separate boundaries.
+- Recovery semantics belong to the boundary that knows enough context to decide whether retry/reconciliation is safe.
+- A mutable `STATE` file should not be treated as the architectural source of truth merely because it is convenient.
+
+### Kando: stronger counterexample against requiring a mutable authoritative state store
+
+Source:
+- Repository: `ucalyptus/kando`
+- `tutorials/02-ledger-is-the-agent.md`
+- `docs/adr/ADR-003-world-as-deterministic-projection.md`
+- `docs/adr/ADR-012-hash-verified-replay.md`
+
+Observed design:
+- One append-only event ledger is the source of truth.
+- World/object/relation state is a deterministic projection of the ledger.
+- Snapshots are optimizations, not authority.
+- Events are immutable and carry causal parent IDs.
+- Kando's proposed hash-verified replay compares reconstructed world hashes to detect projection divergence.
+
+Important limitation:
+- ADR-012 is explicitly Proposed and not yet implemented; therefore hash-verified replay is a design proposal, not an implementation guarantee.
+
+Meaning:
+- Our architecture must not hard-code SQLite mutable tables as the only legitimate state model.
+- The Project Control model can define **semantic authority** (who/what is authoritative) without prematurely defining **physical persistence** (tables vs event log vs hybrid).
+- A hybrid implementation remains possible: authoritative aggregates + append-only events/evidence + projections.
+
+### Stratum: action admission can be event-driven without making events the project model
+
+Source:
+- Repository: `mihok-labs/stratum`
+- README architecture description.
+
+Observed design:
+- Actions have runtime reversibility/risk classification.
+- Higher-risk actions are parked for human resolution.
+- An event bus carries action/escalation/audit events.
+- State is described as a projection of the audit/event history.
+
+Meaning:
+- Event-driven orchestration is a viable execution/control technique.
+- It does not prove that all Project Control semantics should be implemented as event choreography.
+
+### Maka: log-first projection is another independent implementation pattern
+
+Source:
+- Repository: `maka-agent/maka-agent`
+- `ARCHITECTURE.md`
+
+Observed architecture statement:
+- Runtime events are append-only facts.
+- Session state, model context, TaskRun, self-check, and evolution evidence are projections for different consumers.
+- Graph scheduling uses durable schedule metadata but sends execution back through the same Runtime.
+
+Meaning:
+- The same semantic separation appears in another Agent Runtime, independently of Hyperkernel/Kando.
+- This strengthens the case for distinguishing execution facts from consumer-specific projections.
+
+---
+
+## 19. New synthesis: semantic authority ≠ persistence mechanism
+
+After the counterexample pass, the architecture should freeze the following distinction:
+
+**Semantic authority**
+- Which object/process is allowed to declare a fact authoritative?
+- Which evidence is sufficient for acceptance?
+- Which controller owns reconciliation?
+- Which command/event transition is legal?
+
+**Physical persistence**
+- SQLite mutable state
+- append-only event log
+- event log + projections
+- relational state + append-only audit/event history
+- external artifact/blob storage
+
+The first is architecture-level and should be frozen.
+The second remains an implementation choice until concrete persistence requirements force a decision.
+
+This prevents two opposite mistakes:
+1. treating `STATE.json` / SQLite rows as the source of truth merely because they are easy to inspect;
+2. prematurely forcing full event sourcing because several interesting projects use it.
+
+---
+
+## 20. New synthesis: Controller authority is more stable than orchestration style
+
+The archaeology now supports a stronger statement:
+
+> The Project Control OS needs a clear **accepted-state owner** and reconciliation boundary, but it does not yet need to choose between centralized orchestration, workflow state machines, actor-style processes, or event choreography.
+
+Evidence:
+- Agent Harness separates accepted-state ownership from host scheduling/delegation.
+- Kubernetes uses reconciliation around observed state.
+- Hyperkernel keeps domain command/event/projection authority separate from a still-experimental process orchestration layer.
+- Kando uses reactive responders instead of a central orchestrator.
+- Stratum uses an event bus + DAG orchestrator for action execution.
+- Maka uses log-first projections + graph control.
+
+Therefore:
+- **Controller / authority boundary = architecture invariant.**
+- **Orchestration mechanism = replaceable execution strategy.**
+
+This is materially stronger than the earlier framing.
+
+---
+
+## 21. Research boundary check — current status
+
+The archaeology has now covered:
+- state reconciliation
+- command/event/state separation
+- accepted-state authority
+- evidence provenance
+- artifact identity
+- artifact lineage
+- external-effect uncertainty
+- idempotency
+- optimistic concurrency
+- leases/fencing
+- event-log projection
+- centralized orchestration
+- event choreography
+- actor/process orchestration
+- workflow/runtime separation
+
+The next pass should therefore **not** search broadly for more agent frameworks.
+
+Only three questions remain worth targeted archaeology:
+
+1. **Acceptance Gate Semantics**
+   - How mature systems bind a verification result to the exact Task contract + artifact revision + evidence scope.
+2. **Revision / Version Lineage**
+   - How systems invalidate or supersede accepted state when source/artifact/project revision changes.
+3. **Human Approval Boundary**
+   - How approval, rejection, cancellation, and manual override are represented without allowing UI/runtime code to mutate authoritative state directly.
+
+If these three passes do not reveal a new authority boundary, invariant, failure mode, or materially different recovery model, archaeology stops and architecture convergence begins.
