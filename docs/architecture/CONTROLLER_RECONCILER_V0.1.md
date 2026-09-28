@@ -87,6 +87,30 @@ Verification must target the same Acceptance contract version and evidence linea
 
 Candidate Evidence cannot directly transition Task to ACCEPTED.
 
+## Acceptance contract revision pinning
+
+A contract has identity `(id, version)`. A Task records the revision it was
+created against and stays bound to it — the Controller and the store always
+resolve the *pinned* revision, never the contract's newest one:
+
+```
+Task.acceptanceId + Task.acceptanceVersion   → the pinned contract revision
+Evidence.acceptanceVersion                   === Task.acceptanceVersion
+Verification.acceptanceVersion               === Task.acceptanceVersion
+```
+
+Contract content (`id`, `targetId`, `version`, `criteria`) changes only through
+`reviseAcceptance()`, which always creates a **new** revision; content change and
+identity change are the same event. The store re-checks that a revision's content
+still matches the identity it was stored under, so a revision edited in place
+fails closed instead of being trusted.
+
+A decision is not a revision: `status` moving from `PENDING` to `PASSED` leaves
+the version untouched. v0.1 still keeps contract content and the acceptance
+decision in one object, separated by field. `PERSISTENCE_BOUNDARY.md` §7 names
+`AcceptanceContract` and the acceptance decision as separate durable categories,
+so splitting them is the eventual shape — not this prototype's.
+
 ## What v0.1 proves
 
 1. Task and Run are separate.
@@ -99,6 +123,8 @@ Candidate Evidence cannot directly transition Task to ACCEPTED.
 8. Events are retained as history.
 9. A blocked Run is resumable: a reconciliation observation is a precondition of
    recovery, and `unknown` never repeats external work.
+10. A Task cannot drift onto a newer acceptance contract revision: it executes and
+    accepts only against the revision it pinned.
 
 ## What v0.1 does NOT prove
 
@@ -108,6 +134,8 @@ Candidate Evidence cannot directly transition Task to ACCEPTED.
   implements `reconcile`)
 - persisted reconciliation observations (the observation lives in the call, not
   yet in the event log)
+- canonical contract-content comparison across a persistence boundary (the
+  revision guard compares serialized content, which is key-order sensitive today)
 - distributed concurrency
 - DSH integration
 - real agent execution

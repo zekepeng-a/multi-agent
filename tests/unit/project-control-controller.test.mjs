@@ -33,6 +33,7 @@ function fixture(runtimeMode = "success", verifierVerdict = VerificationVerdict.
     id: "task-1",
     title: "minimum controller task",
     acceptanceId: "acceptance-1",
+    acceptanceVersion: 1,
   }));
   const runtime = new FakeRuntime({ mode: runtimeMode, revision: "rev-1" });
   const verifier = new FakeVerifier({ verdict: verifierVerdict });
@@ -297,7 +298,7 @@ function verificationFor(evidenceIds, over = {}) {
 
 test("lineage: verification cannot reference evidence of another task", () => {
   const { store } = fixture();
-  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1", acceptanceVersion: 1 }));
   seedRunChain(store, { taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
   store.recordEvidence(evidenceFor({ id: "ev-2", taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" }));
 
@@ -310,7 +311,7 @@ test("lineage: verification cannot reference evidence of another task", () => {
 test("lineage: verification cannot reference evidence of another run", () => {
   const { store } = fixture();
   seedRunChain(store, { taskId: "task-1", runId: "t1-run", attemptId: "t1-attempt" });
-  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1", acceptanceVersion: 1 }));
   seedRunChain(store, { taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
   // claims task-1, but points at the Run of another task
   store.recordEvidence(evidenceFor({ id: "ev-run", runId: "t2-run", attemptId: "t2-attempt" }));
@@ -324,7 +325,7 @@ test("lineage: verification cannot reference evidence of another run", () => {
 test("lineage: verification cannot reference evidence of another attempt", () => {
   const { store } = fixture();
   seedRunChain(store, { taskId: "task-1", runId: "t1-run", attemptId: "t1-attempt" });
-  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1", acceptanceVersion: 1 }));
   seedRunChain(store, { taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
   // Task and Run are task-1's, but the Attempt belongs to another Run
   store.recordEvidence(evidenceFor({ id: "ev-attempt", runId: "t1-run", attemptId: "t2-attempt" }));
@@ -337,7 +338,7 @@ test("lineage: verification cannot reference evidence of another attempt", () =>
 
 test("lineage: a shared acceptance contract does not excuse a foreign task lineage", () => {
   const { store } = fixture();
-  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1", acceptanceVersion: 1 }));
   seedRunChain(store, { taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
   const evidence = evidenceFor({ id: "ev-3", taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
   store.recordEvidence(evidence);
@@ -430,7 +431,7 @@ test("lineage: evidence produced by reconciliation gets no lineage exemption", a
   assert.equal(result.verification.revision, recovered.revision);
 
   // ...and gets no exemption afterwards either
-  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1", acceptanceVersion: 1 }));
   assert.throws(
     () => store.recordVerification(verificationFor([recovered.id], { id: "v-j-task", taskId: "task-2" })),
     InvariantError,
@@ -443,7 +444,7 @@ test("lineage: evidence produced by reconciliation gets no lineage exemption", a
 
 test("lineage: a PASS verification recorded for another task cannot accept this task", () => {
   const { store } = fixture();
-  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1", acceptanceVersion: 1 }));
   seedRunChain(store, { taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
   store.recordEvidence(evidenceFor({ id: "ev-4", taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" }));
   const verification = store.recordVerification(verificationFor(["ev-4"], { id: "v-task2", taskId: "task-2" }));
@@ -458,7 +459,7 @@ test("lineage: a PASS verification recorded for another task cannot accept this 
 
 test("lineage: acceptTask re-proves the chain for a forged PASS verification", () => {
   const { store } = fixture();
-  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1", acceptanceVersion: 1 }));
   seedRunChain(store, { taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
   store.recordEvidence(evidenceFor({ id: "ev-5", taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" }));
 
@@ -496,4 +497,168 @@ test("lineage: acceptTask rejects a PASS verification whose evidence has gone ST
     (error) => error instanceof InvariantError && /cannot support a PASS verification/.test(error.message),
   );
   assert.notEqual(store.getTask("task-1").status, TaskStatus.ACCEPTED);
+});
+
+// ── Acceptance contract revision pinning ─────────────────────────────────────
+// A task is pinned to the contract revision it was created with. Changing
+// contract content creates a NEW revision and never moves an existing task.
+
+test("contract pinning: a task executes and accepts on the revision it pinned", async () => {
+  const { store, controller } = fixture();
+  assert.equal(store.getTask("task-1").acceptanceVersion, 1);
+
+  const result = await controller.reconcileTask("task-1");
+
+  assert.equal(result.action, "ACCEPT");
+  assert.equal(result.task.status, TaskStatus.ACCEPTED);
+  assert.equal(result.evidence.acceptanceVersion, 1);
+  assert.equal(result.verification.acceptanceVersion, 1);
+  assert.equal(store.getAcceptance("acceptance-1", 1).status, "PASSED");
+});
+
+test("contract pinning: revising the contract does not move an existing task", async () => {
+  const { store, controller } = fixture();
+  const revised = store.reviseAcceptance("acceptance-1", {
+    criteria: [{ id: "build", type: "BUILD", required: true }, { id: "lint", type: "LINT", required: true }],
+  });
+
+  assert.equal(revised.version, 2);
+  assert.equal(revised.status, "PENDING");
+  assert.equal(store.getTask("task-1").acceptanceVersion, 1, "the task stays pinned to v1");
+
+  const result = await controller.reconcileTask("task-1");
+
+  assert.equal(result.action, "ACCEPT");
+  assert.equal(result.evidence.acceptanceVersion, 1, "evidence binds the pinned revision, not the newest one");
+  assert.equal(result.verification.acceptanceVersion, 1);
+  assert.equal(store.getAcceptance("acceptance-1", 1).status, "PASSED");
+  assert.equal(store.getAcceptance("acceptance-1", 2).status, "PENDING", "the newer revision is untouched");
+});
+
+test("contract pinning: evidence bound to a newer revision cannot be verified by a v1 task", () => {
+  const { store } = fixture();
+  store.reviseAcceptance("acceptance-1", { criteria: [{ id: "late", type: "BUILD", required: true }] });
+  seedRunChain(store, { taskId: "task-1", runId: "t1-run", attemptId: "t1-attempt" });
+  store.recordEvidence(evidenceFor({ id: "ev-v2", acceptanceVersion: 2 }));
+
+  assert.throws(
+    () => store.recordVerification(verificationFor(["ev-v2"], { id: "v-v2", acceptanceVersion: 2 })),
+    (error) => error instanceof InvariantError && /pinned/.test(error.message),
+  );
+});
+
+test("contract pinning: a verification for a newer revision cannot accept a v1 task", () => {
+  const { store } = fixture();
+  store.reviseAcceptance("acceptance-1", { criteria: [{ id: "late", type: "BUILD", required: true }] });
+  // a second task, pinned to the new revision and legitimately verified on it
+  store.seedTask(createTask({ id: "task-2", title: "v2 task", acceptanceId: "acceptance-1", acceptanceVersion: 2 }));
+  seedRunChain(store, { taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
+  store.recordEvidence(evidenceFor({
+    id: "ev-t2", taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt", acceptanceVersion: 2,
+  }));
+  const verification = store.recordVerification(verificationFor(["ev-t2"], {
+    id: "v-t2", taskId: "task-2", acceptanceVersion: 2,
+  }));
+  assert.equal(verification.verdict, VerificationVerdict.PASS);
+
+  assert.throws(
+    () => store.acceptTask("task-1", 1, { verificationId: "v-t2" }),
+    (error) => error instanceof InvariantError && /cannot be accepted by this verification/.test(error.message),
+  );
+  assert.notEqual(store.getTask("task-1").status, TaskStatus.ACCEPTED);
+});
+
+test("contract pinning: v1 evidence cannot be carried by a v2 verification", () => {
+  const { store } = fixture();
+  store.reviseAcceptance("acceptance-1", { criteria: [{ id: "late", type: "BUILD", required: true }] });
+  seedRunChain(store, { taskId: "task-1", runId: "t1-run", attemptId: "t1-attempt" });
+  store.recordEvidence(evidenceFor({ id: "ev-v1", acceptanceVersion: 1 }));
+
+  assert.throws(
+    () => store.recordVerification(verificationFor(["ev-v1"], { id: "v-mix", acceptanceVersion: 2 })),
+    InvariantError,
+  );
+});
+
+test("contract pinning: contract content changed in place fails closed", async () => {
+  const { store, controller } = fixture();
+
+  // exactly the "content differs, identity confused" case: same id and version,
+  // different criteria — the revision guard must refuse to resolve it
+  for (const [key, acceptance] of store.acceptances) {
+    if (acceptance.id === "acceptance-1" && acceptance.version === 1) {
+      store.acceptances.set(key, { ...acceptance, criteria: [{ id: "swapped", type: "BUILD", required: false }] });
+    }
+  }
+
+  assert.throws(
+    () => store.getAcceptance("acceptance-1", 1),
+    (error) => error instanceof InvariantError && /without a new revision/.test(error.message),
+  );
+  await assert.rejects(
+    () => controller.reconcileTask("task-1"),
+    (error) => error instanceof InvariantError && /without a new revision/.test(error.message),
+  );
+
+  // the supported way to change content is a new revision, which stays isolated
+  const rewritten = [{ id: "rewritten", type: "LINT", required: true }];
+  assert.equal(store.reviseAcceptance("acceptance-1", { criteria: rewritten }).version, 2);
+  assert.deepEqual(store.getAcceptance("acceptance-1", 2).criteria, rewritten);
+});
+
+test("contract pinning: an acceptance decision is not a contract revision change", async () => {
+  const { store, controller } = fixture();
+  const before = store.getAcceptance("acceptance-1", 1);
+
+  await controller.reconcileTask("task-1");
+
+  const after = store.getAcceptance("acceptance-1", 1);
+  assert.equal(after.status, "PASSED");
+  assert.equal(after.version, 1, "accepting must not invent a new revision");
+  assert.deepEqual(after.criteria, before.criteria, "the decision leaves the contract content untouched");
+  assert.equal(store.getTask("task-1").acceptanceVersion, 1);
+  assert.throws(() => store.getAcceptance("acceptance-1", 2), InvariantError, "no v2 revision was created");
+});
+
+test("contract pinning: acceptTask rejects a forged PASS verification pinned to another revision", () => {
+  const { store } = fixture();
+  const revised = store.reviseAcceptance("acceptance-1", { criteria: [{ id: "late", type: "BUILD", required: true }] });
+  seedRunChain(store, { taskId: "task-1", runId: "t1-run", attemptId: "t1-attempt" });
+  store.recordEvidence(evidenceFor({ id: "ev-forged" }));
+
+  // forged straight into the aggregate map: claims this task and a *real*
+  // revision (v2), so only the task's own pin can reject it
+  store.verifications.set("v-forged-pin", {
+    id: "v-forged-pin",
+    taskId: "task-1",
+    acceptanceId: "acceptance-1",
+    acceptanceVersion: revised.version,
+    evidenceIds: ["ev-forged"],
+    verdict: VerificationVerdict.PASS,
+    revision: "rev-1",
+    createdAt: new Date().toISOString(),
+  });
+
+  assert.throws(
+    () => store.acceptTask("task-1", 1, { verificationId: "v-forged-pin" }),
+    (error) => error instanceof InvariantError && /cannot be accepted by this verification/.test(error.message),
+  );
+  assert.notEqual(store.getTask("task-1").status, TaskStatus.ACCEPTED);
+});
+
+test("contract pinning: reconciled evidence stays on the pinned revision", async () => {
+  const { store, runtime, controller } = fixture("lost");
+  runtime.reconcileOutcome = ReconcileOutcome.CONFIRMED_COMPLETED;
+
+  await controller.reconcileTask("task-1");
+  // the contract is revised *between* the loss and the reconciliation
+  store.reviseAcceptance("acceptance-1", { criteria: [{ id: "late", type: "BUILD", required: true }] });
+
+  const second = await controller.reconcileTask("task-1");
+
+  assert.equal(second.action, "ACCEPT");
+  assert.equal(second.evidence.acceptanceVersion, 1, "recovery must not follow the newer contract");
+  assert.equal(second.verification.acceptanceVersion, 1);
+  assert.equal(store.getAcceptance("acceptance-1", 1).status, "PASSED");
+  assert.equal(store.getAcceptance("acceptance-1", 2).status, "PENDING");
 });

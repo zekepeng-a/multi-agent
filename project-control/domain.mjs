@@ -81,13 +81,25 @@ export function now() {
   return new Date().toISOString();
 }
 
-export function createTask({ id, projectId = "project-1", title, acceptanceId, status = TaskStatus.READY } = {}) {
-  if (!id || !title || !acceptanceId) throw new Error("id, title and acceptanceId are required");
+export function createTask({
+  id,
+  projectId = "project-1",
+  title,
+  acceptanceId,
+  acceptanceVersion,
+  status = TaskStatus.READY,
+} = {}) {
+  if (!id || !title || !acceptanceId || !acceptanceVersion) {
+    throw new Error("id, title, acceptanceId and acceptanceVersion are required");
+  }
   return {
     id,
     projectId,
     title,
     acceptanceId,
+    // The contract revision this task is pinned to. It is fixed when the task is
+    // created and must never follow the acceptance object's current version.
+    acceptanceVersion,
     status,
     version: 1,
     currentRunId: null,
@@ -149,7 +161,7 @@ export function createEvidence({
   status = EvidenceStatus.CANDIDATE,
   contentRef = null,
 } = {}) {
-  if (!id || !taskId || !runId || !attemptId || !acceptanceId) {
+  if (!id || !taskId || !runId || !attemptId || !acceptanceId || !acceptanceVersion) {
     throw new Error("evidence identity is incomplete");
   }
   return {

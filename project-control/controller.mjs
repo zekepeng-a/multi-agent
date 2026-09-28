@@ -21,7 +21,10 @@ export class Controller {
 
   async reconcileTask(taskId) {
     const task = this.store.getTask(taskId);
-    const acceptance = this.store.getAcceptance(task.acceptanceId);
+    // The contract revision is resolved from the TASK, never from the acceptance
+    // object's current version: a task stays bound to the revision it was created
+    // with even after the contract is revised.
+    const acceptance = this.store.getAcceptance(task.acceptanceId, task.acceptanceVersion);
 
     if (task.status === TaskStatus.ACCEPTED || task.status === TaskStatus.CANCELLED) {
       return { action: "NOOP", reason: `task-${task.status.toLowerCase()}`, task };
