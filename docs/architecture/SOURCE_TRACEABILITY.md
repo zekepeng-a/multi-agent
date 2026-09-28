@@ -416,3 +416,174 @@ Still not frozen:
 Next research target:
 - **Durable execution + external side-effect uncertainty + idempotency**, traced to actual implementation code.
 - Then compare that source chain with the existing Persistence Boundary proposal before changing the architecture.
+
+
+---
+
+## 11. AgentLedger — durable side-effect ledger / idempotency / unknown-state handling
+
+Source:
+- Repository: https://github.com/yaogdu/AgentLedger
+- `src/agentledger/tools.py`
+- `src/agentledger/store.py`
+- `src/agentledger/runtime.py`
+
+### Tool contract carries side-effect semantics
+
+Source:
+- `src/agentledger/tools.py`
+- `ToolSpec`
+- `ToolGateway.call()`
+
+Observed implementation:
+- `ToolSpec` explicitly declares `side_effect`, `risk_level`, `idempotency_required`, `approval_required`, and sandbox requirements.
+- `ToolGateway.call()` computes a request hash and an idempotency key before executing a managed side-effect tool.
+- Managed side effects are recorded in a persistent Tool Ledger before execution.
+- A previously `SUCCEEDED` ledger entry causes the stored response to be replayed instead of invoking the external tool again.
+- An existing `PENDING_VERIFICATION` entry blocks another execution instead of blindly retrying.
+- `RESERVED` / `RUNNING` entries are also treated as already in progress.
+
+Meaning:
+- Idempotency is not merely a prompt instruction. It is part of the runtime/tool contract and execution path.
+- The runtime distinguishes ordinary computation from operations whose effects must be tracked.
+
+### Side-effect uncertainty is represented explicitly
+
+Source:
+- `src/agentledger/tools.py` — exception path in `ToolGateway.call()`
+- `src/agentledger/store.py` — `reserve_ledger()`, `update_ledger()`, `resolve_ledger()`
+
+Observed implementation:
+- After a managed side-effect tool throws, the ledger is moved to `PENDING_VERIFICATION`.
+- `resolve_ledger()` only permits explicit resolution to `SUCCEEDED` or `FAILED_NO_EFFECT`.
+- A successful manual resolution requires a response reference.
+- Resolution writes a `tool_ledger_resolved` event containing resolver, reason, previous status, new status, external id, and response reference.
+- A ledger row must belong to the current Run and must currently be `PENDING_VERIFICATION` before it can be resolved.
+
+Meaning:
+- This is direct implementation evidence for a durable **uncertain side-effect state**.
+- The system does not equate a local exception with “the external operation definitely did not happen”.
+- Recovery therefore begins with observation/reconciliation, not automatic duplicate execution.
+
+### Durable event history and state versioning
+
+Source:
+- `src/agentledger/store.py`
+- `append_event()`
+- `commit_state_patch()`
+- `mark_retry()`
+
+Observed implementation:
+- Events are appended with per-Run sequence numbers and optional state version / causal token / payload hash / payload reference.
+- State patches require the worker lease to be valid and require the supplied `base_version` to equal the current Run state version.
+- Successful state commit increments the version and records `state_committed` and `step_completed` events.
+- Retry classification is recorded as an event before the step is either failed permanently or moved to `retry_scheduled`.
+
+Meaning:
+- Durable execution is not just “save some JSON”. It couples state revision, worker ownership, event history, and retry classification.
+- This gives source-backed precedent for separating mutable state from append-oriented history.
+
+### Runtime recovery boundary
+
+Source:
+- `src/agentledger/runtime.py`
+- `Runtime.run_once()`
+
+Observed implementation:
+- A worker first claims a Step and receives a lease token / attempt number.
+- The agent executes against a snapshot containing Run state and state version.
+- Completion commits a state patch using the expected base version and lease token.
+- Simulated crashes and retryable failures go through `mark_retry()`; non-retryable failures go through `mark_failed()`.
+- Human approval is a separate waiting state.
+
+Boundary:
+- AgentLedger's Runtime owns execution durability and side-effect safety; it does not claim to own product/project planning or acceptance authority.
+
+### Important limitation
+
+AgentLedger is a strong implementation reference for runtime reliability, but it is not evidence that Project Control OS should reproduce AgentLedger wholesale. Its own stated scope is a reliability runtime beneath/alongside agent frameworks.
+
+Status:
+- **Implementation-backed reference.**
+- Strong evidence for: Tool Ledger, idempotency keys, explicit uncertain side-effect state, durable event history, optimistic state revision, leases, and retry classification.
+- Not yet evidence for: Project/Goal/Task acceptance semantics or the full Project Control model.
+
+---
+
+## 12. Temporal — durable execution and the exact-once trap
+
+Source:
+- Repository: https://github.com/temporalio/temporal
+- `docs/architecture/README.md`
+- Temporal documentation source: `documentation/docs/encyclopedia/activities/activity-definition.mdx`
+- Temporal documentation source: `documentation/docs/encyclopedia/activities/activity-execution.mdx`
+
+Observed implementation/architecture documentation:
+- Temporal stores an append-only Event History for each Workflow Execution and reconstructs Workflow state by replay.
+- Workflow code is required to be deterministic and side-effect free, while Activities are the units that interact with the outside world.
+- Activities can be retried; a worker can successfully perform an external operation and then crash before reporting completion, causing the Activity to execute again.
+- Temporal therefore recommends idempotent Activities and supports application-level idempotency keys.
+- The documentation explicitly distinguishes **exactly-once observed completion** from the possibility that an Activity executes multiple times.
+- Activity retry policy and durable retry state are runtime concerns, not Project Control acceptance state.
+
+Important consequence:
+- “Exactly once” must not be used loosely to mean “the external side effect happened exactly once”.
+- A durable runtime can provide a single logical completion record while an external operation may have executed more than once unless the external service also provides suitable idempotency semantics.
+
+Boundary:
+- Temporal is strong evidence for durable execution and retry semantics, but not for our Project/Goal/Task acceptance authority.
+
+Status:
+- **Implementation-backed architecture reference plus official source documentation.**
+- Strong evidence for: event history, deterministic workflow / side-effecting activity separation, retry semantics, and application-level idempotency.
+- The external-side-effect exactly-once boundary must remain explicit.
+
+---
+
+## 13. Cross-source invariant: recovery is not retry
+
+AgentLedger and Temporal independently support a more precise invariant than the earlier generic “retry with idempotency” wording:
+
+1. Execution may be retried because durable runtime state says completion is absent.
+2. The external world may nevertheless already contain the effect.
+3. Therefore the runtime must distinguish **execution retry** from **external-effect duplication safety**.
+4. Idempotency keys / external idempotency semantics reduce duplicate effects.
+5. If the runtime cannot establish whether the effect happened, it needs an explicit uncertainty/reconciliation path rather than blind retry.
+
+This aligns with the earlier Agent Harness `reconciliation-required` protocol, but the evidence now comes from a second independent runtime implementation.
+
+### Architectural consequence — still research, not frozen
+
+The current Persistence Boundary should eventually be checked against at least these runtime records:
+- Run / Attempt
+- Worker lease
+- Command or Tool invocation
+- Idempotency key
+- Effect / Tool Ledger entry
+- External receipt/reference
+- Append-only event
+- Uncertainty / reconciliation state
+- Verification result
+
+This is a research consequence, **not yet a schema decision**.
+
+---
+
+## 14. Research status after durable-execution pass
+
+Newly source-traced:
+- AgentLedger ToolSpec side-effect/idempotency contract.
+- AgentLedger ToolGateway idempotency and ledger reservation/replay path.
+- AgentLedger `PENDING_VERIFICATION` side-effect uncertainty state and explicit resolution path.
+- AgentLedger lease + state-version + retry/event implementation.
+- Temporal event-history / Workflow-vs-Activity boundary and retry/idempotency semantics.
+
+Still not frozen:
+- Project Control OS Effect Ledger schema.
+- Project Control OS Command/Effect relationship.
+- Whether reconciliation belongs to Controller, Effect subsystem, or a separate Recovery component.
+- Whether a dedicated durable-execution runtime is needed at all, versus adapting DSH/external runtimes.
+
+Next research target:
+- **Acceptance / verification / artifact lineage**: trace how real systems bind evidence to a specific revision/artifact and prevent stale or mismatched evidence from completing a task.
+- Then compare that source chain with our existing Acceptance/Evidence invariants before changing architecture.
