@@ -98,7 +98,9 @@ test("Test5: validation PASS + Reviewer 进程失败 ⇒ review-unavailable → 
   const o = classifyReviewOutcome({ exitCode: 1, raw: null, resFileExists: false, stderrTail: "boom" });
   assert.equal(o.kind, "process_failure");
   const reason = `review-unavailable: ${o.code} Reviewer 不可用`;
-  const ev = evaluateFailure({ failure_reason: reason, failure_history: [reason], retry_count: 0 }, { agents: [] });
+  // fixture 必须是合法的 DAG task（含 id）：缺 id 会把产物写成 .ai/evaluations/undefined.json，
+  // 与其他测试文件并行时争抢同一路径 → Windows rename EPERM。
+  const ev = evaluateFailure({ id: "TASK-EV-1", failure_reason: reason, failure_history: [reason], retry_count: 0 }, { agents: [] });
   assert.equal(ev.suggested_action, "retry", "进程失败走 retry，不得直接 DONE/PASS");
 });
 
