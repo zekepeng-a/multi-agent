@@ -1,22 +1,20 @@
 import {
   AttemptStatus,
   EvidenceStatus,
-  InvariantError,
   RunStatus,
   TaskStatus,
   createAttempt,
   createEvidence,
   createRun,
-  createVerification,
   now,
-  VerificationVerdict,
 } from "./domain.mjs";
 
 export class Controller {
-  constructor({ store, runtime, idFactory = defaultIdFactory } = {}) {
-    if (!store || !runtime) throw new Error("store and runtime are required");
+  constructor({ store, runtime, verifier, idFactory = defaultIdFactory } = {}) {
+    if (!store || !runtime || !verifier) throw new Error("store, runtime and verifier are required");
     this.store = store;
     this.runtime = runtime;
+    this.verifier = verifier;
     this.idFactory = idFactory;
   }
 
@@ -73,7 +71,10 @@ export class Controller {
     });
 
     const runningAttempt = this.store.updateAttempt(attemptId, { status: AttemptStatus.RUNNING });
-    const result = await this.runtime.start({ run: this.store.getRun(run.id), attempt: runningAttempt });
+    const result = await this.runtime.start({
+      run: this.store.getRun(run.id),
+      attempt: runningAttempt,
+    });
 
     this.store.updateAttempt(attemptId, {
       status: result.status,
@@ -90,58 +91,71 @@ export class Controller {
 
     this.store.updateRun(run.id, latestRun.version, { status: finalRunStatus });
 
-    if (result.status === AttemptStatus.COMPLETED) {
-      const evidence = createEvidence({
-        id: this.idFactory("evidence"),
-        taskId: task.id,
-        runId: run.id,
-        attemptId,
-        acceptanceId: acceptance.id,
-        acceptanceVersion: acceptance.version,
-        revision: result.revision,
-        status: EvidenceStatus.CANDIDATE,
-        contentRef: result.resultRef,
-      });
-      this.store.recordEvidence(evidence);
-
-      const verification = createVerification({
-        id: this.idFactory("verification"),
-        acceptanceId: acceptance.id,
-        acceptanceVersion: acceptance.version,
-        evidenceIds: [evidence.id],
-        verdict: VerificationVerdict.PASS,
-        revision: result.revision,
-      });
-      this.store.recordVerification(verification);
-
-      const currentTask = this.store.getTask(task.id);
-      const accepted = this.store.acceptTask(task.id, currentTask.version, {
-        verificationId: verification.id,
-        commandId: `accept:${task.id}:${verification.id}`,
-      });
+    if (result.status !== AttemptStatus.COMPLETED) {
       return {
-        action: "ACCEPT",
-        task: accepted,
+        action: result.status === AttemptStatus.LOST ? "RECONCILE" : "FAILED",
+        task: this.store.getTask(task.id),
         run: this.store.getRun(run.id),
         attempt: this.store.getAttempt(attemptId),
-        evidence: this.store.getEvidence(evidence.id),
-        verification: this.store.getVerification(verification.id),
       };
     }
 
+    const evidence = createEvidence({
+      id: this.idFactory("evidence"),
+      taskId: task.id,
+      runId: run.id,
+      attemptId,
+      acceptanceId: acceptance.id,
+      acceptanceVersion: acceptance.version,
+      revision: result.revision,
+      status: EvidenceStatus.CANDIDATE,
+      contentRef: result.resultRef,
+    });
+    this.store.recordEvidence(evidence);
+
+    const verification = this.verifier.verify({
+      acceptance,
+      evidence,
+      task,
+      run: this.store.getRun(run.id),
+    });
+    this.store.recordVerification(verification);
+
+    if (verification.verdict !== "PASS") {
+      const currentTask = this.store.getTask(task.id);
+      this.store.updateTask(
+        task.id,
+        currentTask.version,
+        { status: TaskStatus.NEEDS_REVIEW, latestEvidenceId: evidence.id },
+        { commandId: `verification-failed:${task.id}:${verification.id}` },
+      );
+      return {
+        action: "REVIEW",
+        task: this.store.getTask(task.id),
+        run: this.store.getRun(run.id),
+        attempt: this.store.getAttempt(attemptId),
+        evidence: this.store.getEvidence(evidence.id),
+        verification,
+      };
+    }
+
+    const currentTask = this.store.getTask(task.id);
+    const accepted = this.store.acceptTask(task.id, currentTask.version, {
+      verificationId: verification.id,
+      commandId: `accept:${task.id}:${verification.id}`,
+    });
+
     return {
-      action: result.status === AttemptStatus.LOST ? "RECONCILE" : "FAILED",
-      task: this.store.getTask(task.id),
+      action: "ACCEPT",
+      task: accepted,
       run: this.store.getRun(run.id),
       attempt: this.store.getAttempt(attemptId),
+      evidence: this.store.getEvidence(evidence.id),
+      verification: this.store.getVerification(verification.id),
     };
   }
 
   #observeRun(task, acceptance, run) {
-    if (run.status === RunStatus.COMPLETED) {
-      const evidence = [...this.store.evidence.values?.() ?? []];
-      if (!evidence.length) throw new InvariantError("completed run has no evidence");
-    }
     return {
       action: "WAIT",
       reason: `run-${run.status.toLowerCase()}`,
