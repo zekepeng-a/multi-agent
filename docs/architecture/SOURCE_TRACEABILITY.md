@@ -259,3 +259,160 @@ Only after that source map is sufficiently complete should a new Project Control
 - Agent Execution Harness: source module map established; detailed semantic reading pending.
 - Earthwalker Agent OS: recovery matrix + planner/runner/workspace source traced; detailed semantic reading pending.
 - Controller/Reconciler: **do not design yet**. First identify concrete controller/reconciliation implementations and trace their code paths.
+
+
+---
+
+## 7. Kubernetes controller-runtime — reconciliation source
+
+Source:
+- Repository: https://github.com/kubernetes-sigs/controller-runtime
+- `pkg/reconcile/reconcile.go`
+- `pkg/internal/controller/controller.go`
+- `pkg/builder/controller.go`
+
+### Reconciler contract
+
+Source:
+- `pkg/reconcile/reconcile.go`
+- `TypedReconciler`
+- `Request`
+- `Result`
+
+Observed implementation:
+- A reconcile Request identifies the object by namespace/name; it does not carry the triggering Event or a snapshot of changed contents.
+- The Reconciler performs a full reconciliation for the referenced object.
+- Reconciliation is explicitly level-based: read current state and make it match the desired state, rather than branching on individual event types.
+- Errors cause rate-limited requeue/backoff; explicit `RequeueAfter` requests a future reconciliation.
+- `RequeueAfter` is distinguished from error retry: it is intended for waiting/polling external state, while errors use retry backoff.
+- The implementation may change systems external to Kubernetes as well as Kubernetes objects.
+
+Key invariant:
+- **Events trigger reconciliation; current observed state determines what reconciliation does.**
+
+### Controller runtime
+
+Source:
+- `pkg/internal/controller/controller.go`
+
+Observed implementation:
+- Controller starts event sources and a work queue, then launches workers.
+- The queue/workers process reconciliation requests and ensure the reconcile handler is not concurrently invoked for the same object.
+- Controller can apply a reconciliation timeout.
+- Panic recovery is explicit and configurable.
+- Leader election / warmup are runtime lifecycle concerns.
+- Reconciler errors are recorded and fed into the queue retry behavior.
+
+Key boundary:
+- The Controller is the execution machinery around Reconcile; the Reconciler contains the domain reconciliation logic.
+
+### Event-to-request translation
+
+Source:
+- `pkg/builder/controller.go`
+- `Watches()`
+- `Owns()`
+- `WithEventFilter()`
+
+Observed implementation:
+- Watches connect object events to reconciliation requests through event handlers.
+- Owned resources can enqueue reconciliation of their owner.
+- Predicates can filter events before they create reconciliation work.
+- The workqueue de-duplicates identical requests.
+
+Important limitation for Project Control OS:
+- Kubernetes controller-runtime is a concrete reconciliation runtime, not evidence that our Project Control OS must reproduce its workqueue/cache/leader-election machinery.
+- The useful transferable invariant is the level-based reconciliation contract, not the entire Kubernetes implementation.
+
+Status:
+- **Implementation-backed reference.**
+- Reconciliation semantics are sufficiently source-traced to inform the Project Control OS.
+- Runtime machinery should remain a separate question.
+
+---
+
+## 8. Agent Harness — controller boundary / reconciliation-required
+
+Source:
+- Repository: https://github.com/0xenzyme/agent-harness
+- `plugins/agent-harness/references/controller-communication.md`
+- `harness/specs/2026-09-01-run-checkpoint-and-recovery-protocol.md`
+- `docs/project-contract.md`
+- `plugins/agent-harness/scripts/agent-harness.mjs`
+
+### Controller boundary
+
+Source:
+- `plugins/agent-harness/references/controller-communication.md`
+
+Observed implementation/protocol:
+- Controller is defined as outcome owner and accepted-state owner.
+- Controller communicates durable target, accepted scope, roots, Run/DAG node, ownership, verification, stop conditions, accepted-state owner, authoritative phase, and state-sync obligations.
+- Host retains scheduling, delegation, concurrency, cancellation, and model selection.
+- Executors return candidate evidence.
+- Only the accepted-state owner records accepted Goal, Task, Run, gate, and bounded status state.
+
+Important distinction:
+- This project deliberately separates **outcome/state authority** from **runtime scheduling/execution**.
+
+### Reconciliation-required
+
+Source:
+- `harness/specs/2026-09-01-run-checkpoint-and-recovery-protocol.md`
+- `docs/project-contract.md`
+- `docs/cli.md`
+
+Observed implementation/protocol:
+- If an external command may have started but its result is unknown, the system enters `reconciliation-required`.
+- The same applies when an external action may have completed but checkpoint/state-sync failed, or when command return, project database, CI/CD, and Run evidence disagree.
+- While reconciliation is required, blind retry is prohibited.
+- Clearing reconciliation requires fresh evidence/reference and observation time.
+- Explicit checkpoint updates carry `expected-revision`, control state, next action, pause reason, required evidence, prohibited actions, and reconciliation flag.
+
+Meaning:
+- Reconciliation is not simply “retry failed Run”.
+- It is a **safe uncertainty state** whose next action is authoritative inspection.
+
+---
+
+## 9. Kubernetes + Agent Harness: common invariant
+
+These two independent implementations provide unusually strong evidence for a common control-plane pattern:
+
+1. Something observable changes or an execution result becomes available/uncertain.
+2. A durable request/control state records what needs attention.
+3. A controller/reconciler observes current authoritative state.
+4. It compares current state with the desired/accepted outcome.
+5. It chooses a bounded next action.
+6. The action produces new observable state/evidence.
+7. The controller observes again.
+8. Uncertain external effects are not blindly repeated.
+
+However, the implementations differ in an important way:
+
+- Kubernetes primarily reconciles **desired resource state against observed system state**.
+- Agent Harness primarily reconciles **accepted project outcome/state against execution evidence and synchronization state**.
+
+Therefore “Controller/Reconciler” should not yet become one generic Project Control OS object. The source evidence suggests it may be a control pattern implemented over different authoritative domains.
+
+---
+
+## 10. Research status after Controller pass
+
+Newly source-traced:
+- Kubernetes level-based Reconciler contract.
+- Kubernetes controller/workqueue/event-to-request machinery.
+- Agent Harness controller ownership boundary.
+- Agent Harness reconciliation-required uncertainty state.
+- Agent Harness revision-safe checkpoint inputs.
+
+Still not frozen:
+- Project Control OS Controller API.
+- Project Control OS Reconciler data model.
+- Whether Controller and Reconciler are one module or separate modules.
+- Whether Project Control OS needs a workqueue at all.
+- Whether DSH Workflow/Team should be called by a reconciler directly or through a Runtime Adapter.
+
+Next research target:
+- **Durable execution + external side-effect uncertainty + idempotency**, traced to actual implementation code.
+- Then compare that source chain with the existing Persistence Boundary proposal before changing the architecture.
