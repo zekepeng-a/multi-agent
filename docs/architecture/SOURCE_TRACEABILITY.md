@@ -587,3 +587,144 @@ Still not frozen:
 Next research target:
 - **Acceptance / verification / artifact lineage**: trace how real systems bind evidence to a specific revision/artifact and prevent stale or mismatched evidence from completing a task.
 - Then compare that source chain with our existing Acceptance/Evidence invariants before changing architecture.
+
+
+---
+
+## 15. Acceptance / verification / artifact lineage — source-backed pass
+
+### Agent Harness: candidate evidence is not accepted state
+
+Source:
+- `plugins/agent-harness/references/worker-runner-contract.md`
+- `plugins/agent-harness/references/artifact-lifecycle.md`
+- `plugins/agent-harness/scripts/agent-harness.mjs`
+
+Observed implementation contract:
+- Each DAG node records Goal/Run, dependencies, ownership, allowed/forbidden scope, execution cwd, verification, stop conditions, and a candidate result artifact.
+- Workers return changed files, verification, risks, State Sync Notes, and remaining work as **candidate evidence**.
+- Workers never update accepted Goal, Task, status, Run, or gate state.
+- The accepted-state owner validates candidate evidence and records durable state.
+- A local-only Run path is explicitly described as a locator, not durable evidence by itself.
+- Before a Run is pruned, configured durable evidence must retain the accepted conclusion, verification summary, and required audit reference.
+- Nonterminal or invalid checkpoints remain operationally active and cannot be pruned merely because a legacy Run phase says `blocked`.
+
+Meaning:
+- Acceptance authority and execution artifacts are deliberately separated.
+- A file path to a Run is not equivalent to durable proof.
+- Artifact retention is part of correctness when historical evidence is required for later state decisions.
+
+### Agent Harness: contract drift invalidates completion continuity
+
+Source:
+- `harness/specs/2026-09-01-run-checkpoint-and-recovery-protocol.md`
+- `docs/cli.md`
+- `CHANGELOG.md`
+
+Observed behavior:
+- Managed Run checkpoints use an expected revision.
+- Contract/scope drift causes a checkpoint to become `replan-required`.
+- Uncertain external state causes `reconciliation-required`, with an inspect-next action and prohibited blind retries.
+- Checkpoint updates are revision-safe; concurrent record operations use Run locking and atomic artifact writes.
+- The project contract states that postflight sync must use fresh verification and observed outcome; old evidence does not silently become current truth.
+
+Meaning:
+- Evidence has a **validity context**, not just a boolean verified flag.
+- A Run can produce evidence and later become invalid for completion because its contract changed.
+
+### Archify: repository evidence is pinned separately from authored claims
+
+Source:
+- Repository: `tt-a1i/archify`
+- `archify/delta/architecture-delta.mjs`
+- `archify/bin/archify.mjs`
+- `archify/test/architecture-delta.test.mjs`
+- `docs/research-architecture-delta-pr-proof-2026-07-23.md`
+
+Observed implementation:
+- Architecture entities use authored stable IDs; missing or duplicate IDs fail closed.
+- Repository identity is compared before provenance can be treated as comparable.
+- `proofLevel` becomes `revision-pinned` only when both sides have verified repository evidence and full 40-character revisions.
+- The compare receipt records raw input SHA-256 and semantic SHA-256 separately.
+- Repository evidence is treated as a distinct change classification from semantic/geometry changes.
+- Rendered source evidence is checked for a verified repository URL, revision, and reference count before it can qualify as complete.
+- Repository mismatch is a hard failure rather than an inferred correspondence.
+- The implementation explicitly does not infer runtime impact, risk, causality, mergeability, or other claims from an architecture diff.
+
+Meaning:
+- Provenance is not merely a text field attached to an artifact; it has validation gates and identity checks.
+- Exact input identity and semantic identity can legitimately be different and both matter.
+- “Verified” must be scoped to a concrete source/revision and a defined claim.
+
+### Earthwalker Agent OS: verification evidence is bounded and lineage is explicit
+
+Source:
+- Repository: `earthwalker17/agent-os`
+- `backend/execution/recovery_matrix.py`
+- `backend/execution/models.py`
+- `backend/main.py`
+
+Observed implementation:
+- Recovery contracts define accepted evidence and verification separately for build/runtime/visual/integration/deployment/database/product recovery.
+- Recovery evidence is bounded, redacted, and attached to a concrete failed Run.
+- Recovery child Runs carry `recovery_of` lineage.
+- Per-task patch workspaces keep a `manifest.json` audit artifact.
+- The architecture describes `run.json` as a compact record-level view while detailed per-wave/per-task information lives in separate artifacts.
+
+Meaning:
+- Evidence should be bounded and attributable to a specific Run.
+- Recovery creates lineage rather than overwriting the original execution history.
+- Large/detail artifacts should remain externally referenced instead of bloating the authoritative Run record.
+
+---
+
+## 16. Cross-source invariant: Evidence needs identity + scope + freshness
+
+The evidence now supports a stronger invariant than merely “Evidence before Acceptance”:
+
+`Evidence is acceptable only relative to an explicit subject, source/revision, scope, verification method, and freshness/validity context.`
+
+At minimum, source evidence suggests tracking some combination of:
+- evidence_id
+- subject (Task/Run/Artifact/etc.)
+- source reference
+- source revision / artifact identity
+- scope covered
+- verification method/result
+- observed_at
+- provenance / lineage
+- validity or supersession state
+
+This is still a **research invariant**, not a frozen storage schema.
+
+Important distinction:
+- **Evidence identity** answers “which observation/result is this?”
+- **Artifact identity** answers “which concrete bytes/output does it describe?”
+- **Source identity** answers “which repository/revision did it inspect?”
+- **Acceptance** answers “does this evidence satisfy this Task's acceptance contract?”
+
+These must not collapse into one `verified=true` flag.
+
+---
+
+## 17. Research boundary check
+
+This pass materially changed the model in one way: it exposed **evidence validity/provenance** as a first-class boundary rather than a simple property of Evidence.
+
+At this point the major control-plane failure classes have independent implementation-backed precedents:
+
+1. current-state reconciliation — Kubernetes
+2. accepted-state authority — Agent Harness
+3. uncertain external effects — Agent Harness / AgentLedger
+4. idempotent durable tool execution — AgentLedger / Temporal
+5. optimistic revision / concurrent state safety — AgentLedger / Kubernetes / Agent Harness
+6. artifact/provenance identity — Archify
+7. candidate-vs-accepted evidence — Agent Harness
+8. recovery lineage — Earthwalker Agent OS
+
+This does **not** mean the architecture is finished. It means the next research should move from isolated mechanisms toward **cross-system boundary comparison** rather than collecting more projects that repeat the same vocabulary.
+
+Next target:
+- Compare the above systems' **command/event/state boundaries and controller authority boundaries**.
+- Search for counterexamples or incompatible designs.
+- Stop archaeology when new sources no longer reveal a new invariant, authority boundary, failure mode, or materially different persistence/recovery strategy.
