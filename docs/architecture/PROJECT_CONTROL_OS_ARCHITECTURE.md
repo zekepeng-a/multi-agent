@@ -403,11 +403,23 @@ status:
 priority: LOW | NORMAL | HIGH | CRITICAL
 dependencies: TaskId[]
 acceptance_id: AcceptanceId
+acceptance_version: integer
 current_run_id: RunId?
 latest_evidence_id: EvidenceId?
 created_at: timestamp
 updated_at: timestamp
 ```
+
+A Task does not point at the Acceptance Contract's current head. It pins one
+concrete contract revision:
+
+```text
+(AcceptanceId, AcceptanceVersion)
+```
+
+Changing contract content requires a new revision; an existing Task keeps the
+revision it was created against and never drifts onto a newer one. See
+*Acceptance relationship* below.
 
 A Task can have many Runs:
 
@@ -445,6 +457,12 @@ updated_at: timestamp
 ```
 
 An Acceptance Contract must be testable/verifiable.
+
+Contract identity is the pair `(id, version)`. Contract **content** (`criteria`,
+`required_evidence`, `target_id`, …) changes only by creating a new revision, and
+one identity must never be reused for different content. `status` is the
+acceptance **decision** state, not contract content: `PENDING → PASSED` is not a
+contract revision change.
 
 ---
 
@@ -559,12 +577,19 @@ type:
 target:
   type: string
   id: string
+acceptance_id: AcceptanceId
+acceptance_version: integer
 revision: string?
 content_ref: string
 sha256: string?
 status: CANDIDATE | VERIFIED | ACCEPTED | STALE | SUPERSEDED
 created_at: timestamp
 ```
+
+Evidence that can influence acceptance identifies the acceptance contract
+revision it is bound to. Evidence created for a different
+`(acceptance_id, acceptance_version)` cannot support a PASS verification for
+this Task.
 
 Agent claim:
 
@@ -591,6 +616,7 @@ Purpose: evaluate Evidence against Acceptance criteria.
 id: VerificationId
 evidence_ids: EvidenceId[]
 acceptance_id: AcceptanceId
+acceptance_version: integer
 verifier:
   type: AUTOMATED | AGENT | HUMAN
   agent_id: AgentId?
@@ -985,6 +1011,16 @@ SUCCEEDED / FAILED
 
 # 8. Hard Architectural Invariants
 
+**Numbering decision (recorded).** The archaeology track froze I-27…I-31 for
+acceptance-bound, revision-lineage, and approval-boundary semantics
+(`ARCHAEOLOGY_CLOSURE.md`, `FINAL_ARCHAEOLOGY.md`). Canonical numbering yields to
+that frozen record: those five numbers are adopted here, and the four invariant
+statements this document previously held at I-27…I-30 are **retained unchanged**
+as I-32…I-35. No invariant statement was deleted or reinterpreted — only the
+numbers of the four displaced statements moved. `FINAL_ARCHAEOLOGY.md` is a
+research conclusion and is not implementation authority; its numbering is
+adopted because the closure record already claimed it.
+
 ```text
 I-01 Task/Goal is project acceptance authority.
 I-02 Evidence precedes Acceptance.
@@ -1012,10 +1048,15 @@ I-23 Large artifacts are externalized; durable core state stores references/hash
 I-24 Runtime can be replaced without changing the Project Model.
 I-25 Human retains final authority for project direction/high-risk operations.
 I-26 Exactly-once external side effects must never be assumed by default.
-I-27 A Run may have multiple Attempts without becoming multiple Tasks.
-I-28 Verification evaluates evidence; it does not itself become Project State.
-I-29 A command must not silently overwrite a newer authoritative version.
-I-30 Historical Events are not rewritten to repair current state.
+I-27 Acceptance is contract-bound and evidence-bound.
+I-28 Acceptance/evidence lineage must bind to a concrete revision identity.
+I-29 Approval does not equal Acceptance.
+I-30 Approval is scoped, attributable, and subject to its declared terminal/revocation semantics.
+I-31 Human approval cannot manufacture missing evidence.
+I-32 A Run may have multiple Attempts without becoming multiple Tasks.
+I-33 Verification evaluates evidence; it does not itself become Project State.
+I-34 A command must not silently overwrite a newer authoritative version.
+I-35 Historical Events are not rewritten to repair current state.
 ```
 
 ---
@@ -1798,7 +1839,7 @@ This matrix defines who may create, modify, execute, verify, and accept the cano
 - Roadmap contains Milestones.
 - Milestone contains Goals.
 - Goal contains Tasks.
-- Task owns Acceptance and may have many Runs.
+- Task references one Acceptance Contract revision and may have many Runs.
 - Run contains Attempts and references Workspace and Runtime.
 - Attempt may produce Evidence.
 - Evidence is evaluated by Verification.
@@ -1813,6 +1854,24 @@ Acceptance is not a property an Agent may set directly.
 The causal chain is:
 
 Evidence → Verification → Acceptance evaluation → Control Plane state transition.
+
+A Task references **one specific Acceptance Contract revision**:
+
+```text
+Contract identity = (AcceptanceId, AcceptanceVersion)
+
+Task.acceptance_id + Task.acceptance_version                  →  that revision
+Evidence.acceptance_id + Evidence.acceptance_version          →  the same revision
+Verification.acceptance_id + Verification.acceptance_version  →  the same revision
+```
+
+- Changing contract content requires a new revision.
+- Changing Acceptance `status` (`PENDING → PASSED`) is **not** a contract revision
+  change.
+- An existing Task does not drift with the Acceptance head revision: it stays
+  bound to the revision it was created against.
+- Acceptance is evaluated against that pinned revision, never against the newest
+  one.
 
 ### Project State authority boundary
 
