@@ -43,6 +43,24 @@ export const VerificationVerdict = Object.freeze({
   INCONCLUSIVE: "INCONCLUSIVE",
 });
 
+/**
+ * Reconciliation outcome for a Run blocked by a LOST Attempt.
+ *
+ * This is an **observation** vocabulary, not an execution one:
+ * - only a `confirmed_*` outcome may legitimize a later state transition
+ * - `confirmed_no_effect` means external work provably did not happen, so
+ *   recovery may re-execute on a new Run
+ * - `confirmed_completed` means external work already happened, so its result
+ *   becomes Evidence and must never be re-executed
+ * - `unknown` means the Controller must keep waiting; it must never repeat
+ *   external work on a guess
+ */
+export const ReconcileOutcome = Object.freeze({
+  CONFIRMED_NO_EFFECT: "confirmed_no_effect",
+  CONFIRMED_COMPLETED: "confirmed_completed",
+  UNKNOWN: "unknown",
+});
+
 export class ConflictError extends Error {
   constructor(message = "optimistic concurrency conflict") {
     super(message);

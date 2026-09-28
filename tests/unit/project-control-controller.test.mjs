@@ -2,8 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  AttemptStatus,
   ConflictError,
   EvidenceStatus,
+  ReconcileOutcome,
+  RunStatus,
   TaskStatus,
   VerificationVerdict,
   createAcceptance,
@@ -151,4 +154,102 @@ test("accepted task is a project-state decision, not a runtime claim", async () 
   const taskEvents = store.getEvents().filter((event) => event.aggregateId === "task-1");
   assert.equal(taskEvents.at(-1).type, "task.accepted");
   assert.equal(store.getTask("task-1").status, TaskStatus.ACCEPTED);
+});
+
+// ── Reconciliation（I-11：blocked 必须可恢复，而不是停在返回 RECONCILE） ──────────
+// 恢复 ≠ 重试：只有 runtime 的核对结论允许状态前进；unknown 不得触发任何副作用。
+
+test("reconciliation: unknown keeps the Run BLOCKED, is repeatable, and re-executes nothing", async () => {
+  const { store, runtime, controller } = fixture("lost");
+  runtime.reconcileOutcome = ReconcileOutcome.UNKNOWN;
+
+  const first = await controller.reconcileTask("task-1");
+  assert.equal(first.action, "RECONCILE");
+
+  const second = await controller.reconcileTask("task-1");
+  assert.equal(second.action, "RECONCILE");
+  assert.equal(second.reason, "reconciliation-unknown");
+  assert.equal(second.reconciliation.outcome, ReconcileOutcome.UNKNOWN);
+  assert.equal(second.task.status, TaskStatus.IN_PROGRESS);
+  assert.equal(second.run.status, RunStatus.BLOCKED);
+  assert.equal(second.attempt.status, AttemptStatus.LOST);
+
+  const third = await controller.reconcileTask("task-1");
+  assert.equal(third.action, "RECONCILE");
+
+  assert.equal(store.getRunsForTask("task-1").length, 1, "unknown must not open a recovery Run");
+  assert.equal(runtime.started.length, 1, "unknown must never re-execute external work");
+  assert.equal(runtime.reconciled.length, 2, "each later call observes before deciding");
+});
+
+test("reconciliation: confirmed_no_effect allows recovery execution on a new Run", async () => {
+  const { store, runtime, controller } = fixture(["lost", "success"]);
+  runtime.reconcileOutcome = ReconcileOutcome.CONFIRMED_NO_EFFECT;
+
+  const first = await controller.reconcileTask("task-1");
+  assert.equal(first.action, "RECONCILE");
+  const blockedRunId = first.run.id;
+  const lostAttemptId = first.attempt.id;
+
+  const second = await controller.reconcileTask("task-1");
+  assert.equal(second.action, "ACCEPT");
+  assert.equal(second.reconciliation.outcome, ReconcileOutcome.CONFIRMED_NO_EFFECT);
+  assert.equal(second.recoveredFrom.runId, blockedRunId);
+  assert.equal(second.task.status, TaskStatus.ACCEPTED);
+  assert.notEqual(second.run.id, blockedRunId, "recovery executes on a new Run");
+  assert.equal(second.run.status, RunStatus.COMPLETED);
+  assert.equal(second.evidence.runId, second.run.id);
+
+  assert.equal(runtime.reconciled.length, 1, "recovery is legitimized by one observation");
+  assert.equal(runtime.started.length, 2, "the recovery Run executed only after the observation");
+
+  assert.equal(store.getRunsForTask("task-1").length, 2);
+  assert.equal(store.getRun(blockedRunId).status, RunStatus.BLOCKED);
+  assert.equal(store.getAttempt(lostAttemptId).status, AttemptStatus.LOST);
+  assert.deepEqual(store.getRun(blockedRunId).attemptIds, [lostAttemptId]);
+});
+
+test("reconciliation: confirmed_completed turns the existing result into Evidence without re-executing", async () => {
+  const { store, runtime, controller } = fixture("lost");
+  runtime.reconcileOutcome = ReconcileOutcome.CONFIRMED_COMPLETED;
+  runtime.recoveredResultRef = "artifact://fake/recovered-result";
+
+  const first = await controller.reconcileTask("task-1");
+  assert.equal(first.action, "RECONCILE");
+  const blockedRunId = first.run.id;
+  const lostAttemptId = first.attempt.id;
+
+  const second = await controller.reconcileTask("task-1");
+  assert.equal(second.action, "ACCEPT");
+  assert.equal(second.reconciliation.outcome, ReconcileOutcome.CONFIRMED_COMPLETED);
+
+  assert.equal(runtime.started.length, 1, "confirmed_completed must not re-execute external work");
+  assert.equal(store.getRunsForTask("task-1").length, 1, "confirmed_completed needs no new Run");
+
+  assert.equal(second.evidence.status, EvidenceStatus.CANDIDATE);
+  assert.equal(second.evidence.contentRef, "artifact://fake/recovered-result");
+  assert.equal(second.evidence.runId, blockedRunId, "Evidence keeps the lineage that produced it");
+  assert.equal(second.evidence.attemptId, lostAttemptId);
+  assert.equal(second.verification.verdict, VerificationVerdict.PASS);
+  assert.equal(second.task.status, TaskStatus.ACCEPTED);
+
+  assert.equal(store.getRun(blockedRunId).status, RunStatus.BLOCKED);
+  assert.equal(store.getAttempt(lostAttemptId).status, AttemptStatus.LOST);
+
+  const types = store.getEvents().map((event) => event.type);
+  assert.ok(types.indexOf("evidence.recorded") < types.indexOf("verification.recorded"));
+  assert.ok(types.indexOf("verification.recorded") < types.indexOf("task.accepted"));
+});
+
+test("reconciliation: a recovered result that fails verification is never accepted", async () => {
+  const { store, runtime, controller } = fixture("lost", VerificationVerdict.FAIL);
+  runtime.reconcileOutcome = ReconcileOutcome.CONFIRMED_COMPLETED;
+
+  await controller.reconcileTask("task-1");
+  const second = await controller.reconcileTask("task-1");
+
+  assert.equal(second.action, "REVIEW");
+  assert.equal(second.task.status, TaskStatus.NEEDS_REVIEW);
+  assert.equal(second.verification.verdict, VerificationVerdict.FAIL);
+  assert.ok(!store.getEvents().some((event) => event.type === "task.accepted"));
 });
