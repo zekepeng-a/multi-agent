@@ -5,17 +5,18 @@ import {
   ConflictError,
   EvidenceStatus,
   TaskStatus,
-  createAcceptance,
-  createTask,
-  createEvidence,
-  createVerification,
   VerificationVerdict,
+  createAcceptance,
+  createEvidence,
+  createTask,
+  createVerification,
 } from "../../project-control/domain.mjs";
 import { MemoryStore } from "../../project-control/memory-store.mjs";
 import { FakeRuntime } from "../../project-control/fake-runtime.mjs";
+import { FakeVerifier } from "../../project-control/fake-verifier.mjs";
 import { Controller } from "../../project-control/controller.mjs";
 
-function fixture(runtimeMode = "success") {
+function fixture(runtimeMode = "success", verifierVerdict = VerificationVerdict.PASS) {
   const store = new MemoryStore();
   store.seedAcceptance(createAcceptance({
     id: "acceptance-1",
@@ -28,13 +29,15 @@ function fixture(runtimeMode = "success") {
     acceptanceId: "acceptance-1",
   }));
   const runtime = new FakeRuntime({ mode: runtimeMode, revision: "rev-1" });
+  const verifier = new FakeVerifier({ verdict: verifierVerdict });
   let n = 0;
   const controller = new Controller({
     store,
     runtime,
+    verifier,
     idFactory: (prefix) => `${prefix}-${++n}`,
   });
-  return { store, runtime, controller };
+  return { store, runtime, verifier, controller };
 }
 
 test("happy path: controller drives READY task to ACCEPTED through evidence and verification", async () => {
@@ -99,6 +102,16 @@ test("verification must match the acceptance contract revision", () => {
     evidenceIds: ["missing"],
     verdict: VerificationVerdict.PASS,
   })), /different acceptance contract version/);
+});
+
+test("failed verification prevents acceptance", async () => {
+  const { store, controller } = fixture("success", VerificationVerdict.FAIL);
+
+  const result = await controller.reconcileTask("task-1");
+
+  assert.equal(result.action, "REVIEW");
+  assert.equal(result.task.status, TaskStatus.NEEDS_REVIEW);
+  assert.equal(result.verification.verdict, VerificationVerdict.FAIL);
 });
 
 test("stale optimistic writer gets a conflict", () => {
