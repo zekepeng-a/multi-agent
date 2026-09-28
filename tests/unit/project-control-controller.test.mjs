@@ -5,12 +5,15 @@ import {
   AttemptStatus,
   ConflictError,
   EvidenceStatus,
+  InvariantError,
   ReconcileOutcome,
   RunStatus,
   TaskStatus,
   VerificationVerdict,
   createAcceptance,
+  createAttempt,
   createEvidence,
+  createRun,
   createTask,
   createVerification,
 } from "../../project-control/domain.mjs";
@@ -100,6 +103,7 @@ test("verification must match the acceptance contract revision", () => {
   const { store } = fixture();
   assert.throws(() => store.recordVerification(createVerification({
     id: "v-1",
+    taskId: "task-1",
     acceptanceId: "acceptance-1",
     acceptanceVersion: 2,
     evidenceIds: ["missing"],
@@ -252,4 +256,244 @@ test("reconciliation: a recovered result that fails verification is never accept
   assert.equal(second.task.status, TaskStatus.NEEDS_REVIEW);
   assert.equal(second.verification.verdict, VerificationVerdict.FAIL);
   assert.ok(!store.getEvents().some((event) => event.type === "task.accepted"));
+});
+
+// ── Evidence lineage contract ────────────────────────────────────────────────
+// Task ← Run ← Attempt ← Evidence must be one continuous, provable lineage, and a
+// PASS may only rest on candidate/verified evidence bound to one revision.
+
+function seedRunChain(store, { taskId, runId, attemptId, attemptNumber = 1 }) {
+  store.createRun(createRun({ id: runId, taskId, status: RunStatus.READY }));
+  store.createAttempt(createAttempt({ id: attemptId, runId, attemptNumber }));
+}
+
+function evidenceFor(over = {}) {
+  return createEvidence({
+    id: "ev-1",
+    taskId: "task-1",
+    runId: "t1-run",
+    attemptId: "t1-attempt",
+    acceptanceId: "acceptance-1",
+    acceptanceVersion: 1,
+    revision: "rev-1",
+    status: EvidenceStatus.CANDIDATE,
+    contentRef: "artifact://lineage",
+    ...over,
+  });
+}
+
+function verificationFor(evidenceIds, over = {}) {
+  return createVerification({
+    id: "v-1",
+    taskId: "task-1",
+    acceptanceId: "acceptance-1",
+    acceptanceVersion: 1,
+    evidenceIds,
+    verdict: VerificationVerdict.PASS,
+    revision: "rev-1",
+    ...over,
+  });
+}
+
+test("lineage: verification cannot reference evidence of another task", () => {
+  const { store } = fixture();
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  seedRunChain(store, { taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
+  store.recordEvidence(evidenceFor({ id: "ev-2", taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" }));
+
+  assert.throws(
+    () => store.recordVerification(verificationFor(["ev-2"], { id: "v-2" })),
+    (error) => error instanceof InvariantError && /does not belong to task/.test(error.message),
+  );
+});
+
+test("lineage: verification cannot reference evidence of another run", () => {
+  const { store } = fixture();
+  seedRunChain(store, { taskId: "task-1", runId: "t1-run", attemptId: "t1-attempt" });
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  seedRunChain(store, { taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
+  // claims task-1, but points at the Run of another task
+  store.recordEvidence(evidenceFor({ id: "ev-run", runId: "t2-run", attemptId: "t2-attempt" }));
+
+  assert.throws(
+    () => store.recordVerification(verificationFor(["ev-run"], { id: "v-run" })),
+    (error) => error instanceof InvariantError && /references run t2-run/.test(error.message),
+  );
+});
+
+test("lineage: verification cannot reference evidence of another attempt", () => {
+  const { store } = fixture();
+  seedRunChain(store, { taskId: "task-1", runId: "t1-run", attemptId: "t1-attempt" });
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  seedRunChain(store, { taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
+  // Task and Run are task-1's, but the Attempt belongs to another Run
+  store.recordEvidence(evidenceFor({ id: "ev-attempt", runId: "t1-run", attemptId: "t2-attempt" }));
+
+  assert.throws(
+    () => store.recordVerification(verificationFor(["ev-attempt"], { id: "v-attempt" })),
+    (error) => error instanceof InvariantError && /references attempt t2-attempt/.test(error.message),
+  );
+});
+
+test("lineage: a shared acceptance contract does not excuse a foreign task lineage", () => {
+  const { store } = fixture();
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  seedRunChain(store, { taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
+  const evidence = evidenceFor({ id: "ev-3", taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
+  store.recordEvidence(evidence);
+  const verification = verificationFor(["ev-3"], { id: "v-3" });
+
+  // both sides carry the same acceptance contract, so that check alone passes
+  assert.equal(evidence.acceptanceId, verification.acceptanceId);
+  assert.equal(evidence.acceptanceVersion, verification.acceptanceVersion);
+  assert.throws(() => store.recordVerification(verification), InvariantError);
+});
+
+test("lineage: STALE or SUPERSEDED evidence cannot support a PASS verification", () => {
+  const { store } = fixture();
+  seedRunChain(store, { taskId: "task-1", runId: "t1-run", attemptId: "t1-attempt" });
+
+  for (const status of [EvidenceStatus.STALE, EvidenceStatus.SUPERSEDED]) {
+    const evidenceId = `ev-${status.toLowerCase()}`;
+    store.recordEvidence(evidenceFor({ id: evidenceId, status }));
+
+    assert.throws(
+      () => store.recordVerification(verificationFor([evidenceId], { id: `v-${status.toLowerCase()}` })),
+      (error) => error instanceof InvariantError && /cannot support a PASS verification/.test(error.message),
+      `${status} must not support a PASS verification`,
+    );
+
+    // the rule is scoped to PASS: a failure verdict grants nothing and is still recorded
+    const failing = store.recordVerification(verificationFor([evidenceId], {
+      id: `v-fail-${status.toLowerCase()}`,
+      verdict: VerificationVerdict.FAIL,
+    }));
+    assert.equal(failing.verdict, VerificationVerdict.FAIL);
+  }
+});
+
+test("lineage: verification revision must match the evidence revision", () => {
+  const { store } = fixture();
+  seedRunChain(store, { taskId: "task-1", runId: "t1-run", attemptId: "t1-attempt" });
+  store.recordEvidence(evidenceFor({ id: "ev-rev", revision: "rev-1" }));
+
+  assert.throws(
+    () => store.recordVerification(verificationFor(["ev-rev"], { id: "v-rev-bad", revision: "rev-2" })),
+    (error) => error instanceof InvariantError && /revision/.test(error.message),
+  );
+  assert.equal(
+    store.recordVerification(verificationFor(["ev-rev"], { id: "v-rev-ok", revision: "rev-1" })).revision,
+    "rev-1",
+  );
+});
+
+test("lineage: a missing revision is never acceptable", () => {
+  const { store } = fixture();
+  seedRunChain(store, { taskId: "task-1", runId: "t1-run", attemptId: "t1-attempt" });
+  store.recordEvidence(evidenceFor({ id: "ev-nullrev", revision: null }));
+
+  assert.throws(
+    () => store.recordVerification(verificationFor(["ev-nullrev"], { id: "v-null-null", revision: null })),
+    (error) => error instanceof InvariantError && /revision/.test(error.message),
+  );
+  assert.throws(
+    () => store.recordVerification(verificationFor(["ev-nullrev"], { id: "v-null-rev", revision: "rev-1" })),
+    (error) => error instanceof InvariantError && /revision/.test(error.message),
+  );
+});
+
+test("lineage: one verification may not mix evidence from two lineages", () => {
+  const { store } = fixture();
+  seedRunChain(store, { taskId: "task-1", runId: "t1-run", attemptId: "t1-attempt" });
+  seedRunChain(store, { taskId: "task-1", runId: "t1-run-2", attemptId: "t1-attempt-2", attemptNumber: 2 });
+  store.recordEvidence(evidenceFor({ id: "ev-a", runId: "t1-run", attemptId: "t1-attempt" }));
+  store.recordEvidence(evidenceFor({ id: "ev-b", runId: "t1-run-2", attemptId: "t1-attempt-2" }));
+
+  assert.throws(
+    () => store.recordVerification(verificationFor(["ev-a", "ev-b"], { id: "v-mixed" })),
+    (error) => error instanceof InvariantError && /mixes evidence/.test(error.message),
+  );
+});
+
+test("lineage: evidence produced by reconciliation gets no lineage exemption", async () => {
+  const { store, runtime, controller } = fixture("lost");
+  runtime.reconcileOutcome = ReconcileOutcome.CONFIRMED_COMPLETED;
+
+  await controller.reconcileTask("task-1");
+  const result = await controller.reconcileTask("task-1");
+  const recovered = result.evidence;
+  assert.equal(result.action, "ACCEPT");
+  assert.equal(recovered.taskId, "task-1");
+
+  // it passed the very same contract as live evidence...
+  assert.equal(result.verification.taskId, "task-1");
+  assert.equal(result.verification.revision, recovered.revision);
+
+  // ...and gets no exemption afterwards either
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  assert.throws(
+    () => store.recordVerification(verificationFor([recovered.id], { id: "v-j-task", taskId: "task-2" })),
+    InvariantError,
+  );
+  assert.throws(
+    () => store.recordVerification(verificationFor([recovered.id], { id: "v-j-rev", revision: "rev-other" })),
+    InvariantError,
+  );
+});
+
+test("lineage: a PASS verification recorded for another task cannot accept this task", () => {
+  const { store } = fixture();
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  seedRunChain(store, { taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
+  store.recordEvidence(evidenceFor({ id: "ev-4", taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" }));
+  const verification = store.recordVerification(verificationFor(["ev-4"], { id: "v-task2", taskId: "task-2" }));
+  assert.equal(verification.verdict, VerificationVerdict.PASS);
+
+  assert.throws(
+    () => store.acceptTask("task-1", 1, { verificationId: "v-task2" }),
+    (error) => error instanceof InvariantError && /does not belong to task task-1/.test(error.message),
+  );
+  assert.notEqual(store.getTask("task-1").status, TaskStatus.ACCEPTED);
+});
+
+test("lineage: acceptTask re-proves the chain for a forged PASS verification", () => {
+  const { store } = fixture();
+  store.seedTask(createTask({ id: "task-2", title: "other task", acceptanceId: "acceptance-1" }));
+  seedRunChain(store, { taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" });
+  store.recordEvidence(evidenceFor({ id: "ev-5", taskId: "task-2", runId: "t2-run", attemptId: "t2-attempt" }));
+
+  // forged straight into the aggregate map: never passed recordVerification
+  store.verifications.set("v-forged", {
+    id: "v-forged",
+    taskId: "task-1",
+    acceptanceId: "acceptance-1",
+    acceptanceVersion: 1,
+    evidenceIds: ["ev-5"],
+    verdict: VerificationVerdict.PASS,
+    revision: "rev-1",
+    createdAt: new Date().toISOString(),
+  });
+
+  assert.throws(
+    () => store.acceptTask("task-1", 1, { verificationId: "v-forged" }),
+    (error) => error instanceof InvariantError && /does not belong to task task-1/.test(error.message),
+  );
+  assert.notEqual(store.getTask("task-1").status, TaskStatus.ACCEPTED);
+});
+
+test("lineage: acceptTask rejects a PASS verification whose evidence has gone STALE", () => {
+  const { store } = fixture();
+  seedRunChain(store, { taskId: "task-1", runId: "t1-run", attemptId: "t1-attempt" });
+  store.recordEvidence(evidenceFor({ id: "ev-live", status: EvidenceStatus.CANDIDATE }));
+  store.recordVerification(verificationFor(["ev-live"], { id: "v-live" })); // legal when recorded
+
+  // v0.1 has no evidence-lifecycle API yet, so a later supersede is simulated by
+  // writing the aggregate directly — the state a persisted store could reload in.
+  store.evidence.set("ev-live", { ...store.getEvidence("ev-live"), status: EvidenceStatus.STALE });
+
+  assert.throws(
+    () => store.acceptTask("task-1", 1, { verificationId: "v-live" }),
+    (error) => error instanceof InvariantError && /cannot support a PASS verification/.test(error.message),
+  );
+  assert.notEqual(store.getTask("task-1").status, TaskStatus.ACCEPTED);
 });

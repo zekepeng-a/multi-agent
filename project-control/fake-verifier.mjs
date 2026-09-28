@@ -5,9 +5,10 @@ export class FakeVerifier {
     this.verdict = verdict;
   }
 
-  verify({ acceptance, evidence }) {
+  verify({ acceptance, evidence, task }) {
     return createVerification({
       id: `verification-${evidence.id}`,
+      taskId: task.id,
       acceptanceId: acceptance.id,
       acceptanceVersion: acceptance.version,
       evidenceIds: [evidence.id],

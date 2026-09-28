@@ -1,4 +1,5 @@
 import {
+  EvidenceStatus,
   ConflictError,
   InvariantError,
   TaskStatus,
@@ -157,6 +158,16 @@ export class MemoryStore {
         throw new InvariantError("verification evidence does not match acceptance contract");
       }
     }
+    // Matching an acceptance contract is not enough: the verification must also
+    // be provable back to the task it declares, through evidence that really
+    // belongs to that task's Run and Attempt.
+    if (!verification.taskId) {
+      throw new InvariantError("verification must declare the task it belongs to");
+    }
+    this.#proveVerification({
+      task: this.#required(this.tasks, verification.taskId, "task"),
+      verification,
+    });
     this.verifications.set(verification.id, structuredClone(verification));
     this.#event("verification.recorded", verification.id, {
       acceptanceId: verification.acceptanceId,
@@ -182,6 +193,11 @@ export class MemoryStore {
     ) {
       throw new InvariantError("task cannot be accepted by this verification");
     }
+    // Acceptance never trusts a verdict: the whole Verification → Evidence → Task
+    // identity chain is re-proven here, against the task actually being accepted
+    // and against evidence state as it is *now* — a verification recorded earlier
+    // may point at evidence that has since gone STALE or SUPERSEDED.
+    this.#proveVerification({ task, verification });
     const next = {
       ...task,
       status: TaskStatus.ACCEPTED,
@@ -193,6 +209,77 @@ export class MemoryStore {
     this.#event("task.accepted", taskId, { verificationId, version: next.version }, commandId);
     this.#rememberCommand(commandId, "acceptTask", taskId);
     return structuredClone(next);
+  }
+
+  /**
+   * Proves that a Verification may legally speak for a Task.
+   *
+   * Evidence is a claim; ownership is re-derived from the aggregates this store
+   * owns, never from the claim itself:
+   *
+   *   Task ← Run ← Attempt ← Evidence   (one continuous lineage)
+   *
+   * plus the acceptance contract that Task owns and one bound source revision.
+   * The same routine guards both doors: recording a Verification (proved against
+   * the task the verification declares) and accepting a Task (proved against the
+   * task actually being accepted), so neither a forged nor a stale Verification
+   * can slip through.
+   */
+  #proveVerification({ task, verification }) {
+    if (verification.taskId !== task.id) {
+      throw new InvariantError(`verification ${verification.id} does not belong to task ${task.id}`);
+    }
+    const acceptance = this.#required(this.acceptances, task.acceptanceId, "acceptance");
+    if (verification.acceptanceId !== acceptance.id || verification.acceptanceVersion !== acceptance.version) {
+      throw new InvariantError(`verification ${verification.id} does not match the acceptance contract of ${task.id}`);
+    }
+    if (!verification.evidenceIds?.length) {
+      throw new InvariantError(`verification ${verification.id} references no evidence`);
+    }
+
+    const chain = [];
+    for (const evidenceId of verification.evidenceIds) {
+      const evidence = this.#required(this.evidence, evidenceId, "evidence");
+      if (evidence.taskId !== task.id) {
+        throw new InvariantError(`evidence ${evidenceId} does not belong to task ${task.id}`);
+      }
+      const run = this.#required(this.runs, evidence.runId, "run");
+      const attempt = this.#required(this.attempts, evidence.attemptId, "attempt");
+      if (run.taskId !== task.id) {
+        throw new InvariantError(`evidence ${evidenceId} references run ${run.id} of task ${run.taskId}`);
+      }
+      if (attempt.runId !== run.id) {
+        throw new InvariantError(`evidence ${evidenceId} references attempt ${attempt.id} of run ${attempt.runId}`);
+      }
+      if (evidence.acceptanceId !== acceptance.id || evidence.acceptanceVersion !== acceptance.version) {
+        throw new InvariantError(`evidence ${evidenceId} does not match the acceptance contract of ${task.id}`);
+      }
+      if (chain.length) {
+        const first = chain[0];
+        if (evidence.runId !== first.runId || evidence.attemptId !== first.attemptId) {
+          throw new InvariantError("verification mixes evidence from different runs or attempts");
+        }
+        if (evidence.revision !== first.revision) {
+          throw new InvariantError("verification mixes evidence with different revisions");
+        }
+      }
+      if (
+        verification.verdict === "PASS" &&
+        evidence.status !== EvidenceStatus.CANDIDATE &&
+        evidence.status !== EvidenceStatus.VERIFIED
+      ) {
+        throw new InvariantError(`evidence ${evidenceId} is ${evidence.status} and cannot support a PASS verification`);
+      }
+      chain.push(evidence);
+    }
+
+    // A verification must name the exact revision it verified; a missing revision
+    // is never "acceptable by default".
+    if (verification.revision == null || verification.revision !== chain[0].revision) {
+      throw new InvariantError("verification revision must match the revision of the evidence it refers to");
+    }
+
+    return { acceptance, evidence: chain };
   }
 
   #mutateVersioned(map, id, expectedVersion, patch, eventType, operation, commandId) {

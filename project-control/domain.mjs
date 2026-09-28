@@ -168,17 +168,19 @@ export function createEvidence({
 
 export function createVerification({
   id,
+  taskId,
   acceptanceId,
   acceptanceVersion,
   evidenceIds,
   verdict,
   revision = null,
 } = {}) {
-  if (!id || !acceptanceId || !evidenceIds?.length || !verdict) {
+  if (!id || !taskId || !acceptanceId || !evidenceIds?.length || !verdict) {
     throw new Error("verification identity is incomplete");
   }
   return {
     id,
+    taskId,
     acceptanceId,
     acceptanceVersion,
     evidenceIds,
