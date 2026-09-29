@@ -45,18 +45,25 @@ const LIFECYCLE_EVENT_TYPES = Object.freeze({
 });
 
 /**
- * The authoritative parent link for each child collection.
+ * The authoritative parent links for each child collection.
  *
  * A relationship is a fact recorded on the CHILD, exactly like `Run.taskId` and
  * `Evidence.taskId`. The aggregate-side lists (`Goal.taskIds`,
  * `Milestone.goalIds`) are derived/cached membership views and are never used to
  * decide who belongs to whom. `Milestone.roadmapId` is a future field: Roadmap has
  * no lifecycle in v0.1, so it takes no part in any aggregation.
+ *
+ * A Goal carries TWO parent links, because canonical architecture allows both
+ * `Project → Goal` and `Project → Milestone → Goal`. The second one is the
+ * declared project of the goal itself; it is not derived from the milestone.
  */
 const PARENT_LINKS = Object.freeze({
-  [Collection.TASK]: { field: "goalId", collection: Collection.GOAL },
-  [Collection.GOAL]: { field: "milestoneId", collection: Collection.MILESTONE },
-  [Collection.MILESTONE]: { field: "projectId", collection: Collection.PROJECT },
+  [Collection.TASK]: [{ field: "goalId", collection: Collection.GOAL }],
+  [Collection.GOAL]: [
+    { field: "milestoneId", collection: Collection.MILESTONE },
+    { field: "projectId", collection: Collection.PROJECT },
+  ],
+  [Collection.MILESTONE]: [{ field: "projectId", collection: Collection.PROJECT }],
 });
 
 /**
@@ -696,21 +703,40 @@ export class ProjectControlStore {
   }
 
   /**
-   * Proves the child's explicit parent link, when it has one, points at an
-   * aggregate that actually exists. Relationship integrity is validated here, in
-   * the shared semantics, for every seed and every versioned update — a dangling
-   * Task → Goal, Goal → Milestone or Milestone → Project link fails closed
-   * instead of quietly becoming an orphan that aggregation can never see.
+   * Proves that a child's explicit parent links, when present, point at
+   * aggregates that actually exist, and that a Goal's own project does not
+   * contradict the project its Milestone belongs to.
+   *
+   * Relationship integrity is validated here, in the shared semantics, for every
+   * seed and every versioned update (including re-parenting). A dangling
+   * Task → Goal, Goal → Milestone, Goal → Project or Milestone → Project link
+   * fails closed instead of quietly becoming an orphan that aggregation can never
+   * see; so does a Goal that would land in two projects at once.
    */
   #assertRelationship(collection, record) {
-    const link = PARENT_LINKS[collection];
-    if (!link) return;
-    const parentId = record[link.field];
-    if (parentId == null) return;
-    if (!this.getRecord(link.collection, parentId)) {
-      throw new InvariantError(
-        `${collection} ${record.id} references ${link.collection} ${parentId} (${link.field}), which does not exist`,
-      );
+    const links = PARENT_LINKS[collection] ?? [];
+    for (const link of links) {
+      const parentId = record[link.field];
+      if (parentId == null) continue;
+      if (!this.getRecord(link.collection, parentId)) {
+        throw new InvariantError(
+          `${collection} ${record.id} references ${link.collection} ${parentId} (${link.field}), which does not exist`,
+        );
+      }
+    }
+
+    // A Goal attached to a Milestone must declare the same project that the
+    // milestone belongs to. Otherwise "which project does this goal belong to?"
+    // would have two answers — `Project A └ Goal X └ Milestone B └ Project B` —
+    // and project membership would stop being unambiguous.
+    if (collection === Collection.GOAL && record.milestoneId != null && record.projectId != null) {
+      const milestone = this.getRecord(Collection.MILESTONE, record.milestoneId);
+      if (milestone && milestone.projectId !== record.projectId) {
+        throw new InvariantError(
+          `goal ${record.id} declares project ${record.projectId} but its milestone ${milestone.id} ` +
+            `belongs to project ${milestone.projectId}`,
+        );
+      }
     }
   }
 

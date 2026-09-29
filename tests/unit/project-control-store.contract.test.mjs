@@ -631,7 +631,160 @@ for (const backend of BACKENDS) {
     assert.deepEqual(store.getMilestonesForProject("project-1").map((milestone) => milestone.id), ["ms-1"]);
     assert.deepEqual(store.getTasksForGoal("goal-free"), []);
   });
+
+  test(`${name}: goal project hierarchy consistency is enforced on seed and re-parent`, { skip }, (t) => {
+    const store = backend.make(t);
+    const count = (type) => store.getEvents().filter((event) => event.type === type).length;
+
+    store.seedProject(createProject({ id: "project-A", name: "A" }));
+    store.seedProject(createProject({ id: "project-B", name: "B" }));
+    store.seedMilestone(createMilestone({ id: "ms-A", projectId: "project-A", name: "MS-A" }));
+    store.seedMilestone(createMilestone({ id: "ms-B", projectId: "project-B", name: "MS-B" }));
+
+    // A: a direct Goal declares an existing project
+    store.seedGoal(createGoal({ id: "goal-direct", projectId: "project-A", milestoneId: null, title: "direct" }));
+    // C/I: a nested Goal whose project matches its milestone's project
+    store.seedGoal(createGoal({ id: "goal-nested", projectId: "project-A", milestoneId: "ms-A", title: "nested" }));
+
+    // H/I: both are visible through their declared project; the nested one also
+    // through its milestone
+    assert.deepEqual(
+      store.getGoalsForProject("project-A").map((goal) => goal.id).sort(),
+      ["goal-direct", "goal-nested"],
+    );
+    assert.deepEqual(store.getGoalsForMilestone("ms-A").map((goal) => goal.id), ["goal-nested"]);
+    assert.deepEqual(store.getGoalsForProject("project-B"), []);
+
+    // B: a dangling project is refused and nothing is stored
+    assert.throws(
+      () => store.seedGoal(createGoal({ id: "goal-ghost-project", projectId: "ghost-project", title: "x" })),
+      (error) => error instanceof InvariantError && /references project ghost-project/.test(error.message),
+    );
+    assert.equal(store.getRecord("goal", "goal-ghost-project"), null, "a refused seed stored nothing");
+
+    // D: a dangling milestone is refused
+    assert.throws(
+      () => store.seedGoal(createGoal({ id: "goal-ghost-ms", projectId: "project-A", milestoneId: "ghost-ms", title: "x" })),
+      (error) => error instanceof InvariantError && /references milestone ghost-ms/.test(error.message),
+    );
+    assert.equal(store.getRecord("goal", "goal-ghost-ms"), null);
+
+    // E: a Goal may not contradict the project its milestone belongs to
+    assert.throws(
+      () => store.seedGoal(createGoal({ id: "goal-mismatch", projectId: "project-A", milestoneId: "ms-B", title: "x" })),
+      (error) =>
+        error instanceof InvariantError &&
+        /declares project project-A but its milestone ms-B belongs to project project-B/.test(error.message),
+    );
+    assert.equal(store.getRecord("goal", "goal-mismatch"), null);
+
+    // F: re-parenting the project away from the milestone's project is refused
+    const before = store.getGoal("goal-nested");
+    assert.throws(
+      () => store.updateGoal("goal-nested", before.version, { projectId: "project-B" }, { commandId: "cmd-f" }),
+      (error) =>
+        error instanceof InvariantError &&
+        /declares project project-B but its milestone ms-A belongs to project project-A/.test(error.message),
+    );
+    assert.equal(store.getGoal("goal-nested").projectId, "project-A", "the refused re-parent changed nothing");
+    assert.equal(store.getGoal("goal-nested").version, before.version, "the refused re-parent wrote nothing");
+
+    // G: re-parenting onto a milestone of another project is refused too
+    assert.throws(
+      () => store.updateGoal("goal-nested", before.version, { milestoneId: "ms-B" }, { commandId: "cmd-g" }),
+      (error) =>
+        error instanceof InvariantError &&
+        /declares project project-A but its milestone ms-B belongs to project project-B/.test(error.message),
+    );
+    assert.equal(store.getGoal("goal-nested").milestoneId, "ms-A");
+    assert.equal(store.getGoal("goal-nested").version, before.version);
+    assert.equal(count("goal.updated"), 0, "no goal.updated from a refused re-parent");
+
+    // J: the child link is still the membership fact, derived list or not
+    assert.deepEqual(store.getGoal("goal-nested").taskIds, []);
+    store.seedTask(createTask({
+      id: "task-1", goalId: "goal-nested", title: "T", acceptanceId: "acceptance-1", acceptanceVersion: 1,
+    }));
+    assert.deepEqual(store.getTasksForGoal("goal-nested").map((task) => task.id), ["task-1"]);
+
+    // and a legal re-parent still works: moving a direct goal into its own project's milestone
+    const moved = store.updateGoal("goal-direct", 1, { milestoneId: "ms-A" }, { commandId: "cmd-move-ok" });
+    assert.equal(moved.milestoneId, "ms-A");
+    assert.equal(moved.projectId, "project-A");
+    assert.equal(moved.version, 2);
+    assert.equal(count("goal.updated"), 1);
+  });
 }
+
+test("both backends enforce goal project hierarchy consistency identically", { skip: sqliteSkip }, (t) => {
+  const run = (store) => {
+    const outcomes = [];
+    const attempt = (label, fn) => {
+      try {
+        fn();
+        outcomes.push([label, "ok"]);
+      } catch (error) {
+        outcomes.push([label, error.name, error.code, error.message]);
+      }
+    };
+
+    store.seedProject(createProject({ id: "project-A", name: "A" }));
+    store.seedProject(createProject({ id: "project-B", name: "B" }));
+    store.seedMilestone(createMilestone({ id: "ms-A", projectId: "project-A", name: "MS-A" }));
+    store.seedMilestone(createMilestone({ id: "ms-B", projectId: "project-B", name: "MS-B" }));
+
+    attempt("direct goal", () => store.seedGoal(createGoal({ id: "g-direct", projectId: "project-A", title: "d" })));
+    attempt("nested goal", () => store.seedGoal(createGoal({
+      id: "g-nested", projectId: "project-A", milestoneId: "ms-A", title: "n",
+    })));
+    attempt("dangling project", () => store.seedGoal(createGoal({ id: "g-p", projectId: "ghost", title: "x" })));
+    attempt("dangling milestone", () => store.seedGoal(createGoal({
+      id: "g-m", projectId: "project-A", milestoneId: "ghost", title: "x",
+    })));
+    attempt("project mismatch", () => store.seedGoal(createGoal({
+      id: "g-x", projectId: "project-A", milestoneId: "ms-B", title: "x",
+    })));
+    attempt("re-parent project", () => store.updateGoal("g-nested", 1, { projectId: "project-B" }, { commandId: "c1" }));
+    attempt("re-parent milestone", () => store.updateGoal("g-nested", 1, { milestoneId: "ms-B" }, { commandId: "c2" }));
+
+    return {
+      outcomes,
+      stored: ["g-direct", "g-nested", "g-p", "g-m", "g-x"].map((id) => {
+        const goal = store.getRecord("goal", id);
+        return goal ? [goal.id, goal.projectId, goal.milestoneId, goal.version] : [id, null];
+      }),
+      byProject: store.getGoalsForProject("project-A").map((goal) => [goal.id, goal.version]).sort(),
+      events: store.getEvents().map(({ occurredAt, ...rest }) => rest),
+    };
+  };
+
+  const memory = new MemoryStore();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pc-goal-parity-"));
+  const sqlite = new SqliteStore(path.join(dir, "project-control.db"));
+  t.after(() => {
+    try {
+      sqlite.close();
+    } catch {
+      // already closed
+    }
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+
+  const fromMemory = run(memory);
+  const fromSqlite = run(sqlite);
+
+  assert.deepEqual(fromSqlite, fromMemory);
+  // …and the shared outcome really is the enforcing one
+  assert.deepEqual(fromMemory.outcomes.map((entry) => entry[1]), [
+    "ok",
+    "ok",
+    "InvariantError",
+    "InvariantError",
+    "InvariantError",
+    "InvariantError",
+    "InvariantError",
+  ]);
+});
 
 test("both backends reject duplicate acceptance with identical semantics", { skip: sqliteSkip }, (t) => {
   const memory = new MemoryStore();
