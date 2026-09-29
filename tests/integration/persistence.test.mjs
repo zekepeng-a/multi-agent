@@ -26,12 +26,15 @@ import {
   AttemptStatus,
   ConflictError,
   InvariantError,
+  ProjectStatus,
   ReconcileOutcome,
   RunStatus,
   TaskStatus,
   VerificationVerdict,
   createAcceptance,
+  createAttempt,
   createEvidence,
+  createProject,
   createRun,
   createTask,
   createVerification,
@@ -71,7 +74,7 @@ function projectFixture(t) {
   };
 }
 
-function seedProject(store) {
+function seedBase(store) {
   store.seedAcceptance(createAcceptance({
     id: "acceptance-1",
     targetId: "task-1",
@@ -111,7 +114,7 @@ function runChild(mode, file, ids) {
 test("A: a task and its pinned acceptance revision survive closing and reopening the database", { skip }, (t) => {
   const db = projectFixture(t);
   const first = db.open();
-  seedProject(first);
+  seedBase(first);
   first.close();
 
   const reopened = db.open();
@@ -126,7 +129,7 @@ test("A: a task and its pinned acceptance revision survive closing and reopening
 test("B: contract revisions v1 and v2 coexist, before and after a reopen", { skip }, (t) => {
   const db = projectFixture(t);
   const store = db.open();
-  seedProject(store);
+  seedBase(store);
   store.reviseAcceptance("acceptance-1", { criteria: [{ id: "lint", type: "LINT", required: true }] });
   store.close();
 
@@ -141,7 +144,7 @@ test("B: contract revisions v1 and v2 coexist, before and after a reopen", { ski
 test("C: an existing task does not drift onto the newest revision after a restart", { skip }, async (t) => {
   const db = projectFixture(t);
   const store = db.open();
-  seedProject(store);
+  seedBase(store);
   store.reviseAcceptance("acceptance-1", { criteria: [{ id: "lint", type: "LINT", required: true }] });
   store.close();
 
@@ -161,7 +164,7 @@ test("C: an existing task does not drift onto the newest revision after a restar
 test("D: the full Run → Attempt → Evidence → Verification lineage survives a reopen", { skip }, async (t) => {
   const db = projectFixture(t);
   const store = db.open();
-  seedProject(store);
+  seedBase(store);
   const { controller } = controllerFor(store);
   const result = await controller.reconcileTask("task-1");
   store.close();
@@ -181,7 +184,7 @@ test("D: the full Run → Attempt → Evidence → Verification lineage survives
 test("E: an accepted task is still accepted after a restart", { skip }, async (t) => {
   const db = projectFixture(t);
   const store = db.open();
-  seedProject(store);
+  seedBase(store);
   const { controller } = controllerFor(store);
   assert.equal((await controller.reconcileTask("task-1")).action, "ACCEPT");
   store.close();
@@ -194,7 +197,7 @@ test("E: an accepted task is still accepted after a restart", { skip }, async (t
 test("F: the append-oriented event log survives a restart unchanged", { skip }, async (t) => {
   const db = projectFixture(t);
   const store = db.open();
-  seedProject(store);
+  seedBase(store);
   const { controller } = controllerFor(store);
   await controller.reconcileTask("task-1");
   const before = store.getEvents();
@@ -215,7 +218,7 @@ test("F: the append-oriented event log survives a restart unchanged", { skip }, 
 test("G: a stale expectedVersion conflicts and leaves no partial update", { skip }, (t) => {
   const db = projectFixture(t);
   const store = db.open();
-  seedProject(store);
+  seedBase(store);
 
   store.updateTask("task-1", 1, { status: TaskStatus.IN_PROGRESS }, { commandId: "cmd-1" });
   const events = store.getEvents().length;
@@ -232,7 +235,7 @@ test("G: a stale expectedVersion conflicts and leaves no partial update", { skip
 test("H: a repeated commandId does not mutate a second time, even across a restart", { skip }, (t) => {
   const db = projectFixture(t);
   const store = db.open();
-  seedProject(store);
+  seedBase(store);
   const first = store.updateTask("task-1", 1, { status: TaskStatus.IN_PROGRESS }, { commandId: "cmd-1" });
   const events = store.getEvents().length;
   store.close();
@@ -251,39 +254,63 @@ test("H: a repeated commandId does not mutate a second time, even across a resta
   );
 });
 
-test("I: a failed transaction rolls back state, event and command row together", { skip }, (t) => {
+test("I: a real transaction failure rolls back state, event and command row together", { skip }, (t) => {
   const db = projectFixture(t);
   const store = db.open();
-  seedProject(store);
+  seedBase(store);
   const eventsBefore = store.getEvents().length;
 
-  assert.throws(() => store.runInTransaction(() => {
-    store.updateTask("task-1", 1, { status: TaskStatus.IN_PROGRESS }, { commandId: "tx-1" });
-    store.recordEvidence(createEvidence({
-      id: "ev-tx",
-      taskId: "task-1",
-      runId: "run-x",
-      attemptId: "attempt-x",
-      acceptanceId: "acceptance-1",
-      acceptanceVersion: 1,
-      revision: "rev-1",
-    }));
-    throw new Error("boom");
-  }), /boom/);
+  // Direction 1 — the state write succeeds, then a genuine SQL constraint
+  // violation aborts the transaction: the foreign key on verifications.task_id
+  // rejects a task that does not exist. This is a real database failure, not a
+  // synthetic throw.
+  assert.throws(
+    () => store.runInTransaction(() => {
+      store.updateTask("task-1", 1, { status: TaskStatus.IN_PROGRESS }, { commandId: "tx-1" });
+      store.insertRecord("verification", "v-ghost", {
+        id: "v-ghost", taskId: "ghost-task", acceptanceId: "acceptance-1", acceptanceVersion: 1,
+      });
+    }),
+    (error) => error.code === "ERR_SQLITE_ERROR" && /FOREIGN KEY/.test(error.message),
+  );
 
   assert.equal(store.getTask("task-1").version, 1, "state rolled back");
   assert.equal(store.getTask("task-1").status, TaskStatus.READY);
   assert.equal(store.getEvents().length, eventsBefore, "event rolled back");
-  assert.throws(() => store.getEvidence("ev-tx"), /evidence not found/);
-
+  assert.throws(() => store.getVerification("v-ghost"), /verification not found/);
   // the idempotency row rolled back too, so the same command is still executable
   assert.equal(store.updateTask("task-1", 1, { status: TaskStatus.IN_PROGRESS }, { commandId: "tx-1" }).version, 2);
+
+  // Direction 2 — the EVENT is written first and the state write then fails: the
+  // event must disappear with the rest of the transaction.
+  const eventsAfterDirectionOne = store.getEvents().length;
+  assert.throws(
+    () => store.runInTransaction(() => {
+      store.appendEvent({
+        type: "probe.recorded",
+        aggregateType: "probe",
+        aggregateId: "task-1",
+        aggregateVersion: null,
+        payload: { probe: true },
+        commandId: null,
+        occurredAt: new Date().toISOString(),
+      });
+      store.insertRecord("verification", "v-ghost-2", {
+        id: "v-ghost-2", taskId: "ghost-task", acceptanceId: "acceptance-1", acceptanceVersion: 1,
+      });
+    }),
+    (error) => error.code === "ERR_SQLITE_ERROR" && /FOREIGN KEY/.test(error.message),
+  );
+
+  assert.equal(store.getEvents().length, eventsAfterDirectionOne, "an event written first is rolled back too");
+  assert.ok(!store.getEvents().some((event) => event.type === "probe.recorded"));
+  assert.throws(() => store.getVerification("v-ghost-2"), /verification not found/);
 });
 
 test("J: contract content edited inside the database fails closed on read", { skip }, (t) => {
   const db = projectFixture(t);
   const store = db.open();
-  seedProject(store);
+  seedBase(store);
   store.close();
 
   // tamper with a separate connection, leaving the fingerprint row untouched
@@ -307,7 +334,7 @@ test("J: contract content edited inside the database fails closed on read", { sk
 test("K: the lineage can be re-proven from durable rows after a reopen", { skip }, async (t) => {
   const db = projectFixture(t);
   const store = db.open();
-  seedProject(store);
+  seedBase(store);
   const { controller } = controllerFor(store);
   const result = await controller.reconcileTask("task-1");
   store.close();
@@ -350,7 +377,7 @@ test("K: the lineage can be re-proven from durable rows after a reopen", { skip 
 test("L: reconciliation evidence keeps its lineage across a restart", { skip }, async (t) => {
   const db = projectFixture(t);
   const store = db.open();
-  seedProject(store);
+  seedBase(store);
   const { controller, runtime } = controllerFor(store, { runtimeMode: "lost" });
   runtime.reconcileOutcome = ReconcileOutcome.CONFIRMED_COMPLETED;
 
@@ -372,11 +399,72 @@ test("L: reconciliation evidence keeps its lineage across a restart", { skip }, 
   assert.equal(reopened.getVerification(recovered.verification.id).taskId, "task-1");
 });
 
+test("project: a Project row survives a restart", { skip }, (t) => {
+  const db = projectFixture(t);
+  const store = db.open();
+  store.seedProject(createProject({ id: "project-1", name: "Persisted project", description: "durable root" }));
+  store.close();
+
+  const reopened = db.open();
+  const project = reopened.getProject("project-1");
+  assert.equal(project.name, "Persisted project");
+  assert.equal(project.status, ProjectStatus.ACTIVE);
+  assert.equal(project.version, 1);
+  assert.ok(reopened.getEvents().some((event) => event.type === "project.created"));
+});
+
+test("K: a PASS verification whose evidence goes STALE in the database cannot accept, after a restart", { skip }, (t) => {
+  const db = projectFixture(t);
+  const store = db.open();
+  seedBase(store);
+  store.createRun(createRun({ id: "run-1", taskId: "task-1", status: RunStatus.READY }));
+  store.createAttempt(createAttempt({ id: "attempt-1", runId: "run-1", attemptNumber: 1 }));
+  store.recordEvidence(createEvidence({
+    id: "ev-1",
+    taskId: "task-1",
+    runId: "run-1",
+    attemptId: "attempt-1",
+    acceptanceId: "acceptance-1",
+    acceptanceVersion: 1,
+    revision: "rev-1",
+  }));
+  // legal at the time: CANDIDATE evidence and a PASS verdict on the pinned revision
+  store.recordVerification(createVerification({
+    id: "v-1",
+    taskId: "task-1",
+    acceptanceId: "acceptance-1",
+    acceptanceVersion: 1,
+    evidenceIds: ["ev-1"],
+    verdict: VerificationVerdict.PASS,
+    revision: "rev-1",
+  }));
+  store.close();
+
+  // v0.1 has no evidence-lifecycle API yet, so the supersede is written straight
+  // into the database — which is also the state a reloaded store could find.
+  const sqlite = createRequire(import.meta.url)("node:sqlite");
+  const raw = new sqlite.DatabaseSync(db.file);
+  const row = raw.prepare("SELECT body FROM evidence WHERE id = ?").get("ev-1");
+  const body = JSON.parse(row.body);
+  body.status = "STALE";
+  raw.prepare("UPDATE evidence SET body = ? WHERE id = ?").run(JSON.stringify(body), "ev-1");
+  raw.close();
+
+  const reopened = db.open();
+  assert.equal(reopened.getEvidence("ev-1").status, "STALE");
+
+  assert.throws(
+    () => reopened.acceptTask("task-1", 1, { verificationId: "v-1" }),
+    (error) => error instanceof InvariantError && /cannot support a PASS verification/.test(error.message),
+  );
+  assert.notEqual(reopened.getTask("task-1").status, TaskStatus.ACCEPTED);
+});
+
 test("concurrency: two writers on one database cannot silently overwrite each other", { skip }, (t) => {
   const db = projectFixture(t);
   const writerA = db.open();
   const writerB = db.open();
-  seedProject(writerA);
+  seedBase(writerA);
 
   const readByA = writerA.getTask("task-1");
   const readByB = writerB.getTask("task-1");

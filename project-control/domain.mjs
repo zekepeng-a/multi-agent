@@ -1,3 +1,10 @@
+export const ProjectStatus = Object.freeze({
+  ACTIVE: "ACTIVE",
+  PAUSED: "PAUSED",
+  COMPLETED: "COMPLETED",
+  ARCHIVED: "ARCHIVED",
+});
+
 export const TaskStatus = Object.freeze({
   DRAFT: "DRAFT",
   READY: "READY",
@@ -79,6 +86,33 @@ export class InvariantError extends Error {
 
 export function now() {
   return new Date().toISOString();
+}
+
+/**
+ * Minimal Project record, following canonical architecture §5.1. It is the
+ * lifecycle root the durable store keeps; v0.1 rules do not act on it yet, and
+ * tasks reference a project by id only.
+ */
+export function createProject({
+  id,
+  name,
+  description = "",
+  status = ProjectStatus.ACTIVE,
+  currentRevision = null,
+  metadata = {},
+} = {}) {
+  if (!id || !name) throw new Error("id and name are required");
+  return {
+    id,
+    version: 1,
+    name,
+    description,
+    status,
+    currentRevision,
+    metadata,
+    createdAt: now(),
+    updatedAt: now(),
+  };
 }
 
 export function createTask({

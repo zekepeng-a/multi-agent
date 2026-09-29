@@ -20,6 +20,7 @@ import {
 
 /** Logical collections a backend persists. */
 export const Collection = Object.freeze({
+  PROJECT: "project",
   TASK: "task",
   ACCEPTANCE: "acceptance",
   RUN: "run",
@@ -104,7 +105,18 @@ export class ProjectControlStore {
     throw new Error(`putContractFingerprint is not implemented (${key})`);
   }
 
-  /** @returns {object} the stored event, with its assigned id */
+  /**
+   * Appends a domain event.
+   *
+   * `aggregateType` is derived from the event type, which is
+   * `<aggregate>.<action>` throughout this model. `aggregateVersion` is the
+   * aggregate's concurrency version where one exists (project, task, run) and
+   * null where it does not (attempt, evidence, verification, and the acceptance
+   * revision — whose `version` is contract identity, not a mutation counter, and
+   * therefore stays in the payload).
+   *
+   * @returns {object} the stored event, with its assigned id
+   */
   appendEvent(event) {
     throw new Error(`appendEvent is not implemented (${event.type})`);
   }
@@ -128,12 +140,25 @@ export class ProjectControlStore {
 
   // ── Shared control semantics ──────────────────────────────────────────────
 
+  seedProject(project) {
+    this.runInTransaction(() => {
+      if (!this.insertRecord(Collection.PROJECT, project.id, structuredClone(project))) {
+        throw new Error(`project already exists: ${project.id}`);
+      }
+      this.#event("project.created", project.id, { name: project.name }, { aggregateVersion: project.version });
+    });
+  }
+
+  getProject(id) {
+    return structuredClone(this.#required(Collection.PROJECT, id, "project"));
+  }
+
   seedTask(task) {
     this.runInTransaction(() => {
       if (!this.insertRecord(Collection.TASK, task.id, structuredClone(task))) {
         throw new Error(`task already exists: ${task.id}`);
       }
-      this.#event("task.created", task.id, { version: task.version });
+      this.#event("task.created", task.id, { version: task.version }, { aggregateVersion: task.version });
     });
   }
 
@@ -174,7 +199,7 @@ export class ProjectControlStore {
         throw new ConflictError(`acceptance revision already exists: ${key}`);
       }
       this.putContractFingerprint(key, acceptanceContractFingerprint(next));
-      this.#event("acceptance.revised", id, { version: next.version, from: current.version }, commandId);
+      this.#event("acceptance.revised", id, { version: next.version, from: current.version }, { commandId });
       this.#rememberCommand(commandId, "reviseAcceptance", key);
       return structuredClone(next);
     });
@@ -232,7 +257,7 @@ export class ProjectControlStore {
       if (!this.insertRecord(Collection.RUN, run.id, structuredClone(run))) {
         throw new Error(`run already exists: ${run.id}`);
       }
-      this.#event("run.created", run.id, { taskId: run.taskId }, commandId);
+      this.#event("run.created", run.id, { taskId: run.taskId }, { commandId, aggregateVersion: run.version });
       this.#rememberCommand(commandId, "createRun", run.id);
       return structuredClone(run);
     });
@@ -257,7 +282,7 @@ export class ProjectControlStore {
       if (!this.insertRecord(Collection.ATTEMPT, attempt.id, structuredClone(attempt))) {
         throw new Error(`attempt already exists: ${attempt.id}`);
       }
-      this.#event("attempt.created", attempt.id, { runId: attempt.runId }, commandId);
+      this.#event("attempt.created", attempt.id, { runId: attempt.runId }, { commandId });
       this.#rememberCommand(commandId, "createAttempt", attempt.id);
       return structuredClone(attempt);
     });
@@ -276,7 +301,7 @@ export class ProjectControlStore {
         next.endedAt ??= now();
       }
       this.putRecord(Collection.ATTEMPT, id, next);
-      this.#event("attempt.updated", id, { status: next.status }, commandId);
+      this.#event("attempt.updated", id, { status: next.status }, { commandId });
       this.#rememberCommand(commandId, "updateAttempt", id);
       return structuredClone(next);
     });
@@ -294,7 +319,7 @@ export class ProjectControlStore {
         acceptanceId: evidence.acceptanceId,
         acceptanceVersion: evidence.acceptanceVersion,
         revision: evidence.revision,
-      }, commandId);
+      }, { commandId });
       this.#rememberCommand(commandId, "recordEvidence", evidence.id);
       return structuredClone(evidence);
     });
@@ -337,7 +362,7 @@ export class ProjectControlStore {
       this.#event("verification.recorded", verification.id, {
         acceptanceId: verification.acceptanceId,
         verdict: verification.verdict,
-      }, commandId);
+      }, { commandId });
       this.#rememberCommand(commandId, "recordVerification", verification.id);
       return structuredClone(verification);
     });
@@ -382,7 +407,7 @@ export class ProjectControlStore {
         acceptanceKey(acceptance.id, acceptance.version),
         { ...acceptance, status: "PASSED", updatedAt: now() },
       );
-      this.#event("task.accepted", taskId, { verificationId, version: next.version }, commandId);
+      this.#event("task.accepted", taskId, { verificationId, version: next.version }, { commandId, aggregateVersion: next.version });
       this.#rememberCommand(commandId, "acceptTask", taskId);
       return structuredClone(next);
     });
@@ -512,7 +537,7 @@ export class ProjectControlStore {
         // never silently overwrite a newer authoritative version.
         throw new ConflictError(`${id} expected v${expectedVersion}, but it changed in another writer`);
       }
-      this.#event(eventType, id, { version: next.version, patch: structuredClone(patch) }, commandId);
+      this.#event(eventType, id, { version: next.version, patch: structuredClone(patch) }, { commandId, aggregateVersion: next.version });
       this.#rememberCommand(commandId, operation, id);
       return structuredClone(next);
     });
@@ -540,10 +565,12 @@ export class ProjectControlStore {
     return value;
   }
 
-  #event(type, aggregateId, payload, commandId = null) {
+  #event(type, aggregateId, payload, { commandId = null, aggregateVersion = null } = {}) {
     this.appendEvent({
       type,
+      aggregateType: type.split(".")[0],
       aggregateId,
+      aggregateVersion,
       payload: structuredClone(payload),
       commandId,
       occurredAt: now(),

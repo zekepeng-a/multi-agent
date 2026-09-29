@@ -44,6 +44,13 @@ export function isSqliteAvailable() {
 }
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS projects (
+  id      TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  status  TEXT NOT NULL,
+  body    TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id                 TEXT PRIMARY KEY,
   version            INTEGER NOT NULL,
@@ -68,7 +75,8 @@ CREATE TABLE IF NOT EXISTS acceptance_contracts (
   id          TEXT NOT NULL,
   version     INTEGER NOT NULL,
   fingerprint TEXT NOT NULL,
-  PRIMARY KEY (id, version)
+  PRIMARY KEY (id, version),
+  FOREIGN KEY (id, version) REFERENCES acceptance_revisions (id, version)
 );
 
 CREATE TABLE IF NOT EXISTS runs (
@@ -93,12 +101,19 @@ CREATE TABLE IF NOT EXISTS evidence (
   body       TEXT NOT NULL
 );
 
+-- task_id / acceptance revision are real foreign keys because the rules prove
+-- them before the insert. Evidence deliberately has NONE: a dangling evidence
+-- record is allowed to exist and is rejected when something tries to use it, so
+-- both backends keep identical semantics and the lineage rules keep a single
+-- owner (./store.mjs).
 CREATE TABLE IF NOT EXISTS verifications (
   id                 TEXT PRIMARY KEY,
   task_id            TEXT NOT NULL,
   acceptance_id      TEXT NOT NULL,
   acceptance_version INTEGER NOT NULL,
-  body               TEXT NOT NULL
+  body               TEXT NOT NULL,
+  FOREIGN KEY (task_id) REFERENCES tasks (id),
+  FOREIGN KEY (acceptance_id, acceptance_version) REFERENCES acceptance_revisions (id, version)
 );
 
 CREATE TABLE IF NOT EXISTS commands (
@@ -108,12 +123,15 @@ CREATE TABLE IF NOT EXISTS commands (
 );
 
 CREATE TABLE IF NOT EXISTS events (
-  seq          INTEGER PRIMARY KEY AUTOINCREMENT,
-  type         TEXT NOT NULL,
-  aggregate_id TEXT NOT NULL,
-  payload      TEXT NOT NULL,
-  command_id   TEXT,
-  occurred_at  TEXT NOT NULL
+  seq               INTEGER PRIMARY KEY,
+  event_id          TEXT NOT NULL UNIQUE,
+  type              TEXT NOT NULL,
+  aggregate_type    TEXT NOT NULL,
+  aggregate_id      TEXT NOT NULL,
+  aggregate_version INTEGER,
+  payload           TEXT NOT NULL,
+  command_id        TEXT,
+  occurred_at       TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS runs_by_task ON runs (task_id);
@@ -124,6 +142,12 @@ CREATE INDEX IF NOT EXISTS events_by_aggregate ON events (aggregate_id);
 // collection → table, key scope, projected columns and the columns the store
 // filters on. Table/column names come from this constant, never from input.
 const SHAPES = {
+  [Collection.PROJECT]: {
+    table: "projects",
+    scope: "id",
+    columns: (r) => ({ id: r.id, version: r.version, status: r.status }),
+    filters: { id: "id" },
+  },
   [Collection.TASK]: {
     table: "tasks",
     scope: "id",
@@ -199,6 +223,7 @@ export class SqliteStore extends ProjectControlStore {
     if (!sqlite) throw new Error(`SqliteStore unavailable: ${SQLITE_REQUIREMENT}`);
     this.#db = new sqlite.DatabaseSync(file);
     this.#db.exec("PRAGMA journal_mode = WAL");
+    this.#db.exec("PRAGMA foreign_keys = ON");
     this.#db.exec(`PRAGMA busy_timeout = ${Number(busyTimeoutMs)}`);
     this.#db.exec(SCHEMA);
   }
@@ -298,26 +323,43 @@ export class SqliteStore extends ProjectControlStore {
   }
 
   appendEvent(event) {
-    const info = this.#db
-      .prepare("INSERT INTO events (type, aggregate_id, payload, command_id, occurred_at) VALUES (?, ?, ?, ?, ?)")
+    // The event id is a function of the append sequence, so it is computed here
+    // with the row rather than derived later. Writers hold the write lock inside
+    // the surrounding transaction, so MAX(seq)+1 cannot race another writer.
+    const seq = Number(this.#db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM events").get().next);
+    const eventId = `evt-${seq}`;
+    this.#db
+      .prepare(
+        "INSERT INTO events (seq, event_id, type, aggregate_type, aggregate_id, aggregate_version, payload, command_id, occurred_at) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
       .run(
+        seq,
+        eventId,
         event.type,
+        event.aggregateType,
         event.aggregateId,
+        event.aggregateVersion ?? null,
         JSON.stringify(event.payload ?? null),
         event.commandId ?? null,
         event.occurredAt,
       );
-    return { id: `evt-${Number(info.lastInsertRowid)}`, ...event };
+    return { id: eventId, ...event };
   }
 
   allEvents() {
     return this.#db
-      .prepare("SELECT seq, type, aggregate_id, payload, command_id, occurred_at FROM events ORDER BY seq")
+      .prepare(
+        "SELECT event_id, type, aggregate_type, aggregate_id, aggregate_version, payload, command_id, occurred_at " +
+          "FROM events ORDER BY seq",
+      )
       .all()
       .map((row) => ({
-        id: `evt-${row.seq}`,
+        id: row.event_id,
         type: row.type,
+        aggregateType: row.aggregate_type,
         aggregateId: row.aggregate_id,
+        aggregateVersion: row.aggregate_version,
         payload: JSON.parse(row.payload),
         commandId: row.command_id,
         occurredAt: row.occurred_at,

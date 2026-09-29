@@ -10,6 +10,7 @@ import { ProjectControlStore, Collection } from "./store.mjs";
 export class MemoryStore extends ProjectControlStore {
   constructor() {
     super();
+    this.projects = new Map();
     this.tasks = new Map();
     // Acceptance contract revisions are keyed by (id, version) so that a task
     // pinned to v1 can never be silently served the v2 revision.
@@ -25,6 +26,7 @@ export class MemoryStore extends ProjectControlStore {
 
   #mapFor(collection) {
     switch (collection) {
+      case Collection.PROJECT: return this.projects;
       case Collection.TASK: return this.tasks;
       case Collection.ACCEPTANCE: return this.acceptances;
       case Collection.RUN: return this.runs;

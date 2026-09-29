@@ -172,19 +172,25 @@ Next architectural problem after the persistence spike: the first **Goal/Milesto
 
 One question: **do the Project Control semantics that were already verified survive a process restart?**
 
-All of the following are covered by `tests/integration/persistence.test.mjs`:
+All of the following are covered by `tests/integration/persistence.test.mjs` and
+`tests/unit/project-control-store.contract.test.mjs`:
 
 | Decision / property | v0.1 prototype |
 |---|---|
 | Storage | SQLite, one database file, through the built-in `node:sqlite` module — no dependency, no native build |
-| Write model | **Direct transactional state updates + an append-only domain event log.** Not event sourcing |
+| Objects persisted | Project, Task, Acceptance Contract revision, Run, Attempt, Evidence, Verification, Command, DomainEvent |
+| Write model | **Direct transactional state updates + an append-only domain event log.** Not event sourcing: the tables are authority, the log is history |
 | Transaction boundary | one transaction per authoritative mutation: the state row, its domain event and its command/idempotency row commit or fail **together** (`BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK`) |
+| Schema | primary keys on every identity; `PRIMARY KEY (id, version)` for contract revisions so they cannot overwrite each other; unique event ids; foreign keys wherever the rules already prove the reference (verification → task, verification and contract fingerprint → acceptance revision); indexes for the lookups the store performs |
+| Domain events | event id, event type, derived aggregate type, aggregate id, aggregate version where the aggregate has one, command id, payload, occurred_at |
 | Optimistic concurrency | the record's own `version`, checked by the rules **and** enforced by SQL compare-and-set (`UPDATE … WHERE key = ? AND version = ?`), so two writers cannot silently overwrite each other |
 | Command idempotency | durable `commands(command_id, operation, result_id)`: a replayed command returns the recorded result and performs no second mutation — including after a restart |
 | Contract revision pinning | `acceptance_revisions` is keyed by `(id, version)`, so both revisions coexist; a Task keeps the revision it was created with; content fingerprints live in a separate table, so contract content edited in place fails closed on read |
 | Evidence lineage | Run / Attempt / Evidence / Verification rows keep the identity the rules re-prove on every use, and the lineage is re-provable from durable rows alone |
 | Reconciliation history | a blocked Run and its LOST Attempt remain as history after recovery, across restarts |
 | Restart proof | a test writes state in **process A**, lets it exit, and reads it back in **process B** — not a second store object inside one process |
+| Backend contract | one behaviour suite runs against MemoryStore and SqliteStore, so a future backend must satisfy the same contract without touching the Controller tests |
+| Test isolation | every test opens its own temporary directory and database; the fixture closes its stores before deleting the directory; nothing is written into the repository, a real project folder, or a shared `.ai/` state folder |
 
 Explicitly **not** proven by this spike:
 
@@ -192,6 +198,9 @@ Explicitly **not** proven by this spike:
 - high availability, failover, or replication
 - multi-host locking — WAL plus `busy_timeout` only orders writers on one host
 - production backup, restore, or point-in-time recovery strategy
+- operational recovery: runbooks, on-call procedures, disaster recovery
 - a migration system: the schema is `CREATE TABLE IF NOT EXISTS`, so a schema change is currently a manual step
-- normalization or query performance — state rows carry a JSON `body` alongside the identity/version/reference columns the control plane queries
-- a Project aggregate: v0.1 has no Project entity to persist, only `project_id` references on Task and Run
+- high-volume performance: state rows carry a JSON `body`, so a growing table is scanned rather than queried by index
+- artifact metadata (`sha256` / `size` / `media_type`): artifact **payloads** never enter SQLite — only references inside the records — but those metadata columns are not yet part of the domain model
+- the engine declaration: `node:sqlite` needs Node ≥ 22.5, so `package.json`'s `>=20` is inaccurate for the persistent store. It was deliberately left unchanged rather than adjusted as a side effect of this spike
+- `updateAttempt` carries no concurrency version of its own, so concurrent attempt updates are an unconditional upsert — unchanged from the in-process reference
