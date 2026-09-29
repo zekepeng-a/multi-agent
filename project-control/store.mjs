@@ -12,6 +12,9 @@ import {
   EvidenceStatus,
   ConflictError,
   InvariantError,
+  ProjectStatus,
+  MilestoneStatus,
+  GoalStatus,
   TaskStatus,
   RunStatus,
   AttemptStatus,
@@ -21,12 +24,24 @@ import {
 /** Logical collections a backend persists. */
 export const Collection = Object.freeze({
   PROJECT: "project",
+  MILESTONE: "milestone",
+  GOAL: "goal",
   TASK: "task",
   ACCEPTANCE: "acceptance",
   RUN: "run",
   ATTEMPT: "attempt",
   EVIDENCE: "evidence",
   VERIFICATION: "verification",
+});
+
+// A lifecycle transition that is a domain decision in its own right is recorded
+// under its own event name; every other mutation of the same aggregate is a plain
+// update. The mapping lives here with the rules, so the Controller never has to
+// name events.
+const LIFECYCLE_EVENT_TYPES = Object.freeze({
+  [Collection.GOAL]: Object.freeze({ [GoalStatus.ACCEPTED]: "goal.accepted" }),
+  [Collection.MILESTONE]: Object.freeze({ [MilestoneStatus.COMPLETED]: "milestone.completed" }),
+  [Collection.PROJECT]: Object.freeze({ [ProjectStatus.COMPLETED]: "project.completed" }),
 });
 
 /**
@@ -176,6 +191,99 @@ export class ProjectControlStore {
 
   getProject(id) {
     return structuredClone(this.#required(Collection.PROJECT, id, "project"));
+  }
+
+  updateProject(id, expectedVersion, patch, { commandId = null } = {}) {
+    return this.#mutateVersioned(
+      Collection.PROJECT,
+      id,
+      expectedVersion,
+      patch,
+      "project.updated",
+      "updateProject",
+      commandId,
+    );
+  }
+
+  seedMilestone(milestone) {
+    this.runInTransaction(() => {
+      if (!this.insertRecord(Collection.MILESTONE, milestone.id, structuredClone(milestone))) {
+        throw new Error(`milestone already exists: ${milestone.id}`);
+      }
+      this.#event("milestone.created", milestone.id, { projectId: milestone.projectId }, {
+        aggregateVersion: milestone.version,
+      });
+    });
+  }
+
+  getMilestone(id) {
+    return structuredClone(this.#required(Collection.MILESTONE, id, "milestone"));
+  }
+
+  updateMilestone(id, expectedVersion, patch, { commandId = null } = {}) {
+    return this.#mutateVersioned(
+      Collection.MILESTONE,
+      id,
+      expectedVersion,
+      patch,
+      "milestone.updated",
+      "updateMilestone",
+      commandId,
+    );
+  }
+
+  /**
+   * Milestones of a project. Membership is read from the child's explicit
+   * `projectId` link — the same convention the store already uses for
+   * `Run.taskId` and `Evidence.taskId` — so it can never be inferred or guessed.
+   * `Milestone.goalIds` is the canonical membership list kept on the milestone
+   * itself; the two are expected to agree, and this round does not maintain one
+   * from the other.
+   */
+  getMilestonesForProject(projectId) {
+    return this.recordsMatching(Collection.MILESTONE, "projectId", projectId);
+  }
+
+  seedGoal(goal) {
+    this.runInTransaction(() => {
+      if (!this.insertRecord(Collection.GOAL, goal.id, structuredClone(goal))) {
+        throw new Error(`goal already exists: ${goal.id}`);
+      }
+      this.#event("goal.created", goal.id, { projectId: goal.projectId }, {
+        aggregateVersion: goal.version,
+      });
+    });
+  }
+
+  getGoal(id) {
+    return structuredClone(this.#required(Collection.GOAL, id, "goal"));
+  }
+
+  updateGoal(id, expectedVersion, patch, { commandId = null } = {}) {
+    return this.#mutateVersioned(
+      Collection.GOAL,
+      id,
+      expectedVersion,
+      patch,
+      "goal.updated",
+      "updateGoal",
+      commandId,
+    );
+  }
+
+  /** Goals of a milestone, read from the child's explicit `milestoneId` link. */
+  getGoalsForMilestone(milestoneId) {
+    return this.recordsMatching(Collection.GOAL, "milestoneId", milestoneId);
+  }
+
+  /** Goals of a project, read from the child's explicit `projectId` link. */
+  getGoalsForProject(projectId) {
+    return this.recordsMatching(Collection.GOAL, "projectId", projectId);
+  }
+
+  /** Tasks of a goal, read from the child's explicit `goalId` link. */
+  getTasksForGoal(goalId) {
+    return this.recordsMatching(Collection.TASK, "goalId", goalId);
   }
 
   seedTask(task) {
@@ -578,7 +686,11 @@ export class ProjectControlStore {
         // never silently overwrite a newer authoritative version.
         throw new ConflictError(`${id} expected v${expectedVersion}, but it changed in another writer`);
       }
-      this.#event(eventType, id, { version: next.version, patch: structuredClone(patch) }, { commandId, aggregateVersion: next.version });
+      // A scope-level decision (goal accepted, milestone completed, project
+      // completed) is recorded under its own event name; everything else is a
+      // plain update of that aggregate.
+      const recordedType = LIFECYCLE_EVENT_TYPES[collection]?.[next.status] ?? eventType;
+      this.#event(recordedType, id, { version: next.version, patch: structuredClone(patch) }, { commandId, aggregateVersion: next.version });
       this.#rememberCommand(commandId, operation, id);
       return structuredClone(next);
     });

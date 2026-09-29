@@ -1,6 +1,9 @@
 import {
   AttemptStatus,
   EvidenceStatus,
+  GoalStatus,
+  MilestoneStatus,
+  ProjectStatus,
   ReconcileOutcome,
   RunStatus,
   TaskStatus,
@@ -9,6 +12,7 @@ import {
   createRun,
   now,
 } from "./domain.mjs";
+import { Collection } from "./store.mjs";
 
 export class Controller {
   constructor({ store, runtime, verifier, idFactory = defaultIdFactory } = {}) {
@@ -322,6 +326,176 @@ export class Controller {
       run,
       acceptance,
     };
+  }
+
+  // ── Lifecycle reconciliation: Project → Milestone → Goal → Task ───────────
+  //
+  // These three methods only OBSERVE children and synchronise the parent's
+  // Project Control state. They never call runtime.start(), never create a Run,
+  // Attempt or Evidence, and never call reconcileTask — "parent lifecycle sync"
+  // and "task execution scheduling" stay two separate layers. A parent can
+  // therefore only ever move because state below it already exists.
+  //
+  // Actions: SYNC (a transition was written), NOOP (already in the target state,
+  // or a terminal state that must not be reversed) and WAIT (no rule settles the
+  // case, with a reason).
+
+  /**
+   * Applies one lifecycle transition through the store — never by writing the
+   * record directly. When the aggregate already holds the target status nothing
+   * is written at all: no version churn and no redundant domain event.
+   */
+  #syncStatus(collection, record, targetStatus) {
+    if (record.status === targetStatus) {
+      return { action: "NOOP", record };
+    }
+    // Deterministic command identity for the transition, so a retried reconcile
+    // replays instead of applying a second time.
+    const commandId = `lifecycle:${collection}:${record.id}:${record.version}:${targetStatus}`;
+    const patch = { status: targetStatus };
+    const updated = collection === Collection.PROJECT
+      ? this.store.updateProject(record.id, record.version, patch, { commandId })
+      : collection === Collection.MILESTONE
+        ? this.store.updateMilestone(record.id, record.version, patch, { commandId })
+        : this.store.updateGoal(record.id, record.version, patch, { commandId });
+    return { action: "SYNC", record: updated };
+  }
+
+  async reconcileGoal(goalId) {
+    const goal = this.store.getGoal(goalId);
+
+    if (
+      goal.status === GoalStatus.ACCEPTED ||
+      goal.status === GoalStatus.REJECTED ||
+      goal.status === GoalStatus.CANCELLED
+    ) {
+      return { action: "NOOP", reason: `goal-${goal.status.toLowerCase()}`, goal, tasks: [] };
+    }
+    if (goal.status === GoalStatus.DRAFT) {
+      return { action: "WAIT", reason: "goal-draft", goal, tasks: [] };
+    }
+
+    const tasks = this.store.getTasksForGoal(goalId);
+    if (tasks.length === 0) {
+      return { action: "WAIT", reason: "goal-without-tasks", goal, tasks };
+    }
+    const statuses = tasks.map((task) => task.status);
+
+    if (statuses.every((status) => status === TaskStatus.ACCEPTED)) {
+      if (goal.acceptanceId != null) {
+        // A Goal-level acceptance contract is out of scope for this round.
+        // Aggregating child completion into an ACCEPTED Goal would fake the
+        // contract-bound acceptance of I-27/I-28, so it fails closed instead.
+        return { action: "WAIT", reason: "goal-acceptance-required", goal, tasks };
+      }
+      const sync = this.#syncStatus(Collection.GOAL, goal, GoalStatus.ACCEPTED);
+      return { action: sync.action, reason: "goal-accepted", goal: sync.record, tasks };
+    }
+
+    if (statuses.includes(TaskStatus.BLOCKED)) {
+      const sync = this.#syncStatus(Collection.GOAL, goal, GoalStatus.BLOCKED);
+      return { action: sync.action, reason: "goal-blocked", goal: sync.record, tasks };
+    }
+
+    if (statuses.some((status) => status === TaskStatus.IN_PROGRESS || status === TaskStatus.NEEDS_REVIEW)) {
+      const sync = this.#syncStatus(Collection.GOAL, goal, GoalStatus.IN_PROGRESS);
+      return { action: sync.action, reason: "goal-in-progress", goal: sync.record, tasks };
+    }
+
+    if (statuses.every((status) => status === TaskStatus.READY)) {
+      // Nothing has started. A Goal already at READY stays there; a Goal further
+      // along is never walked backwards by aggregation.
+      return goal.status === GoalStatus.READY
+        ? { action: "NOOP", reason: "goal-ready", goal, tasks }
+        : { action: "WAIT", reason: "goal-regression-not-allowed", goal, tasks };
+    }
+
+    // REJECTED / CANCELLED tasks, or any mix the rules above do not settle: a
+    // terminal decision belongs to an authority, never to aggregation.
+    return { action: "WAIT", reason: "goal-task-decision-required", goal, tasks };
+  }
+
+  async reconcileMilestone(milestoneId) {
+    const milestone = this.store.getMilestone(milestoneId);
+
+    if (milestone.status === MilestoneStatus.COMPLETED || milestone.status === MilestoneStatus.CANCELLED) {
+      return { action: "NOOP", reason: `milestone-${milestone.status.toLowerCase()}`, milestone, goals: [] };
+    }
+    if (milestone.status === MilestoneStatus.DRAFT) {
+      return { action: "WAIT", reason: "milestone-draft", milestone, goals: [] };
+    }
+
+    // Observe the next level first, so one call synchronises the whole chain.
+    const synced = [];
+    for (const goal of this.store.getGoalsForMilestone(milestoneId)) {
+      synced.push(await this.reconcileGoal(goal.id));
+    }
+    const goals = this.store.getGoalsForMilestone(milestoneId);
+
+    if (goals.length === 0) {
+      return { action: "WAIT", reason: "milestone-without-goals", milestone, goals, synced };
+    }
+    const statuses = goals.map((goal) => goal.status);
+
+    if (statuses.every((status) => status === GoalStatus.ACCEPTED)) {
+      if (milestone.acceptanceId != null) {
+        return { action: "WAIT", reason: "milestone-acceptance-required", milestone, goals, synced };
+      }
+      const sync = this.#syncStatus(Collection.MILESTONE, milestone, MilestoneStatus.COMPLETED);
+      return { action: sync.action, reason: "milestone-completed", milestone: sync.record, goals, synced };
+    }
+
+    if (statuses.includes(GoalStatus.BLOCKED)) {
+      const sync = this.#syncStatus(Collection.MILESTONE, milestone, MilestoneStatus.BLOCKED);
+      return { action: sync.action, reason: "milestone-blocked", milestone: sync.record, goals, synced };
+    }
+
+    if (statuses.includes(GoalStatus.IN_PROGRESS)) {
+      const sync = this.#syncStatus(Collection.MILESTONE, milestone, MilestoneStatus.IN_PROGRESS);
+      return { action: sync.action, reason: "milestone-in-progress", milestone: sync.record, goals, synced };
+    }
+
+    if (statuses.every((status) => status === GoalStatus.READY)) {
+      return milestone.status === MilestoneStatus.READY
+        ? { action: "NOOP", reason: "milestone-ready", milestone, goals, synced }
+        : { action: "WAIT", reason: "milestone-regression-not-allowed", milestone, goals, synced };
+    }
+
+    // DRAFT / REJECTED / CANCELLED goals are not an aggregation decision.
+    return { action: "WAIT", reason: "milestone-goal-decision-required", milestone, goals, synced };
+  }
+
+  async reconcileProject(projectId) {
+    const project = this.store.getProject(projectId);
+
+    if (project.status !== ProjectStatus.ACTIVE) {
+      // PAUSED / COMPLETED / ARCHIVED are decisions taken elsewhere; this
+      // Controller never resumes or re-opens a project.
+      return { action: "NOOP", reason: `project-${project.status.toLowerCase()}`, project };
+    }
+
+    const synced = [];
+    for (const milestone of this.store.getMilestonesForProject(projectId)) {
+      synced.push(await this.reconcileMilestone(milestone.id));
+    }
+    const milestones = this.store.getMilestonesForProject(projectId);
+
+    if (milestones.length === 0) {
+      return { action: "WAIT", reason: "project-without-milestones", project, milestones, synced };
+    }
+
+    if (milestones.some((milestone) => milestone.status === MilestoneStatus.BLOCKED)) {
+      // ProjectStatus has no BLOCKED. The project stays ACTIVE and the blocking
+      // condition is reported rather than invented as a project state.
+      return { action: "WAIT", reason: "project-blocked-by-milestone", project, milestones, synced };
+    }
+
+    if (milestones.every((milestone) => milestone.status === MilestoneStatus.COMPLETED)) {
+      const sync = this.#syncStatus(Collection.PROJECT, project, ProjectStatus.COMPLETED);
+      return { action: sync.action, reason: "project-completed", project: sync.record, milestones, synced };
+    }
+
+    return { action: "NOOP", reason: "project-active", project, milestones, synced };
   }
 }
 

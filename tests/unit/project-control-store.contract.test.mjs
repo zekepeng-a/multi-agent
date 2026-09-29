@@ -21,13 +21,18 @@ import {
   AttemptStatus,
   ConflictError,
   EvidenceStatus,
+  GoalStatus,
   InvariantError,
+  MilestoneStatus,
+  ProjectStatus,
   RunStatus,
   TaskStatus,
   VerificationVerdict,
   createAcceptance,
   createAttempt,
   createEvidence,
+  createGoal,
+  createMilestone,
   createProject,
   createRun,
   createTask,
@@ -518,6 +523,56 @@ for (const backend of BACKENDS) {
       assert.equal(facts.acceptedEventCount, 1, startStatus);
       assert.equal(facts.eventsNow, facts.eventsBefore + 1, `${startStatus}: exactly one event appended`);
     }
+  });
+
+  test(`${name}: hierarchy aggregates keep version, CAS, event identity and command idempotency`, { skip }, (t) => {
+    const store = backend.make(t);
+    const count = (type) => store.getEvents().filter((event) => event.type === type).length;
+
+    store.seedProject(createProject({ id: "project-1", name: "Hierarchy" }));
+    store.seedMilestone(createMilestone({ id: "ms-1", projectId: "project-1", name: "M1", goalIds: ["goal-1"] }));
+    store.seedGoal(createGoal({
+      id: "goal-1", projectId: "project-1", milestoneId: "ms-1", title: "G1", taskIds: ["task-1"],
+    }));
+    store.seedTask(createTask({
+      id: "task-1", goalId: "goal-1", title: "T1", acceptanceId: "acceptance-1", acceptanceVersion: 1,
+    }));
+
+    // parent links are the query surface, read from the child's explicit field
+    assert.deepEqual(store.getMilestonesForProject("project-1").map((m) => m.id), ["ms-1"]);
+    assert.deepEqual(store.getGoalsForMilestone("ms-1").map((g) => g.id), ["goal-1"]);
+    assert.deepEqual(store.getGoalsForProject("project-1").map((g) => g.id), ["goal-1"]);
+    assert.deepEqual(store.getTasksForGoal("goal-1").map((task) => task.id), ["task-1"]);
+    assert.deepEqual(store.getMilestonesForProject("project-2"), []);
+
+    // versioned mutation with command identity: a replay is not a second mutation
+    const first = store.updateGoal("goal-1", 1, { status: GoalStatus.IN_PROGRESS }, { commandId: "cmd-goal" });
+    const replay = store.updateGoal("goal-1", 1, { status: GoalStatus.IN_PROGRESS }, { commandId: "cmd-goal" });
+    assert.equal(first.version, 2);
+    assert.equal(replay.version, 2);
+    assert.equal(store.getGoal("goal-1").version, 2);
+    assert.equal(count("goal.updated"), 1);
+
+    // a stale writer conflicts instead of overwriting
+    assert.throws(
+      () => store.updateGoal("goal-1", 1, { status: GoalStatus.READY }, { commandId: "cmd-stale" }),
+      (error) => error instanceof ConflictError,
+    );
+
+    // a scope-level decision is recorded under its own event name
+    store.updateGoal("goal-1", 2, { status: GoalStatus.ACCEPTED }, { commandId: "cmd-accept" });
+    assert.equal(count("goal.accepted"), 1);
+    store.updateMilestone("ms-1", 1, { status: MilestoneStatus.COMPLETED }, { commandId: "cmd-ms" });
+    assert.equal(count("milestone.completed"), 1);
+    store.updateProject("project-1", 1, { status: ProjectStatus.COMPLETED }, { commandId: "cmd-pr" });
+    assert.equal(count("project.completed"), 1);
+
+    // …with the right aggregate identity and version on the event
+    const accepted = store.getEvents().find((event) => event.type === "goal.accepted");
+    assert.equal(accepted.aggregateType, "goal");
+    assert.equal(accepted.aggregateId, "goal-1");
+    assert.equal(accepted.aggregateVersion, 3);
+    assert.equal(accepted.commandId, "cmd-accept");
   });
 }
 

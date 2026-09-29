@@ -51,9 +51,31 @@ CREATE TABLE IF NOT EXISTS projects (
   body    TEXT NOT NULL
 );
 
+-- Hierarchy links are deliberately loose (no foreign keys): a milestone may be
+-- seeded before its project exists and a task may carry a goal id that has no
+-- record, exactly like Evidence. The control rules own membership, so both
+-- backends stay identical.
+CREATE TABLE IF NOT EXISTS milestones (
+  id         TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  version    INTEGER NOT NULL,
+  status     TEXT NOT NULL,
+  body       TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS goals (
+  id           TEXT PRIMARY KEY,
+  project_id   TEXT NOT NULL,
+  milestone_id TEXT,
+  version      INTEGER NOT NULL,
+  status       TEXT NOT NULL,
+  body         TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id                 TEXT PRIMARY KEY,
   version            INTEGER NOT NULL,
+  goal_id            TEXT,
   acceptance_id      TEXT NOT NULL,
   acceptance_version INTEGER NOT NULL,
   status             TEXT NOT NULL,
@@ -135,6 +157,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 
 CREATE INDEX IF NOT EXISTS runs_by_task ON runs (task_id);
+CREATE INDEX IF NOT EXISTS tasks_by_goal ON tasks (goal_id);
 CREATE INDEX IF NOT EXISTS evidence_by_task ON evidence (task_id);
 CREATE INDEX IF NOT EXISTS events_by_aggregate ON events (aggregate_id);
 `;
@@ -148,17 +171,36 @@ const SHAPES = {
     columns: (r) => ({ id: r.id, version: r.version, status: r.status }),
     filters: { id: "id" },
   },
+  [Collection.MILESTONE]: {
+    table: "milestones",
+    scope: "id",
+    columns: (r) => ({ id: r.id, project_id: r.projectId, version: r.version, status: r.status }),
+    filters: { id: "id", projectId: "project_id" },
+  },
+  [Collection.GOAL]: {
+    table: "goals",
+    scope: "id",
+    columns: (r) => ({
+      id: r.id,
+      project_id: r.projectId,
+      milestone_id: r.milestoneId,
+      version: r.version,
+      status: r.status,
+    }),
+    filters: { id: "id", projectId: "project_id", milestoneId: "milestone_id" },
+  },
   [Collection.TASK]: {
     table: "tasks",
     scope: "id",
     columns: (r) => ({
       id: r.id,
       version: r.version,
+      goal_id: r.goalId,
       acceptance_id: r.acceptanceId,
       acceptance_version: r.acceptanceVersion,
       status: r.status,
     }),
-    filters: { id: "id", taskId: "id" },
+    filters: { id: "id", taskId: "id", goalId: "goal_id" },
   },
   [Collection.ACCEPTANCE]: {
     table: "acceptance_revisions",

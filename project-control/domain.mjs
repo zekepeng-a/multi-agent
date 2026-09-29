@@ -5,6 +5,25 @@ export const ProjectStatus = Object.freeze({
   ARCHIVED: "ARCHIVED",
 });
 
+export const MilestoneStatus = Object.freeze({
+  DRAFT: "DRAFT",
+  READY: "READY",
+  IN_PROGRESS: "IN_PROGRESS",
+  COMPLETED: "COMPLETED",
+  BLOCKED: "BLOCKED",
+  CANCELLED: "CANCELLED",
+});
+
+export const GoalStatus = Object.freeze({
+  DRAFT: "DRAFT",
+  READY: "READY",
+  IN_PROGRESS: "IN_PROGRESS",
+  BLOCKED: "BLOCKED",
+  ACCEPTED: "ACCEPTED",
+  REJECTED: "REJECTED",
+  CANCELLED: "CANCELLED",
+});
+
 export const TaskStatus = Object.freeze({
   DRAFT: "DRAFT",
   READY: "READY",
@@ -90,8 +109,8 @@ export function now() {
 
 /**
  * Minimal Project record, following canonical architecture §5.1. It is the
- * lifecycle root the durable store keeps; v0.1 rules do not act on it yet, and
- * tasks reference a project by id only.
+ * lifecycle root: the Controller aggregates Milestone state into it, and
+ * everything below references a project by id.
  */
 export function createProject({
   id,
@@ -115,9 +134,74 @@ export function createProject({
   };
 }
 
+/**
+ * A bounded stage inside a Project.
+ *
+ * Canonical architecture models a Milestone as belonging to a Roadmap. Roadmap
+ * has no lifecycle in v0.1, so the Milestone carries an explicit `projectId`
+ * parent link (`roadmapId` stays for when Roadmap lands). Parentage is always an
+ * explicit field — nothing is ever inferred from names or titles.
+ */
+export function createMilestone({
+  id,
+  projectId = "project-1",
+  roadmapId = null,
+  name,
+  description = "",
+  status = MilestoneStatus.READY,
+  goalIds = [],
+  acceptanceId = null,
+} = {}) {
+  if (!id || !name) throw new Error("id and name are required");
+  return {
+    id,
+    projectId,
+    roadmapId,
+    version: 1,
+    name,
+    description,
+    status,
+    goalIds: [...goalIds],
+    acceptanceId,
+    createdAt: now(),
+    updatedAt: now(),
+  };
+}
+
+/**
+ * A meaningful project outcome. A Goal aggregates Tasks; it is not an
+ * implementation step.
+ */
+export function createGoal({
+  id,
+  projectId = "project-1",
+  milestoneId = null,
+  title,
+  description = "",
+  status = GoalStatus.READY,
+  taskIds = [],
+  acceptanceId = null,
+} = {}) {
+  if (!id || !title) throw new Error("id and title are required");
+  return {
+    id,
+    projectId,
+    milestoneId,
+    version: 1,
+    title,
+    description,
+    status,
+    taskIds: [...taskIds],
+    acceptanceId,
+    createdAt: now(),
+    updatedAt: now(),
+  };
+}
+
 export function createTask({
   id,
   projectId = "project-1",
+  goalId = null,
   title,
   acceptanceId,
   acceptanceVersion,
@@ -129,6 +213,10 @@ export function createTask({
   return {
     id,
     projectId,
+    // The Goal this task belongs to. It is an EXPLICIT optional parent link:
+    // tasks created before goals existed, or deliberately unattached, carry null,
+    // and nothing resolves a task to a goal by guessing.
+    goalId,
     title,
     acceptanceId,
     // The contract revision this task is pinned to. It is fixed when the task is

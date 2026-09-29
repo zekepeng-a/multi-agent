@@ -25,6 +25,7 @@ import { FakeVerifier } from "../../project-control/fake-verifier.mjs";
 import {
   AttemptStatus,
   ConflictError,
+  GoalStatus,
   InvariantError,
   ProjectStatus,
   ReconcileOutcome,
@@ -34,6 +35,8 @@ import {
   createAcceptance,
   createAttempt,
   createEvidence,
+  createGoal,
+  createMilestone,
   createProject,
   createRun,
   createTask,
@@ -458,6 +461,33 @@ test("K: a PASS verification whose evidence goes STALE in the database cannot ac
     (error) => error instanceof InvariantError && /cannot support a PASS verification/.test(error.message),
   );
   assert.notEqual(reopened.getTask("task-1").status, TaskStatus.ACCEPTED);
+});
+
+test("hierarchy: project, milestone, goal and task links survive a reopen", { skip }, (t) => {
+  const db = projectFixture(t);
+  const store = db.open();
+  store.seedProject(createProject({ id: "project-1", name: "Hierarchy project" }));
+  store.seedMilestone(createMilestone({ id: "ms-1", projectId: "project-1", name: "M1", goalIds: ["goal-1"] }));
+  store.seedGoal(createGoal({
+    id: "goal-1", projectId: "project-1", milestoneId: "ms-1", title: "G1", taskIds: ["task-1"],
+  }));
+  store.seedTask(createTask({
+    id: "task-1", goalId: "goal-1", title: "T1", acceptanceId: "acceptance-1", acceptanceVersion: 1,
+  }));
+  store.updateGoal("goal-1", 1, { status: GoalStatus.ACCEPTED }, { commandId: "cmd-goal" });
+  store.close();
+
+  const reopened = db.open();
+
+  assert.equal(reopened.getProject("project-1").name, "Hierarchy project");
+  assert.equal(reopened.getMilestone("ms-1").projectId, "project-1");
+  assert.deepEqual(reopened.getMilestonesForProject("project-1").map((m) => m.id), ["ms-1"]);
+  assert.deepEqual(reopened.getGoalsForMilestone("ms-1").map((g) => g.id), ["goal-1"]);
+  assert.deepEqual(reopened.getGoalsForProject("project-1").map((g) => g.id), ["goal-1"]);
+  assert.deepEqual(reopened.getTasksForGoal("goal-1").map((task) => task.id), ["task-1"]);
+  assert.equal(reopened.getGoal("goal-1").status, GoalStatus.ACCEPTED);
+  assert.equal(reopened.getGoal("goal-1").version, 2);
+  assert.ok(reopened.getEvents().some((event) => event.type === "goal.accepted"));
 });
 
 test("concurrency: two writers on one database cannot silently overwrite each other", { skip }, (t) => {
