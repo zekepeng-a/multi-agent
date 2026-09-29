@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { MemoryStore } from "../../project-control/memory-store.mjs";
+import { ACCEPTABLE_SOURCE_TASK_STATES } from "../../project-control/store.mjs";
 import {
   SqliteStore,
   isSqliteAvailable,
@@ -108,6 +109,60 @@ function eventsWithoutTimestamps(store) {
 }
 
 const sqliteSkip = isSqliteAvailable() ? false : `node:sqlite is unavailable: ${SQLITE_REQUIREMENT}`;
+
+const ACCEPTABLE_SOURCE_STATES = [TaskStatus.READY, TaskStatus.IN_PROGRESS, TaskStatus.NEEDS_REVIEW];
+const REFUSED_SOURCE_STATES = [
+  TaskStatus.DRAFT,
+  TaskStatus.BLOCKED,
+  TaskStatus.ACCEPTED,
+  TaskStatus.REJECTED,
+  TaskStatus.CANCELLED,
+];
+
+/**
+ * One acceptance attempt from a given starting task status.
+ *
+ * A COMPLETE legal chain (Run → Attempt → Evidence → PASS verification on the
+ * pinned revision) is always present, so a refusal can only be about the task's
+ * source state — never about missing or bad evidence.
+ */
+function acceptanceAttempt(store, { startStatus = TaskStatus.READY } = {}) {
+  seedAcceptance(store);
+  seedTask(store, { status: startStatus });
+  seedChain(store);
+  store.recordEvidence(evidenceFor({ id: "ev-1" }));
+  store.recordVerification(verificationFor(["ev-1"], { id: "v-1" }));
+
+  const eventsBefore = store.getEvents().length;
+  const acceptanceUpdatedAtBefore = store.getAcceptance("acceptance-1", 1).updatedAt;
+
+  let accepted = null;
+  let error = null;
+  try {
+    accepted = store.acceptTask("task-1", 1, { verificationId: "v-1", commandId: "cmd-accept" });
+  } catch (caught) {
+    error = caught;
+  }
+
+  const task = store.getTask("task-1");
+  return {
+    attemptedFrom: startStatus,
+    acceptedStatus: accepted?.status ?? null,
+    acceptedVersion: accepted?.version ?? null,
+    errorName: error?.name ?? null,
+    errorCode: error?.code ?? null,
+    errorMessage: error?.message ?? null,
+    status: task.status,
+    version: task.version,
+    acceptanceStatus: store.getAcceptance("acceptance-1", 1).status,
+    acceptanceUpdatedAtBefore,
+    acceptanceUpdatedAtAfter: store.getAcceptance("acceptance-1", 1).updatedAt,
+    eventsBefore,
+    eventsNow: store.getEvents().length,
+    acceptedEventCount: store.getEvents().filter((event) => event.type === "task.accepted").length,
+    eventTypes: store.getEvents().map((event) => event.type),
+  };
+}
 
 /**
  * Drives one full acceptance and then sends a SECOND, brand-new acceptance
@@ -425,6 +480,45 @@ for (const backend of BACKENDS) {
     assert.equal(store.getTask("task-1").version, 2);
     assert.equal(store.getEvents().length, events, "no duplicate event");
   });
+
+  test(`${name}: refuses acceptance from every non-acceptable task state`, { skip }, (t) => {
+    for (const startStatus of REFUSED_SOURCE_STATES) {
+      const facts = acceptanceAttempt(backend.make(t), { startStatus });
+
+      // illegal source state -> InvariantError, never a new acceptance
+      assert.equal(facts.errorName, "InvariantError", `${startStatus} must be refused`);
+      assert.equal(facts.errorCode, "INVARIANT_VIOLATION", startStatus);
+      assert.equal(facts.acceptedStatus, null, `${startStatus}: no acceptance result`);
+      assert.match(facts.errorMessage, new RegExp(startStatus), `${startStatus}: the message names the state`);
+
+      // J: the refused command changed nothing at all
+      assert.equal(facts.status, startStatus, `${startStatus}: task status unchanged`);
+      assert.equal(facts.version, 1, `${startStatus}: task version unchanged`);
+      assert.equal(facts.acceptanceStatus, "PENDING", `${startStatus}: acceptance decision untouched`);
+      assert.equal(
+        facts.acceptanceUpdatedAtAfter,
+        facts.acceptanceUpdatedAtBefore,
+        `${startStatus}: acceptance row was not rewritten`,
+      );
+      assert.equal(facts.eventsNow, facts.eventsBefore, `${startStatus}: no event appended`);
+      assert.equal(facts.acceptedEventCount, 0, `${startStatus}: no task.accepted event`);
+    }
+  });
+
+  test(`${name}: accepts normally from every acceptable source state`, { skip }, (t) => {
+    for (const startStatus of ACCEPTABLE_SOURCE_STATES) {
+      const facts = acceptanceAttempt(backend.make(t), { startStatus });
+
+      assert.equal(facts.errorName, null, `${startStatus} must be accepted: ${facts.errorMessage}`);
+      assert.equal(facts.acceptedStatus, TaskStatus.ACCEPTED, startStatus);
+      assert.equal(facts.acceptedVersion, 2, startStatus);
+      assert.equal(facts.status, TaskStatus.ACCEPTED, startStatus);
+      assert.equal(facts.version, 2, startStatus);
+      assert.equal(facts.acceptanceStatus, "PASSED", startStatus);
+      assert.equal(facts.acceptedEventCount, 1, startStatus);
+      assert.equal(facts.eventsNow, facts.eventsBefore + 1, `${startStatus}: exactly one event appended`);
+    }
+  });
 }
 
 test("both backends reject duplicate acceptance with identical semantics", { skip: sqliteSkip }, (t) => {
@@ -449,4 +543,32 @@ test("both backends reject duplicate acceptance with identical semantics", { ski
   assert.equal(fromMemory.version, 2);
   assert.equal(fromMemory.acceptedEventCount, 1);
   assert.deepEqual(stableFields(acceptScenario(sqlite)), fromMemory);
+});
+
+test("the acceptable-source-state whitelist is exactly the documented set", () => {
+  assert.deepEqual([...ACCEPTABLE_SOURCE_TASK_STATES], ACCEPTABLE_SOURCE_STATES);
+});
+
+test("both backends agree on every acceptance source state", { skip: sqliteSkip }, () => {
+  const stableFields = ({ acceptanceUpdatedAtBefore, acceptanceUpdatedAtAfter, ...rest }) => rest;
+
+  for (const startStatus of [...ACCEPTABLE_SOURCE_STATES, ...REFUSED_SOURCE_STATES]) {
+    const sqlite = new SqliteStore(":memory:");
+    let fromSqlite;
+    try {
+      fromSqlite = stableFields(acceptanceAttempt(sqlite, { startStatus }));
+    } finally {
+      sqlite.close();
+    }
+    const fromMemory = stableFields(acceptanceAttempt(new MemoryStore(), { startStatus }));
+
+    assert.deepEqual(fromSqlite, fromMemory, `backends disagree for ${startStatus}`);
+
+    // parity is not enough: the contract must be the one refusing illegal states
+    assert.equal(
+      fromMemory.errorName,
+      REFUSED_SOURCE_STATES.includes(startStatus) ? "InvariantError" : null,
+      `${startStatus}: both backends must apply the same rule`,
+    );
+  }
 });

@@ -29,6 +29,31 @@ export const Collection = Object.freeze({
   VERIFICATION: "verification",
 });
 
+/**
+ * The only Task states from which a NEW acceptance may be performed.
+ *
+ * Acceptance is a forward, contract-bound decision, and it may only be taken
+ * while the task's outcome is still open:
+ *
+ * - `READY`         planned and pinned to a contract revision, not yet claimed
+ * - `IN_PROGRESS`   execution is underway, or a blocked Run is being reconciled
+ * - `NEEDS_REVIEW`  evidence exists but the outcome has not been settled
+ *
+ * Refused, and why: `DRAFT` (never planned or committed), `BLOCKED` (a blocking
+ * or reconciliation condition is still open), `ACCEPTED` (terminal), `REJECTED`
+ * (already judged unacceptable, and v0.1 has no re-open path), `CANCELLED`
+ * (abandoned by an authority).
+ *
+ * A whitelist is used deliberately. A terminal-state blacklist would have to
+ * enumerate every unacceptable state and would silently permit any state added
+ * later; here an unlisted state is refused by default.
+ */
+export const ACCEPTABLE_SOURCE_TASK_STATES = Object.freeze([
+  TaskStatus.READY,
+  TaskStatus.IN_PROGRESS,
+  TaskStatus.NEEDS_REVIEW,
+]);
+
 // A contract revision's identity is (id, version). These four fields are the
 // contract itself, and changing any of them requires a NEW version — that is
 // what makes a revision immutable. The fingerprint is stored beside the record
@@ -376,13 +401,21 @@ export class ProjectControlStore {
       if (task.version !== expectedVersion) {
         throw new ConflictError(`task ${taskId} expected v${expectedVersion}, current v${task.version}`);
       }
-      // ACCEPTED is terminal: a NEW acceptance command against an already accepted
-      // task is an illegal transition and is refused. This is deliberately an
-      // error, not a NOOP — refusing a command that reached the Store belongs
-      // here, while "do not dispatch one" belongs to the Controller. A replay of
-      // the ORIGINAL commandId already returned above, so idempotency is intact.
-      if (task.status === TaskStatus.ACCEPTED) {
-        throw new InvariantError(`task ${taskId} is already ${TaskStatus.ACCEPTED}: acceptance is terminal`);
+      // Acceptance may only be taken from a state in which the task's outcome is
+      // still open. This is a WHITELIST, not a terminal-state blacklist: BLOCKED
+      // and DRAFT are not terminal but still may not be accepted, and any state
+      // added later is refused until it is explicitly listed here — the rule
+      // fails closed. It is deliberately an error, not a NOOP: refusing a command
+      // that reached the Store belongs here, while "do not dispatch one" belongs
+      // to the Controller. A replay of the ORIGINAL commandId already returned
+      // above, so idempotency is intact.
+      if (!ACCEPTABLE_SOURCE_TASK_STATES.includes(task.status)) {
+        throw new InvariantError(
+          task.status === TaskStatus.ACCEPTED
+            ? `task ${taskId} is already ${TaskStatus.ACCEPTED}: acceptance is terminal`
+            : `task ${taskId} is ${task.status} and may not enter ${TaskStatus.ACCEPTED}: ` +
+              `acceptance requires one of ${ACCEPTABLE_SOURCE_TASK_STATES.join(", ")}`,
+        );
       }
       const verification = this.#required(Collection.VERIFICATION, verificationId, "verification");
       // Resolved from the revision the TASK pinned — never from the contract's
