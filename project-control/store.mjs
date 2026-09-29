@@ -45,6 +45,21 @@ const LIFECYCLE_EVENT_TYPES = Object.freeze({
 });
 
 /**
+ * The authoritative parent link for each child collection.
+ *
+ * A relationship is a fact recorded on the CHILD, exactly like `Run.taskId` and
+ * `Evidence.taskId`. The aggregate-side lists (`Goal.taskIds`,
+ * `Milestone.goalIds`) are derived/cached membership views and are never used to
+ * decide who belongs to whom. `Milestone.roadmapId` is a future field: Roadmap has
+ * no lifecycle in v0.1, so it takes no part in any aggregation.
+ */
+const PARENT_LINKS = Object.freeze({
+  [Collection.TASK]: { field: "goalId", collection: Collection.GOAL },
+  [Collection.GOAL]: { field: "milestoneId", collection: Collection.MILESTONE },
+  [Collection.MILESTONE]: { field: "projectId", collection: Collection.PROJECT },
+});
+
+/**
  * The only Task states from which a NEW acceptance may be performed.
  *
  * Acceptance is a forward, contract-bound decision, and it may only be taken
@@ -207,6 +222,7 @@ export class ProjectControlStore {
 
   seedMilestone(milestone) {
     this.runInTransaction(() => {
+      this.#assertRelationship(Collection.MILESTONE, milestone);
       if (!this.insertRecord(Collection.MILESTONE, milestone.id, structuredClone(milestone))) {
         throw new Error(`milestone already exists: ${milestone.id}`);
       }
@@ -233,12 +249,11 @@ export class ProjectControlStore {
   }
 
   /**
-   * Milestones of a project. Membership is read from the child's explicit
-   * `projectId` link — the same convention the store already uses for
-   * `Run.taskId` and `Evidence.taskId` — so it can never be inferred or guessed.
-   * `Milestone.goalIds` is the canonical membership list kept on the milestone
-   * itself; the two are expected to agree, and this round does not maintain one
-   * from the other.
+   * Milestones of a project.
+   *
+   * RELATIONSHIP AUTHORITY: membership is the child's explicit `projectId`.
+   * `Milestone.roadmapId` is a future field (Roadmap has no lifecycle in v0.1)
+   * and takes no part in this query or in any aggregation.
    */
   getMilestonesForProject(projectId) {
     return this.recordsMatching(Collection.MILESTONE, "projectId", projectId);
@@ -246,6 +261,7 @@ export class ProjectControlStore {
 
   seedGoal(goal) {
     this.runInTransaction(() => {
+      this.#assertRelationship(Collection.GOAL, goal);
       if (!this.insertRecord(Collection.GOAL, goal.id, structuredClone(goal))) {
         throw new Error(`goal already exists: ${goal.id}`);
       }
@@ -271,7 +287,13 @@ export class ProjectControlStore {
     );
   }
 
-  /** Goals of a milestone, read from the child's explicit `milestoneId` link. */
+  /**
+   * Goals of a milestone.
+   *
+   * RELATIONSHIP AUTHORITY: membership is the child's explicit `milestoneId`.
+   * `Milestone.goalIds` is DERIVED / CACHED / NON-AUTHORITATIVE — it is never
+   * consulted to decide membership, and this round does not maintain it.
+   */
   getGoalsForMilestone(milestoneId) {
     return this.recordsMatching(Collection.GOAL, "milestoneId", milestoneId);
   }
@@ -281,13 +303,20 @@ export class ProjectControlStore {
     return this.recordsMatching(Collection.GOAL, "projectId", projectId);
   }
 
-  /** Tasks of a goal, read from the child's explicit `goalId` link. */
+  /**
+   * Tasks of a goal.
+   *
+   * RELATIONSHIP AUTHORITY: membership is the child's explicit `goalId`.
+   * `Goal.taskIds` is DERIVED / CACHED / NON-AUTHORITATIVE — an empty or stale
+   * `taskIds` never hides a task that points at this goal.
+   */
   getTasksForGoal(goalId) {
     return this.recordsMatching(Collection.TASK, "goalId", goalId);
   }
 
   seedTask(task) {
     this.runInTransaction(() => {
+      this.#assertRelationship(Collection.TASK, task);
       if (!this.insertRecord(Collection.TASK, task.id, structuredClone(task))) {
         throw new Error(`task already exists: ${task.id}`);
       }
@@ -666,6 +695,25 @@ export class ProjectControlStore {
     return { acceptance, evidence: chain };
   }
 
+  /**
+   * Proves the child's explicit parent link, when it has one, points at an
+   * aggregate that actually exists. Relationship integrity is validated here, in
+   * the shared semantics, for every seed and every versioned update — a dangling
+   * Task → Goal, Goal → Milestone or Milestone → Project link fails closed
+   * instead of quietly becoming an orphan that aggregation can never see.
+   */
+  #assertRelationship(collection, record) {
+    const link = PARENT_LINKS[collection];
+    if (!link) return;
+    const parentId = record[link.field];
+    if (parentId == null) return;
+    if (!this.getRecord(link.collection, parentId)) {
+      throw new InvariantError(
+        `${collection} ${record.id} references ${link.collection} ${parentId} (${link.field}), which does not exist`,
+      );
+    }
+  }
+
   #mutateVersioned(collection, id, expectedVersion, patch, eventType, operation, commandId) {
     return this.runInTransaction(() => {
       const replay = this.#replayCommand(commandId, operation);
@@ -680,6 +728,8 @@ export class ProjectControlStore {
         version: current.version + 1,
         updatedAt: now(),
       };
+      // A re-parenting update is validated exactly like a seed.
+      this.#assertRelationship(collection, next);
       if (!this.updateRecord(collection, id, next, expectedVersion)) {
         // The record moved between the read and the write (another connection).
         // The backend's compare-and-set is the second line of defence; it must

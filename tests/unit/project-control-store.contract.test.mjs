@@ -574,6 +574,63 @@ for (const backend of BACKENDS) {
     assert.equal(accepted.aggregateVersion, 3);
     assert.equal(accepted.commandId, "cmd-accept");
   });
+
+  test(`${name}: child parent links are the relationship fact and dangling links fail closed`, { skip }, (t) => {
+    const store = backend.make(t);
+    store.seedProject(createProject({ id: "project-1", name: "P" }));
+
+    // E/F: a milestone must point at an existing project
+    assert.throws(
+      () => store.seedMilestone(createMilestone({ id: "ms-x", projectId: "ghost-project", name: "M" })),
+      (error) => error instanceof InvariantError && /references project ghost-project/.test(error.message),
+    );
+    store.seedMilestone(createMilestone({ id: "ms-1", projectId: "project-1", name: "M1", goalIds: [] }));
+
+    // C/D: a goal must point at an existing milestone
+    assert.throws(
+      () => store.seedGoal(createGoal({ id: "goal-x", milestoneId: "ghost-ms", title: "G" })),
+      (error) => error instanceof InvariantError && /references milestone ghost-ms/.test(error.message),
+    );
+    store.seedGoal(createGoal({ id: "goal-1", milestoneId: "ms-1", title: "G1", taskIds: [] }));
+
+    // A/B: a task must point at an existing goal
+    assert.throws(
+      () => store.seedTask(createTask({
+        id: "task-x", goalId: "ghost-goal", title: "T", acceptanceId: "acceptance-1", acceptanceVersion: 1,
+      })),
+      (error) => error instanceof InvariantError && /references goal ghost-goal/.test(error.message),
+    );
+    store.seedTask(createTask({
+      id: "task-1", goalId: "goal-1", title: "T1", acceptanceId: "acceptance-1", acceptanceVersion: 1,
+    }));
+
+    // a refused seed wrote nothing at all
+    assert.throws(() => store.getMilestone("ms-x"), /milestone not found/);
+    assert.throws(() => store.getGoal("goal-x"), /goal not found/);
+    assert.throws(() => store.getTask("task-x"), /task not found/);
+
+    // re-parenting is validated exactly like a seed, and writes nothing on failure
+    assert.throws(
+      () => store.updateGoal("goal-1", 1, { milestoneId: "ghost-ms" }, { commandId: "cmd-move" }),
+      (error) => error instanceof InvariantError && /references milestone ghost-ms/.test(error.message),
+    );
+    assert.equal(store.getGoal("goal-1").milestoneId, "ms-1", "a refused re-parent left the goal untouched");
+    assert.equal(store.getGoal("goal-1").version, 1, "a refused re-parent wrote nothing");
+
+    // an explicitly unattached child (null link) is always allowed
+    store.seedGoal(createGoal({ id: "goal-free", projectId: "project-1", milestoneId: null, title: "G2" }));
+    store.seedTask(createTask({
+      id: "task-free", goalId: null, title: "T2", acceptanceId: "acceptance-1", acceptanceVersion: 1,
+    }));
+    assert.equal(store.getGoal("goal-free").milestoneId, null);
+    assert.equal(store.getTask("task-free").goalId, null);
+
+    // membership follows the child links, never the derived lists
+    assert.deepEqual(store.getTasksForGoal("goal-1").map((task) => task.id), ["task-1"]);
+    assert.deepEqual(store.getGoalsForMilestone("ms-1").map((goal) => goal.id), ["goal-1"]);
+    assert.deepEqual(store.getMilestonesForProject("project-1").map((milestone) => milestone.id), ["ms-1"]);
+    assert.deepEqual(store.getTasksForGoal("goal-free"), []);
+  });
 }
 
 test("both backends reject duplicate acceptance with identical semantics", { skip: sqliteSkip }, (t) => {

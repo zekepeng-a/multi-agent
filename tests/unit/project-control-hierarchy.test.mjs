@@ -207,6 +207,38 @@ const GOAL_CASES = [
     reason: "goal-without-tasks",
   },
   {
+    label: "D2 a BLOCKED task blocks a READY goal",
+    goal: GoalStatus.READY,
+    tasks: [TaskStatus.READY, TaskStatus.BLOCKED],
+    action: "SYNC",
+    status: GoalStatus.BLOCKED,
+    reason: "goal-blocked",
+  },
+  {
+    label: "U a BLOCKED goal does not accept even when every task is accepted",
+    goal: GoalStatus.BLOCKED,
+    tasks: [TaskStatus.ACCEPTED, TaskStatus.ACCEPTED],
+    action: "WAIT",
+    status: GoalStatus.BLOCKED,
+    reason: "goal-blocked-awaiting-resolution",
+  },
+  {
+    label: "U a BLOCKED goal is not walked back to IN_PROGRESS",
+    goal: GoalStatus.BLOCKED,
+    tasks: [TaskStatus.IN_PROGRESS, TaskStatus.READY],
+    action: "WAIT",
+    status: GoalStatus.BLOCKED,
+    reason: "goal-blocked-awaiting-resolution",
+  },
+  {
+    label: "U a BLOCKED goal stays blocked even without tasks",
+    goal: GoalStatus.BLOCKED,
+    tasks: [],
+    action: "WAIT",
+    status: GoalStatus.BLOCKED,
+    reason: "goal-blocked-awaiting-resolution",
+  },
+  {
     label: "E/H a goal with its own acceptance contract does not fake acceptance",
     goal: GoalStatus.IN_PROGRESS,
     tasks: [TaskStatus.ACCEPTED, TaskStatus.ACCEPTED],
@@ -275,6 +307,30 @@ const MILESTONE_CASES = [
     action: "WAIT",
     status: MilestoneStatus.READY,
     reason: "milestone-without-goals",
+  },
+  {
+    label: "K2 a BLOCKED goal blocks a READY milestone",
+    milestone: MilestoneStatus.READY,
+    goals: [GoalStatus.READY, GoalStatus.BLOCKED],
+    action: "SYNC",
+    status: MilestoneStatus.BLOCKED,
+    reason: "milestone-blocked",
+  },
+  {
+    label: "U a BLOCKED milestone does not complete even when every goal is accepted",
+    milestone: MilestoneStatus.BLOCKED,
+    goals: [GoalStatus.ACCEPTED, GoalStatus.ACCEPTED],
+    action: "WAIT",
+    status: MilestoneStatus.BLOCKED,
+    reason: "milestone-blocked-awaiting-resolution",
+  },
+  {
+    label: "U a BLOCKED milestone is not walked back to IN_PROGRESS",
+    milestone: MilestoneStatus.BLOCKED,
+    goals: [GoalStatus.IN_PROGRESS, GoalStatus.READY],
+    action: "WAIT",
+    status: MilestoneStatus.BLOCKED,
+    reason: "milestone-blocked-awaiting-resolution",
   },
   {
     label: "O a milestone with its own acceptance contract does not fake completion",
@@ -366,6 +422,13 @@ for (const backend of BACKENDS) {
       assert.equal(store.getGoal("goal-1").status, testCase.status);
       assert.equal(runtime.started.length, 0, "parent reconciliation never executes work");
       assert.equal(store.getRunsForTask("task-1").length, 0, "no Run may be created");
+      // a WAIT/NOOP never churns the aggregate; a SYNC writes exactly once
+      assert.equal(store.getGoal("goal-1").version, testCase.action === "SYNC" ? 2 : 1, "version churn");
+      assert.equal(
+        eventCount(store, "goal.updated") + eventCount(store, "goal.accepted"),
+        testCase.action === "SYNC" ? 1 : 0,
+        "no redundant goal event",
+      );
     });
   }
 
@@ -401,6 +464,12 @@ for (const backend of BACKENDS) {
       assert.equal(result.milestone.status, testCase.status, testCase.label);
       assert.equal(store.getMilestone("ms-1").status, testCase.status);
       assert.equal(runtime.started.length, 0, "parent reconciliation never executes work");
+      assert.equal(store.getMilestone("ms-1").version, testCase.action === "SYNC" ? 2 : 1, "version churn");
+      assert.equal(
+        eventCount(store, "milestone.updated") + eventCount(store, "milestone.completed"),
+        testCase.action === "SYNC" ? 1 : 0,
+        "no redundant milestone event",
+      );
     });
   }
 
@@ -434,6 +503,12 @@ for (const backend of BACKENDS) {
       assert.equal(result.project.status, testCase.status, testCase.label);
       assert.equal(store.getProject("project-1").status, testCase.status);
       assert.equal(runtime.started.length, 0, "parent reconciliation never executes work");
+      assert.equal(store.getProject("project-1").version, testCase.action === "SYNC" ? 2 : 1, "version churn");
+      assert.equal(
+        eventCount(store, "project.updated") + eventCount(store, "project.completed"),
+        testCase.action === "SYNC" ? 1 : 0,
+        "no redundant project event",
+      );
     });
   }
 
@@ -546,7 +621,102 @@ for (const backend of BACKENDS) {
     assert.equal(store.getGoal("goal-1").version, versionAfterFirst, "no second mutation");
     assert.equal(eventCount(store, "goal.updated"), updatedEventsAfterFirst, "no second goal.updated");
   });
+
+  test(`${name}: a BLOCKED goal is not cleared by a recovering child, up to the project`, { skip }, async (t) => {
+    const store = backend.make(t);
+    seedHierarchy(store, { taskIds: ["task-1", "task-2"] });
+    const taskIds = seedGoalTasks(store, [TaskStatus.BLOCKED, TaskStatus.ACCEPTED]);
+    const { controller, runtime } = makeController(store);
+
+    // 1. a blocked child puts the goal INTO blocked
+    const blocked = await controller.reconcileGoal("goal-1");
+    assert.equal(blocked.action, "SYNC");
+    assert.equal(blocked.goal.status, GoalStatus.BLOCKED);
+    const versionWhenBlocked = store.getGoal("goal-1").version;
+
+    // 2. the child recovers — that recovery is not a decision to unblock
+    store.updateTask(taskIds[0], 1, { status: TaskStatus.ACCEPTED }, { commandId: "cmd-recover" });
+    assert.equal(store.getTask(taskIds[0]).status, TaskStatus.ACCEPTED);
+
+    // 3. the goal must neither accept nor be walked back
+    const afterRecovery = await controller.reconcileGoal("goal-1");
+    assert.equal(afterRecovery.action, "WAIT");
+    assert.equal(afterRecovery.reason, "goal-blocked-awaiting-resolution");
+    assert.equal(afterRecovery.goal.status, GoalStatus.BLOCKED);
+    assert.equal(store.getGoal("goal-1").version, versionWhenBlocked, "no churn while blocked");
+    assert.equal(eventCount(store, "goal.accepted"), 0);
+
+    // 4. the milestone observes a BLOCKED goal and enters BLOCKED itself
+    const milestoneBlocked = await controller.reconcileMilestone("ms-1");
+    assert.equal(milestoneBlocked.milestone.status, MilestoneStatus.BLOCKED);
+    assert.notEqual(milestoneBlocked.milestone.status, MilestoneStatus.COMPLETED);
+
+    // 5. …and cannot leave BLOCKED on its own either
+    const milestoneAfter = await controller.reconcileMilestone("ms-1");
+    assert.equal(milestoneAfter.action, "WAIT");
+    assert.equal(milestoneAfter.reason, "milestone-blocked-awaiting-resolution");
+    assert.equal(store.getMilestone("ms-1").status, MilestoneStatus.BLOCKED);
+    assert.notEqual(store.getMilestone("ms-1").status, MilestoneStatus.COMPLETED);
+    assert.equal(eventCount(store, "milestone.completed"), 0);
+
+    // 6. the project reports the block without inventing a project state
+    const project = await controller.reconcileProject("project-1");
+    assert.equal(project.action, "WAIT");
+    assert.equal(project.reason, "project-blocked-by-milestone");
+    assert.equal(store.getProject("project-1").status, ProjectStatus.ACTIVE);
+
+    assert.equal(runtime.started.length, 0, "nothing was executed");
+  });
+
+  test(`${name}: membership follows the child link, never the derived list`, { skip }, async (t) => {
+    const store = backend.make(t);
+    // deliberately inconsistent: the derived lists are empty/stale and wrong
+    seedHierarchy(store, { goalIds: ["goal-does-not-exist"], taskIds: ["task-does-not-exist"] });
+    seedGoalTasks(store, [TaskStatus.ACCEPTED]);
+
+    assert.deepEqual(store.getTasksForGoal("goal-1").map((task) => task.id), ["task-1"]);
+    assert.deepEqual(store.getGoalsForMilestone("ms-1").map((goal) => goal.id), ["goal-1"]);
+    assert.equal(store.getMilestone("ms-1").goalIds[0], "goal-does-not-exist", "the derived list is not rewritten");
+    assert.equal(store.getGoal("goal-1").taskIds[0], "task-does-not-exist");
+
+    const { controller } = makeController(store);
+    const goal = await controller.reconcileGoal("goal-1");
+    assert.equal(goal.action, "SYNC");
+    assert.equal(goal.goal.status, GoalStatus.ACCEPTED, "aggregation used the child link, not the stale list");
+    assert.equal((await controller.reconcileMilestone("ms-1")).milestone.status, MilestoneStatus.COMPLETED);
+  });
+
+  test(`${name}: repeated reconciliation of BLOCKED aggregates never churns`, { skip }, async (t) => {
+    const store = backend.make(t);
+    seedHierarchy(store, { goalStatus: GoalStatus.BLOCKED, milestoneStatus: MilestoneStatus.BLOCKED });
+    seedGoalTasks(store, [TaskStatus.ACCEPTED, TaskStatus.ACCEPTED]);
+    const { controller } = makeController(store);
+
+    const goalVersion = store.getGoal("goal-1").version;
+    const milestoneVersion = store.getMilestone("ms-1").version;
+    const events = store.getEvents().length;
+
+    for (let round = 0; round < 3; round += 1) {
+      const goal = await controller.reconcileGoal("goal-1");
+      assert.equal(goal.action, "WAIT");
+      assert.equal(goal.reason, "goal-blocked-awaiting-resolution");
+      const milestone = await controller.reconcileMilestone("ms-1");
+      assert.equal(milestone.action, "WAIT");
+      assert.equal(milestone.reason, "milestone-blocked-awaiting-resolution");
+    }
+
+    assert.equal(store.getGoal("goal-1").version, goalVersion, "no goal version churn");
+    assert.equal(store.getMilestone("ms-1").version, milestoneVersion, "no milestone version churn");
+    assert.equal(store.getEvents().length, events, "no event while blocked");
+    assert.equal(eventCount(store, "goal.accepted"), 0);
+    assert.equal(eventCount(store, "milestone.completed"), 0);
+  });
 }
+
+test("ProjectStatus has no BLOCKED state, so a blocked milestone can never become one", () => {
+  assert.deepEqual([...Object.values(ProjectStatus)].sort(), ["ACTIVE", "ARCHIVED", "COMPLETED", "PAUSED"]);
+  assert.equal(ProjectStatus.BLOCKED, undefined);
+});
 
 test("both backends aggregate the same hierarchy identically", { skip: BACKENDS[1].skip }, (t) => {
   const memory = new MemoryStore();

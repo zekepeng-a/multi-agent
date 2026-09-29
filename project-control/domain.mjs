@@ -139,8 +139,15 @@ export function createProject({
  *
  * Canonical architecture models a Milestone as belonging to a Roadmap. Roadmap
  * has no lifecycle in v0.1, so the Milestone carries an explicit `projectId`
- * parent link (`roadmapId` stays for when Roadmap lands). Parentage is always an
- * explicit field — nothing is ever inferred from names or titles.
+ * parent link. Parentage is always an explicit child-side field — nothing is ever
+ * inferred from names or titles.
+ *
+ * `roadmapId` is a FUTURE field: no lifecycle, no aggregation, not consulted by
+ * the Controller.
+ *
+ * `goalIds` is DERIVED / CACHED / NON-AUTHORITATIVE. The relationship fact is
+ * `Goal.milestoneId`; this list is a convenience view that this version does not
+ * maintain and must never be used to decide who belongs to the milestone.
  */
 export function createMilestone({
   id,
@@ -171,6 +178,10 @@ export function createMilestone({
 /**
  * A meaningful project outcome. A Goal aggregates Tasks; it is not an
  * implementation step.
+ *
+ * `taskIds` is DERIVED / CACHED / NON-AUTHORITATIVE. The relationship fact is
+ * `Task.goalId`; this list is a convenience view that this version does not
+ * maintain and must never be used to decide who belongs to the goal.
  */
 export function createGoal({
   id,

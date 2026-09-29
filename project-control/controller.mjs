@@ -336,6 +336,17 @@ export class Controller {
   // and "task execution scheduling" stay two separate layers. A parent can
   // therefore only ever move because state below it already exists.
   //
+  // RELATIONSHIP AUTHORITY: membership always comes from the child's explicit
+  // parent link (`Task.goalId`, `Goal.milestoneId`, `Milestone.projectId`).
+  // `Goal.taskIds` and `Milestone.goalIds` are derived/cached views and are never
+  // consulted here; `Milestone.roadmapId` has no lifecycle and takes no part.
+  //
+  // BLOCKED: the Controller may ENTER BLOCKED by observing a blocked child, but it
+  // never leaves BLOCKED on its own. BLOCKED is not "a child looks bad right now";
+  // it is a control state the aggregate has entered and that an authority (or the
+  // future explicit unblock command) has to clear. Clearing it by aggregation
+  // would let a child's later recovery silently overturn a recorded decision.
+  //
   // Actions: SYNC (a transition was written), NOOP (already in the target state,
   // or a terminal state that must not be reversed) and WAIT (no rule settles the
   // case, with a reason).
@@ -376,6 +387,15 @@ export class Controller {
     }
 
     const tasks = this.store.getTasksForGoal(goalId);
+
+    if (goal.status === GoalStatus.BLOCKED) {
+      // BLOCKED is a control state awaiting resolution, not a derived child
+      // summary. A recovery below it — even every task reaching ACCEPTED — must
+      // not clear it, and the goal must never be walked back to READY or
+      // IN_PROGRESS either. Only an explicit unblock (future round) may leave it.
+      return { action: "WAIT", reason: "goal-blocked-awaiting-resolution", goal, tasks };
+    }
+
     if (tasks.length === 0) {
       return { action: "WAIT", reason: "goal-without-tasks", goal, tasks };
     }
@@ -431,6 +451,13 @@ export class Controller {
       synced.push(await this.reconcileGoal(goal.id));
     }
     const goals = this.store.getGoalsForMilestone(milestoneId);
+
+    if (milestone.status === MilestoneStatus.BLOCKED) {
+      // Same rule as a Goal: the milestone entered a control state that an
+      // authority clears. Neither COMPLETED (all goals accepted) nor IN_PROGRESS
+      // (a goal moving again) may be inferred from the children.
+      return { action: "WAIT", reason: "milestone-blocked-awaiting-resolution", milestone, goals, synced };
+    }
 
     if (goals.length === 0) {
       return { action: "WAIT", reason: "milestone-without-goals", milestone, goals, synced };
