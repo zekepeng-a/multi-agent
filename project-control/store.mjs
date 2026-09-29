@@ -376,6 +376,14 @@ export class ProjectControlStore {
       if (task.version !== expectedVersion) {
         throw new ConflictError(`task ${taskId} expected v${expectedVersion}, current v${task.version}`);
       }
+      // ACCEPTED is terminal: a NEW acceptance command against an already accepted
+      // task is an illegal transition and is refused. This is deliberately an
+      // error, not a NOOP — refusing a command that reached the Store belongs
+      // here, while "do not dispatch one" belongs to the Controller. A replay of
+      // the ORIGINAL commandId already returned above, so idempotency is intact.
+      if (task.status === TaskStatus.ACCEPTED) {
+        throw new InvariantError(`task ${taskId} is already ${TaskStatus.ACCEPTED}: acceptance is terminal`);
+      }
       const verification = this.#required(Collection.VERIFICATION, verificationId, "verification");
       // Resolved from the revision the TASK pinned — never from the contract's
       // current version, so an existing task cannot drift onto a newer revision.

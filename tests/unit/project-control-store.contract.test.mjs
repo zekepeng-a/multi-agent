@@ -107,6 +107,50 @@ function eventsWithoutTimestamps(store) {
   return store.getEvents().map(({ occurredAt, ...rest }) => rest);
 }
 
+const sqliteSkip = isSqliteAvailable() ? false : `node:sqlite is unavailable: ${SQLITE_REQUIREMENT}`;
+
+/**
+ * Drives one full acceptance and then sends a SECOND, brand-new acceptance
+ * command against the already accepted task. Returns the observable facts only,
+ * so both backends can be compared field by field.
+ */
+function acceptScenario(store) {
+  seedAcceptance(store);
+  seedTask(store);
+  seedChain(store);
+  store.recordEvidence(evidenceFor({ id: "ev-1" }));
+  store.recordVerification(verificationFor(["ev-1"], { id: "v-1" }));
+
+  const accepted = store.acceptTask("task-1", 1, { verificationId: "v-1", commandId: "cmd-accept" });
+  const eventsAfterFirst = store.getEvents().length;
+  const acceptanceUpdatedAtBefore = store.getAcceptance("acceptance-1", 1).updatedAt;
+
+  let error = null;
+  try {
+    store.acceptTask("task-1", accepted.version, { verificationId: "v-1", commandId: "cmd-accept-again" });
+  } catch (caught) {
+    error = caught;
+  }
+
+  const task = store.getTask("task-1");
+  return {
+    firstStatus: accepted.status,
+    firstVersion: accepted.version,
+    errorName: error?.name ?? null,
+    errorCode: error?.code ?? null,
+    errorMessage: error?.message ?? null,
+    status: task.status,
+    version: task.version,
+    acceptanceStatus: store.getAcceptance("acceptance-1", 1).status,
+    acceptanceUpdatedAtBefore,
+    acceptanceUpdatedAtAfter: store.getAcceptance("acceptance-1", 1).updatedAt,
+    eventsAfterFirst,
+    eventsNow: store.getEvents().length,
+    acceptedEventCount: store.getEvents().filter((event) => event.type === "task.accepted").length,
+    eventTypes: store.getEvents().map((event) => event.type),
+  };
+}
+
 // ── the contract, defined once per backend ───────────────────────────────────
 
 for (const backend of BACKENDS) {
@@ -338,4 +382,71 @@ for (const backend of BACKENDS) {
     handedOut.push({ id: "evt-999", type: "forged" });
     assert.deepEqual(eventsWithoutTimestamps(store), snapshot);
   });
+
+  test(`${name}: a NEW acceptance command against an ACCEPTED task is rejected`, { skip }, (t) => {
+    // called on the Store directly — no Controller in the path
+    const facts = acceptScenario(backend.make(t));
+
+    // A: the first acceptance succeeded, the second is refused
+    assert.equal(facts.firstStatus, TaskStatus.ACCEPTED);
+    assert.equal(facts.firstVersion, 2);
+    assert.equal(facts.errorName, "InvariantError");
+    assert.equal(facts.errorCode, "INVARIANT_VIOLATION");
+    assert.match(facts.errorMessage, /already ACCEPTED/);
+    // B: the task is still accepted
+    assert.equal(facts.status, TaskStatus.ACCEPTED);
+    // C: the version did not move
+    assert.equal(facts.version, 2);
+    // D: no second domain event
+    assert.equal(facts.eventsNow, facts.eventsAfterFirst);
+    assert.equal(facts.acceptedEventCount, 1);
+    // E: the acceptance decision was not written a second time
+    assert.equal(facts.acceptanceStatus, "PASSED");
+    assert.equal(facts.acceptanceUpdatedAtAfter, facts.acceptanceUpdatedAtBefore);
+  });
+
+  test(`${name}: replaying the ORIGINAL acceptance command still returns the accepted task`, { skip }, (t) => {
+    const store = backend.make(t);
+    seedAcceptance(store);
+    seedTask(store);
+    seedChain(store);
+    store.recordEvidence(evidenceFor({ id: "ev-1" }));
+    store.recordVerification(verificationFor(["ev-1"], { id: "v-1" }));
+    const first = store.acceptTask("task-1", 1, { verificationId: "v-1", commandId: "cmd-accept" });
+    const events = store.getEvents().length;
+
+    // The SAME commandId is recognized before both the version check and the
+    // terminal guard, so a replay stays idempotent rather than an error.
+    const replay = store.acceptTask("task-1", 1, { verificationId: "v-1", commandId: "cmd-accept" });
+
+    assert.equal(replay.status, TaskStatus.ACCEPTED);
+    assert.equal(replay.version, first.version);
+    assert.equal(store.getTask("task-1").status, TaskStatus.ACCEPTED);
+    assert.equal(store.getTask("task-1").version, 2);
+    assert.equal(store.getEvents().length, events, "no duplicate event");
+  });
 }
+
+test("both backends reject duplicate acceptance with identical semantics", { skip: sqliteSkip }, (t) => {
+  const memory = new MemoryStore();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pc-contract-dup-"));
+  const sqlite = new SqliteStore(path.join(dir, "project-control.db"));
+  t.after(() => {
+    try {
+      sqlite.close();
+    } catch {
+      // already closed
+    }
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+
+  const stableFields = ({ acceptanceUpdatedAtBefore, acceptanceUpdatedAtAfter, ...rest }) => rest;
+
+  const fromMemory = stableFields(acceptScenario(memory));
+  // parity is not enough: the contract itself must be the rejecting one
+  assert.equal(fromMemory.errorName, "InvariantError");
+  assert.equal(fromMemory.status, TaskStatus.ACCEPTED);
+  assert.equal(fromMemory.version, 2);
+  assert.equal(fromMemory.acceptedEventCount, 1);
+  assert.deepEqual(stableFields(acceptScenario(sqlite)), fromMemory);
+});
