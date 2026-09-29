@@ -54,7 +54,7 @@ export class Controller {
     }
 
     if (task.status === TaskStatus.NEEDS_REVIEW) {
-      return { action: "WAIT", reason: "verification-required", task };
+      return this.#reverifyRecordedEvidence(task, acceptance);
     }
 
     if (task.status === TaskStatus.BLOCKED || task.status === TaskStatus.REJECTED) {
@@ -204,26 +204,37 @@ export class Controller {
   }
 
   /**
-   * The single channel from Evidence to Task state, shared by the live and the
-   * recovered path so neither can bypass Verification or Acceptance.
+   * Produces and records ONE Verification for an existing Evidence record.
+   *
+   * It never executes anything and never touches Task state. Recording it runs
+   * the store's full lineage / acceptance-revision / revision checks, which is
+   * what makes an illegal verification fail closed instead of being applied.
    */
-  #assessEvidence({ task, acceptance, runId, attemptId, evidence }) {
-    const verification = this.verifier.verify({
-      acceptance,
-      evidence,
-      task,
-      run: this.store.getRun(runId),
-    });
+  #verifyEvidence({ task, acceptance, evidence, run }) {
+    const verification = this.verifier.verify({ acceptance, evidence, task, run });
     this.store.recordVerification(verification);
+    return verification;
+  }
 
+  /**
+   * The single place where a Verification's verdict is applied to Task and
+   * Acceptance state. The live execution path and the NEEDS_REVIEW recovery path
+   * both come through here, so there is exactly one acceptance rule, never two.
+   */
+  #applyVerification({ task, acceptance, runId, attemptId, evidence, verification }) {
     if (verification.verdict !== "PASS") {
       const currentTask = this.store.getTask(task.id);
-      this.store.updateTask(
-        task.id,
-        currentTask.version,
-        { status: TaskStatus.NEEDS_REVIEW, latestEvidenceId: evidence.id },
-        { commandId: `verification-failed:${task.id}:${verification.id}` },
-      );
+      // Re-verifying evidence that is already under review adds a verification
+      // fact; it must not fabricate a state change. Only a real transition —
+      // entering NEEDS_REVIEW, or pointing at different evidence — is written.
+      if (currentTask.status !== TaskStatus.NEEDS_REVIEW || currentTask.latestEvidenceId !== evidence.id) {
+        this.store.updateTask(
+          task.id,
+          currentTask.version,
+          { status: TaskStatus.NEEDS_REVIEW, latestEvidenceId: evidence.id },
+          { commandId: `verification-failed:${task.id}:${verification.id}` },
+        );
+      }
       return {
         action: "REVIEW",
         task: this.store.getTask(task.id),
@@ -248,6 +259,59 @@ export class Controller {
       evidence: this.store.getEvidence(evidence.id),
       verification: this.store.getVerification(verification.id),
     };
+  }
+
+  /** The live path: verify fresh Evidence, then apply the verdict. */
+  #assessEvidence({ task, acceptance, runId, attemptId, evidence }) {
+    const verification = this.#verifyEvidence({
+      task,
+      acceptance,
+      evidence,
+      run: this.store.getRun(runId),
+    });
+    return this.#applyVerification({ task, acceptance, runId, attemptId, evidence, verification });
+  }
+
+  /**
+   * Recovery path for a task whose verification did not pass.
+   *
+   * It re-verifies the Evidence that is already on record — the same Evidence,
+   * the same Run and the same Attempt. It never starts a runtime and never
+   * creates a Run, an Attempt or Evidence. The new Verification passes the same
+   * store checks as any other, and its verdict is applied by the same
+   * #applyVerification, so a task can only leave NEEDS_REVIEW through a genuine
+   * PASS. Anything that cannot be proven fails closed: it waits, and nothing
+   * executes.
+   */
+  #reverifyRecordedEvidence(task, acceptance) {
+    if (!task.latestEvidenceId) {
+      return { action: "WAIT", reason: "needs-review-without-evidence", task };
+    }
+
+    let evidence;
+    try {
+      evidence = this.store.getEvidence(task.latestEvidenceId);
+    } catch {
+      return { action: "WAIT", reason: "needs-review-evidence-missing", task };
+    }
+
+    let run;
+    try {
+      run = this.store.getRun(evidence.runId);
+      this.store.getAttempt(evidence.attemptId);
+    } catch {
+      return { action: "WAIT", reason: "needs-review-evidence-lineage-broken", task };
+    }
+
+    const verification = this.#verifyEvidence({ task, acceptance, evidence, run });
+    return this.#applyVerification({
+      task,
+      acceptance,
+      runId: evidence.runId,
+      attemptId: evidence.attemptId,
+      evidence,
+      verification,
+    });
   }
 
   #observeRun(task, acceptance, run) {

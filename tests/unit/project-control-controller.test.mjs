@@ -662,3 +662,151 @@ test("contract pinning: reconciled evidence stays on the pinned revision", async
   assert.equal(store.getAcceptance("acceptance-1", 1).status, "PASSED");
   assert.equal(store.getAcceptance("acceptance-1", 2).status, "PENDING");
 });
+
+// ── NEEDS_REVIEW recovery: re-verify the recorded evidence, never re-execute ──
+// A task that failed verification is not a dead end: the next reconcile re-runs
+// verification over the SAME Evidence, Run and Attempt. Nothing executes again,
+// and the task can only leave NEEDS_REVIEW through the shared acceptance rule.
+
+function eventCount(store, type) {
+  return store.getEvents().filter((event) => event.type === type).length;
+}
+
+test("NEEDS_REVIEW recovery: a passing re-verification accepts on the recorded evidence", async () => {
+  const { store, runtime, verifier, controller } = fixture("success", VerificationVerdict.FAIL);
+
+  const first = await controller.reconcileTask("task-1");
+  assert.equal(first.action, "REVIEW");
+  assert.equal(first.task.status, TaskStatus.NEEDS_REVIEW);
+  assert.equal(first.task.latestEvidenceId, first.evidence.id);
+  const runsAfterFirst = store.getRunsForTask("task-1").length;
+  const attemptsAfterFirst = first.run.attemptIds.length;
+  const evidenceEventsAfterFirst = eventCount(store, "evidence.recorded");
+
+  // the SAME evidence now verifies as PASS
+  verifier.verdict = VerificationVerdict.PASS;
+  const second = await controller.reconcileTask("task-1");
+
+  assert.equal(second.action, "ACCEPT");
+  assert.equal(second.task.status, TaskStatus.ACCEPTED);
+  assert.equal(store.getAcceptance("acceptance-1", 1).status, "PASSED");
+
+  // a NEW verification identity, and the failed one is preserved
+  assert.notEqual(second.verification.id, first.verification.id);
+  assert.equal(second.verification.evidenceIds[0], first.evidence.id);
+  assert.equal(store.getVerification(first.verification.id).verdict, VerificationVerdict.FAIL);
+  assert.equal(eventCount(store, "verification.recorded"), 2);
+  assert.equal(eventCount(store, "task.accepted"), 1);
+
+  // nothing was executed again
+  assert.equal(runtime.started.length, 1, "the recovery path must not start the runtime");
+  assert.equal(store.getRunsForTask("task-1").length, runsAfterFirst, "no new Run");
+  assert.equal(store.getRun(first.run.id).attemptIds.length, attemptsAfterFirst, "no new Attempt");
+  assert.equal(eventCount(store, "evidence.recorded"), evidenceEventsAfterFirst, "no new Evidence");
+  assert.equal(store.getTask("task-1").latestEvidenceId, first.evidence.id);
+});
+
+test("NEEDS_REVIEW recovery: a failing re-verification records a fact without churning the task", async () => {
+  const { store, runtime, controller } = fixture("success", VerificationVerdict.FAIL);
+
+  const first = await controller.reconcileTask("task-1");
+  const versionAfterFirst = store.getTask("task-1").version;
+  const taskUpdatesAfterFirst = eventCount(store, "task.updated");
+  const runsAfterFirst = store.getRunsForTask("task-1").length;
+  const attemptsAfterFirst = first.run.attemptIds.length;
+  const evidenceEventsAfterFirst = eventCount(store, "evidence.recorded");
+
+  // re-verify twice, both times still FAIL
+  const second = await controller.reconcileTask("task-1");
+  const third = await controller.reconcileTask("task-1");
+
+  assert.equal(second.action, "REVIEW");
+  assert.equal(second.task.status, TaskStatus.NEEDS_REVIEW);
+  assert.equal(third.action, "REVIEW");
+  assert.equal(third.task.status, TaskStatus.NEEDS_REVIEW);
+  assert.equal(store.getAcceptance("acceptance-1", 1).status, "PENDING");
+  assert.equal(eventCount(store, "task.accepted"), 0);
+
+  // the new verifications are recorded facts; the old one survives, and every id differs
+  assert.equal(eventCount(store, "verification.recorded"), 3);
+  assert.equal(store.getVerification(first.verification.id).verdict, VerificationVerdict.FAIL);
+  assert.equal(new Set([first.verification.id, second.verification.id, third.verification.id]).size, 3);
+
+  // "still NEEDS_REVIEW" is not a state change: no version drift, no extra event
+  assert.equal(store.getTask("task-1").version, versionAfterFirst, "version must not grow for an unchanged state");
+  assert.equal(eventCount(store, "task.updated"), taskUpdatesAfterFirst, "no redundant task.updated");
+  assert.equal(runtime.started.length, 1);
+  assert.equal(store.getRunsForTask("task-1").length, runsAfterFirst);
+  assert.equal(store.getRun(first.run.id).attemptIds.length, attemptsAfterFirst);
+  assert.equal(eventCount(store, "evidence.recorded"), evidenceEventsAfterFirst);
+});
+
+test("NEEDS_REVIEW recovery: fails closed without a recorded evidence id", async () => {
+  const { store, runtime, controller } = fixture();
+  store.updateTask("task-1", 1, { status: TaskStatus.NEEDS_REVIEW }, { commandId: "cmd-review" });
+
+  const result = await controller.reconcileTask("task-1");
+
+  assert.equal(result.action, "WAIT");
+  assert.equal(result.reason, "needs-review-without-evidence");
+  assert.notEqual(store.getTask("task-1").status, TaskStatus.ACCEPTED);
+  assert.equal(runtime.started.length, 0, "nothing may execute");
+  assert.equal(store.getRunsForTask("task-1").length, 0, "no Run may be created");
+  assert.equal(eventCount(store, "task.accepted"), 0);
+  assert.equal(eventCount(store, "verification.recorded"), 0);
+});
+
+test("NEEDS_REVIEW recovery: fails closed when the recorded evidence is gone", async () => {
+  const { store, runtime, controller } = fixture();
+  store.updateTask(
+    "task-1",
+    1,
+    { status: TaskStatus.NEEDS_REVIEW, latestEvidenceId: "ev-missing" },
+    { commandId: "cmd-review" },
+  );
+
+  const result = await controller.reconcileTask("task-1");
+
+  assert.equal(result.action, "WAIT");
+  assert.equal(result.reason, "needs-review-evidence-missing");
+  assert.equal(runtime.started.length, 0, "nothing may execute");
+  assert.equal(store.getRunsForTask("task-1").length, 0, "no Run may be created");
+  assert.notEqual(store.getTask("task-1").status, TaskStatus.ACCEPTED);
+  assert.equal(eventCount(store, "task.accepted"), 0);
+});
+
+test("NEEDS_REVIEW recovery: fails closed when the evidence lineage is broken", async () => {
+  const { store, controller } = fixture("success", VerificationVerdict.FAIL);
+  const first = await controller.reconcileTask("task-1");
+
+  // the evidence points at a Run that no longer exists
+  store.putRecord("evidence", first.evidence.id, { ...store.getEvidence(first.evidence.id), runId: "run-gone" });
+
+  const result = await controller.reconcileTask("task-1");
+
+  assert.equal(result.action, "WAIT");
+  assert.equal(result.reason, "needs-review-evidence-lineage-broken");
+  assert.equal(store.getTask("task-1").status, TaskStatus.NEEDS_REVIEW);
+  assert.equal(eventCount(store, "task.accepted"), 0);
+});
+
+test("NEEDS_REVIEW recovery: cannot bypass the stale-evidence guard (I-10)", async () => {
+  const { store, verifier, controller } = fixture("success", VerificationVerdict.FAIL);
+
+  const first = await controller.reconcileTask("task-1");
+  // the recorded evidence is superseded underneath the pending review
+  store.putRecord("evidence", first.evidence.id, {
+    ...store.getEvidence(first.evidence.id),
+    status: EvidenceStatus.STALE,
+  });
+  verifier.verdict = VerificationVerdict.PASS;
+
+  await assert.rejects(
+    () => controller.reconcileTask("task-1"),
+    (error) => error instanceof InvariantError && /cannot support a PASS verification/.test(error.message),
+  );
+
+  assert.equal(store.getTask("task-1").status, TaskStatus.NEEDS_REVIEW, "no fake success");
+  assert.equal(store.getAcceptance("acceptance-1", 1).status, "PENDING");
+  assert.equal(eventCount(store, "task.accepted"), 0);
+});
