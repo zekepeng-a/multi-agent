@@ -255,6 +255,16 @@ export class WorkspaceManager {
     });
   }
 
+  integrateAll(workspaceIds) {
+    if (!Array.isArray(workspaceIds) || workspaceIds.some((id) => typeof id !== "string" || id.trim() === "")) {
+      throw new InvariantError("integrateAll requires workspace ids");
+    }
+    // Completion order is not authority. A stable identity order gives the
+    // control plane one deterministic integration sequence for the same ready set.
+    const ordered = [...new Set(workspaceIds)].sort((left, right) => left.localeCompare(right));
+    return ordered.map((workspaceId) => this.integrate(workspaceId));
+  }
+
   integrate(workspaceId) {
     let isolated = this.store.getWorkspace(workspaceId);
     if (isolated.kind !== WorkspaceKind.ISOLATED) {
