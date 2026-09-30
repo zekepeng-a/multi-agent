@@ -109,7 +109,20 @@ independent SQLite writer race; it does not simulate restart by reopening an obj
 | 22 | R exact archive/receipt and UNKNOWN after true restart; corruption/missing record fails closed |
 | 23 | U shared backend suite; R SQLite durability and independent writer competition |
 | 24 | Full regression includes Decision, Memory, Acceptance, Policy, Approval, Workspace, Runtime Adapter and legacy runtime; U Controller integration |
-| 25 | Final Node 20/22 CI must pass before independent review; CI result is appended below after the implementation commit runs |
+| 25 | Node 22 SQLite availability and full npm test, plus Node 20 compatibility, passed in the immutable CI proof below; independent review and separate governance closure remain required |
+
+## CI proof
+
+Implementation commit: `83cdb4c8266bfe815e61e772ad56a9428d080fca`.
+[CI run 36743726349](https://github.com/zekepeng-a/multi-agent/actions/runs/36743726349)
+completed **success** for both `test (Node 22)` and `test (Node 20)`.
+The Node 22 job explicitly passed the mandatory built-in SQLite availability check
+and full `npm test`. Node 20 passed the compatibility suite with the existing
+capability-gated SQLite skips; it is not the full SQLite proof.
+
+The follow-up commit records this observed result only. It does not alter the
+implementation/test tree, architecture, ROADMAP or stage classification. Final HEAD
+CI is checked separately before reporting task completion.
 
 ## Review limits
 
