@@ -984,3 +984,128 @@ A Policy decision must be bound to the durable Command/current target snapshot a
 
 No new top-level layer or invariant was discovered. Broad archaeology remains closed.
 
+---
+
+## 23. G5 focused runtime-adapter pass — capability-shaped execution seams
+
+This pass is opened only by the G5 D-class gap. Broad archaeology remains closed.
+
+### DeepSeek Harness Workflow — live run seam is narrower than the old conceptual adapter
+
+Source:
+- Repository: `deepseek-ai/deepseek-harness`
+- `docs/subsystems/workflow.md`
+- `packages/workflow/workflow/src/types.ts`
+- `packages/workflow/workflow/src/runtime-types.ts`
+
+Observed current contract:
+
+- `ctx.workflowEngine.start(request)` returns one holder-owned live `WorkflowRun`.
+- `WorkflowRun` exposes a stable run id, validated metadata, a terminal `result` Promise, `cancel()`, and `dispose()`.
+- `WorkflowResult.stopReason` is closed: `completed | cancelled | error`.
+- the result Promise resolves rather than rejecting for normal run failure/cancellation;
+- workflow lifecycle events are observe-only snapshots; subscribers do not receive the live run handle;
+- top-level workflow chat records are durable presentation/history facts, but Workflow itself is foreground execution and not a Project Control state machine;
+- the seam does **not** expose generic pause/resume/getStatus/getEvents methods.
+
+Transferable boundary:
+
+> A Project Control Runtime Adapter must normalize the capabilities a runtime actually has. It must not invent universal pause/resume/status operations because an older architecture sketch listed them.
+
+### DeepSeek Harness Subagent — multiple providers + capability discovery
+
+Source:
+- Repository: `deepseek-ai/deepseek-harness`
+- `docs/subsystems/subagent.md`
+
+Observed current contract:
+
+- multiple named subagent providers coexist in one context;
+- start-time capabilities are explicit and checked before execution;
+- unsupported capabilities fail loudly rather than being silently ignored;
+- cancellation is carried by `AbortSignal`;
+- continuable children use a different capability path from one-shot children;
+- `interrupt()` is a public stop request for live continuable children, but interruption does not delete durable Session identity or pending inbox state;
+- cold resume and live activation are runtime/session concerns, not Project Task/Run state.
+
+Transferable boundaries:
+
+1. runtime capabilities must be discoverable per adapter/provider;
+2. "unsupported" is a typed/fail-loud outcome, not silent degradation;
+3. runtime Session/Activation/child identity must remain runtime identity rather than Project Control authority.
+
+### DeepSeek Harness Agent Team — durable runtime identity is still runtime identity
+
+Source:
+- Repository: `deepseek-ai/deepseek-harness`
+- `docs/subsystems/agent-team.md`
+
+Observed current contract:
+
+- TeamId / TeamTaskId / TeamMessageId and teammate SessionId are durable runtime-domain identities;
+- roster/message/task snapshots have their own lifecycle and revision rules;
+- mailbox delivery and Team task DAG state are durable inside DSH;
+- write scopes are advisory overlap warnings, not Project Control workspace locks.
+
+Transferable boundary:
+
+> Durability inside the runtime does not promote Team Task/Session state into Project/Task authority. The adapter may preserve runtime refs and observations, but Project Control remains the accepted-state owner.
+
+### Codingns4DSH — heterogeneous external Agents prove capability variance
+
+Source:
+- Repository: `jingyi0605/Codingns4DSH`
+- current `README.md`
+
+Observed current behavior:
+
+- Claude Code, Codex, Kimi, Gemini, Pi, OpenCode, Grok Build and others are launched/resumed as DSH-managed external Agent sessions;
+- supported capabilities differ by Agent/protocol: resume, interrupt, permissions, questions, interjection, model selection, tool streaming and usage are not universal;
+- external Agent processes/credentials remain outside DSH while event streams are projected into DSH-native sessions;
+- runtime identity/session presentation stays in the host/runtime layer.
+
+Transferable boundary:
+
+> Adapter capability variance is not theoretical. A stable Project Control adapter contract needs a small mandatory core plus optional capabilities rather than one maximal universal interface.
+
+### G5 synthesis
+
+The prior conceptual contract:
+
+```text
+createRun()
+start()
+pause()
+resume()
+cancel()
+getStatus()
+getEvents()
+collectResult()
+```
+
+is too prescriptive as a universal runtime interface.
+
+The implementation-backed sources support a narrower architecture:
+
+```text
+mandatory:
+  capabilities()
+  start()
+  observe()
+  collectResult()
+  cancel()
+
+optional/capability-gated:
+  resume()
+  sendMessage()
+  subscribeEvents()
+  reconcile()
+```
+
+The adapter returns normalized runtime observations/results plus opaque runtime
+references. Project Control decides how those observations affect Run/Attempt,
+Evidence and Acceptance.
+
+No new top-level layer is needed. G5 can be resolved by a capability-shaped
+Runtime Adapter boundary.
+
