@@ -742,3 +742,32 @@ test("restart: state written by one process is authoritative in another process"
   assert.equal(seen.reproof, VerificationVerdict.PASS, "lineage is re-provable in the second process");
   assert.ok(seen.eventCount >= written.payload.eventCount, "history grew, it was not rewritten");
 });
+
+test("durable Command survives a real process restart and authorization replay stays idempotent", { skip }, (t) => {
+  const db = projectFixture(t);
+
+  const written = runChild("command", db.file);
+  assert.equal(written.code, 0, written.stderr);
+  assert.equal(written.payload.status, "AUTHORIZED");
+  assert.equal(written.payload.version, 2);
+  assert.equal(written.payload.targetVersion, 1);
+  assert.equal(written.payload.action, "deploy");
+  assert.equal(written.payload.capability, "deploy.production");
+  assert.equal(written.payload.scope, "production");
+
+  const read = runChild("command-read", db.file, written.payload.ids);
+  assert.equal(read.code, 0, read.stderr);
+  assert.equal(read.payload.status, "AUTHORIZED");
+  assert.equal(read.payload.version, 2);
+  assert.equal(read.payload.targetVersion, 1);
+  assert.equal(read.payload.action, "deploy");
+  assert.equal(read.payload.capability, "deploy.production");
+  assert.equal(read.payload.scope, "production");
+  assert.equal(read.payload.idempotencyKey, "deploy:task-1:v1");
+  assert.equal(read.payload.replayAction, "AUTHORIZE");
+  assert.equal(read.payload.replayVersion, 2);
+  assert.equal(read.payload.createdEvents, 1);
+  assert.equal(read.payload.authorizedEvents, 1, "restart replay does not authorize twice");
+  assert.equal(read.payload.isAuthorized, true);
+});
+
