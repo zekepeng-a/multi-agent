@@ -200,21 +200,20 @@ Roadmap, Decision, Project-control Memory, Context Capsule and Project-level Acc
 
 The old runtime remains present and valid for its own scope. `package.json` still carries the historical package identity; that remaining packaging question is tracked separately below and does not control document authority.
 
-### C-02 — package/runtime identity drift
+### C-02 — package/runtime identity drift — CONSCIOUSLY DEFERRED
 
-`package.json` still names/describes the repository as `dsh-multi-agent-runtime` version 0.5.0 and exposes only legacy runtime scripts.
+`package.json` still names/describes the published package surface as `dsh-multi-agent-runtime` version 0.5.0 and exposes legacy runtime scripts.
 
-This accurately describes the historical package but does not describe the whole repository after the Project Control branch work.
+G1 deliberately does not rename or split the package. Repository-level product direction is governed by the Project Control documents; package publication identity remains historical/legacy-runtime-oriented until a human/product decision changes release scope. This does not block Project Control architecture work.
 
-Do not change package identity casually; decide whether this repository will remain a mixed prototype repository or become a Project Control package before renaming/repackaging.
+### C-03 — Node version boundary — RESOLVED AS A CAPABILITY MATRIX
 
-### C-03 — Node version boundary
+The package declares Node `>=20`. CI now verifies that floor separately from the full persistence baseline.
 
-The package declares Node `>=20`, while the SQLite backend relies on built-in `node:sqlite` and documents a newer runtime requirement.
+- Node 20.20.2: 435 discovered, 295 pass, 140 skipped, 0 fail; SQLite-backed tests are capability-gated because `node:sqlite` is unavailable.
+- Node 22.23.3: 435/435 pass, 0 skipped; CI explicitly asserts `node:sqlite` availability before running tests.
 
-The code handles SQLite availability, but the top-level engine declaration does not express the Project Control persistence requirement precisely.
-
-This is technical/governance debt until packaging strategy is decided.
+Therefore `engines.node >=20` does not imply SqliteStore availability. Durable SQLite Project Control requires a runtime with built-in `node:sqlite`. See `docs/architecture/BASELINE_EVIDENCE.md`.
 
 ## 9. Legacy runtime boundary
 
