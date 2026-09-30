@@ -17,6 +17,7 @@ import {
   now,
 } from "./domain.mjs";
 import { Collection } from "./store.mjs";
+import { RuntimeOutcome } from "./runtime-adapter.mjs";
 
 export class Controller {
   constructor({
@@ -25,6 +26,7 @@ export class Controller {
     verifier,
     effectDriver = null,
     policyEngine = null,
+    runtimeContextFactory = null,
     idFactory = defaultIdFactory,
   } = {}) {
     if (!store || !runtime || !verifier) throw new Error("store, runtime and verifier are required");
@@ -33,6 +35,7 @@ export class Controller {
     this.verifier = verifier;
     this.effectDriver = effectDriver;
     this.policyEngine = policyEngine;
+    this.runtimeContextFactory = runtimeContextFactory;
     this.idFactory = idFactory;
   }
 
@@ -96,30 +99,81 @@ export class Controller {
       attemptIds: [...run.attemptIds, attemptId],
     });
 
-    const runningAttempt = this.store.updateAttempt(attemptId, { status: AttemptStatus.RUNNING });
-    const result = await this.runtime.start({
+    let runningAttempt = this.store.updateAttempt(attemptId, { status: AttemptStatus.RUNNING });
+    const contextCapsule = typeof this.runtimeContextFactory === "function"
+      ? await this.runtimeContextFactory({
+          task: structuredClone(task),
+          acceptance: structuredClone(acceptance),
+          run: this.store.getRun(run.id),
+          attempt: structuredClone(runningAttempt),
+        })
+      : {};
+
+    const started = await this.runtime.start({
       run: this.store.getRun(run.id),
       attempt: runningAttempt,
+      contextCapsule: contextCapsule ?? {},
     });
 
+    // G5 normalized RuntimeAdapter path. Runtime identity is persisted on the
+    // Attempt, never substituted for RunId/AttemptId.
+    let result;
+    if (started?.runtimeRef && typeof this.runtime.collectResult === "function") {
+      runningAttempt = this.store.updateAttempt(attemptId, {
+        runtimeRef: structuredClone(started.runtimeRef),
+      });
+      result = await this.runtime.collectResult(started.runtimeRef);
+    } else {
+      // Compatibility for an older injected runtime while callers migrate to
+      // ADR-0004. New adapters must use RuntimeRef + collectResult().
+      result = {
+        outcome: started?.status === AttemptStatus.COMPLETED
+          ? RuntimeOutcome.COMPLETED
+          : started?.status === AttemptStatus.LOST
+            ? RuntimeOutcome.LOST
+            : started?.status === AttemptStatus.CANCELLED
+              ? RuntimeOutcome.CANCELLED
+              : RuntimeOutcome.FAILED,
+        resultRef: started?.resultRef ?? null,
+        revision: started?.revision ?? null,
+        completedAt: started?.completedAt ?? null,
+        runtimeRef: null,
+      };
+    }
+
+    const finalAttemptStatus = result.outcome === RuntimeOutcome.COMPLETED
+      ? AttemptStatus.COMPLETED
+      : result.outcome === RuntimeOutcome.LOST
+        ? AttemptStatus.LOST
+        : result.outcome === RuntimeOutcome.CANCELLED
+          ? AttemptStatus.CANCELLED
+          : AttemptStatus.FAILED;
+
     this.store.updateAttempt(attemptId, {
-      status: result.status,
+      status: finalAttemptStatus,
       endedAt: result.completedAt ?? now(),
       resultRef: result.resultRef ?? null,
+      ...(result.runtimeRef ? { runtimeRef: structuredClone(result.runtimeRef) } : {}),
     });
 
     const latestRun = this.store.getRun(run.id);
-    const finalRunStatus = result.status === AttemptStatus.COMPLETED
+    const finalRunStatus = finalAttemptStatus === AttemptStatus.COMPLETED
       ? RunStatus.COMPLETED
-      : result.status === AttemptStatus.LOST
+      : finalAttemptStatus === AttemptStatus.LOST
         ? RunStatus.BLOCKED
-        : RunStatus.FAILED;
+        : finalAttemptStatus === AttemptStatus.CANCELLED
+          ? RunStatus.CANCELLED
+          : RunStatus.FAILED;
 
     this.store.updateRun(run.id, latestRun.version, { status: finalRunStatus });
 
-    if (result.status !== AttemptStatus.COMPLETED) {
+    if (finalAttemptStatus !== AttemptStatus.COMPLETED) {
       return {
-        action: result.status === AttemptStatus.LOST ? "RECONCILE" : "FAILED",
+        action: finalAttemptStatus === AttemptStatus.LOST
+          ? "RECONCILE"
+          : finalAttemptStatus === AttemptStatus.CANCELLED
+            ? "CANCELLED"
+            : "FAILED",
         task: this.store.getTask(task.id),
         run: this.store.getRun(run.id),
         attempt: this.store.getAttempt(attemptId),
@@ -162,7 +216,21 @@ export class Controller {
     }
 
     // Observation first: nothing below may move state before this returns.
-    const observation = await this.runtime.reconcile({ task, acceptance, run, attempt });
+    // Reconciliation is capability-gated in G5. A runtime that cannot observe
+    // the lost execution leaves the controller safely blocked.
+    let observation = { outcome: ReconcileOutcome.UNKNOWN };
+    const runtimeCaps = typeof this.runtime.capabilities === "function"
+      ? this.runtime.capabilities()
+      : null;
+    if (runtimeCaps?.reconcile === true && typeof this.runtime.reconcile === "function") {
+      observation = await this.runtime.reconcile(
+        attempt.runtimeRef,
+        { task, acceptance, run, attempt },
+      );
+    } else if (!runtimeCaps && typeof this.runtime.reconcile === "function") {
+      // Legacy compatibility path.
+      observation = await this.runtime.reconcile({ task, acceptance, run, attempt });
+    }
     const outcome = observation?.outcome ?? ReconcileOutcome.UNKNOWN;
 
     // External work already happened: its result becomes Evidence for the Run
