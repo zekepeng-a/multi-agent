@@ -771,3 +771,29 @@ test("durable Command survives a real process restart and authorization replay s
   assert.equal(read.payload.isAuthorized, true);
 });
 
+test("orphaned DISPATCHED Effect survives process restart and reconciles before retry", { skip }, (t) => {
+  const db = projectFixture(t);
+
+  const written = runChild("effect", db.file);
+  assert.equal(written.code, 0, written.stderr);
+  assert.equal(written.payload.status, "DISPATCHED");
+  assert.equal(written.payload.version, 2);
+  assert.equal(written.payload.dispatchCount, 1);
+  assert.equal(written.payload.taskStatus, "READY");
+  assert.equal(written.payload.evidenceCount, 0);
+
+  const read = runChild("effect-read", db.file, written.payload.ids);
+  assert.equal(read.code, 0, read.stderr);
+  assert.equal(read.payload.beforeStatus, "DISPATCHED");
+  assert.equal(read.payload.status, "SUCCEEDED");
+  assert.equal(read.payload.isSucceeded, true);
+  assert.equal(read.payload.dispatchCount, 1, "recovery reconciles; it does not redispatch");
+  assert.equal(read.payload.driverDispatches, 0);
+  assert.equal(read.payload.driverReconciles, 1);
+  assert.ok(read.payload.observationRef);
+  assert.ok(read.payload.receiptId);
+  assert.equal(read.payload.taskStatus, "READY", "Effect resolution is not Task Acceptance");
+  assert.equal(read.payload.evidenceCount, 0, "Effect receipt is not automatically Evidence");
+  assert.equal(read.payload.reconciledEvents, 1);
+});
+
