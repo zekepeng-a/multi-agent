@@ -1183,9 +1183,9 @@ export class ProjectControlStore {
    * approval that merely claims to be about v3 while the target is already at v4
    * would be a permission for a state that does not exist.
    *
-   * A COMMAND target is refused outright: v0.1 has no durable Command object, so
-   * such a permission would name a target that cannot exist — a control fact
-   * claiming support for a control object the model does not have.
+   * A COMMAND target remains refused in G2 even though durable Command identity
+   * now exists. Whether permission targets the Command or the underlying
+   * Project/Task action is deliberately deferred to Policy/Approval composition.
    */
   requestApproval(request, { commandId = null } = {}) {
     return this.runInTransaction(() => {
@@ -1394,8 +1394,8 @@ export class ProjectControlStore {
         `approval consumption must present the capability it exercises (approval ${approvalId})`,
       );
     }
-    // There is no durable Command control object in v0.1, so no Command-typed
-    // permission can be consumed — not even one left behind by an older writer.
+    // COMMAND-target approvals remain reserved in G2. Durable Command identity
+    // exists, but the Policy/Approval target semantics are not frozen yet.
     if (targetType === ApprovalTargetType.COMMAND) {
       throw new InvariantError(COMMAND_APPROVAL_UNAVAILABLE);
     }
@@ -1712,8 +1712,8 @@ export class ProjectControlStore {
       throw new InvariantError(`approval ${id} names no requester`);
     }
     if (request.targetType === ApprovalTargetType.COMMAND) {
-      // Reserved in the vocabulary, unsupported in the model: a Command has no
-      // durable identity yet, so no permission about one may be stored.
+      // Reserved in the vocabulary, unsupported in G2: Command identity exists,
+      // but Policy/Approval composition has not yet decided this target form.
       throw new InvariantError(COMMAND_APPROVAL_UNAVAILABLE);
     }
     if (!Number.isInteger(request.targetVersion) || request.targetVersion < 1) {
