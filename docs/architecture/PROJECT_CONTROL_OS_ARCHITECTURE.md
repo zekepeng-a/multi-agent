@@ -746,10 +746,13 @@ verdict can never be attached to a different observation than the one it names.
 
 ## 5.12 Decision
 
-Purpose: durable record of why a project direction or constraint was chosen.
+Purpose: durable, attributable project direction or constraint.
+
+ADR-0007 freezes Decision authority and lifecycle.
 
 ```yaml
 id: DecisionId
+version: integer
 project_id: ProjectId
 title: string
 rationale: string
@@ -761,10 +764,80 @@ decided_by:
   actor_id: string
 status: ACTIVE | SUPERSEDED | REVOKED
 source_refs:
-  - type: string
+  - type: HUMAN_INSTRUCTION | PROJECT_STATE | EVIDENCE |
+          VERIFICATION | POLICY_DECISION | DECISION | EXTERNAL_REFERENCE
     id: string
+    revision: string?
+supersedes_decision_id: DecisionId?
+superseded_by_decision_id: DecisionId?
+revocation:
+  revoked_by:
+    type: HUMAN | CONTROL_PLANE
+    actor_id: string
+  revoked_at: timestamp
+  reason: string
 created_at: timestamp
+updated_at: timestamp
 ```
+
+### Authority
+
+A runtime/model/worker may propose a choice but cannot create an authoritative
+Decision merely by returning it.
+
+Only:
+
+- `HUMAN`;
+- `CONTROL_PLANE`
+
+may author a Decision.
+
+Human direction is stronger than derived control-plane direction:
+
+- HUMAN Decision may be superseded/revoked only by HUMAN;
+- CONTROL_PLANE Decision may be superseded/revoked by HUMAN;
+- CONTROL_PLANE may replace its own derived Decision only from explicit current
+  authoritative provenance.
+
+### Immutable meaning
+
+The chosen meaning is immutable after creation:
+
+```text
+project_id
+title
+rationale
+alternatives
+decided_by
+source_refs
+supersedes_decision_id
+```
+
+A materially different choice receives a new DecisionId.
+
+### Lifecycle
+
+```text
+ACTIVE
+  ├──→ SUPERSEDED  (by a new DecisionId)
+  └──→ REVOKED     (attributable terminal withdrawal)
+```
+
+Supersession atomically links old and new records. Historical rationale remains
+readable; there is no resurrection.
+
+### Provenance
+
+Every Decision has non-empty `source_refs`.
+
+- HUMAN decisions preserve human-instruction provenance.
+- CONTROL_PLANE decisions require authoritative control/evidence provenance; a
+  model recommendation alone is insufficient.
+
+Decision remains below current reality/evidence in the truth hierarchy and is
+not Approval, PolicyDecision, Event or Memory.
+
+See `docs/architecture/decisions/ADR-0007-decision-authority-lifecycle.md`.
 
 ---
 
