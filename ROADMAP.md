@@ -310,7 +310,7 @@ The system now survives an ambiguous external outcome without blind retry and wi
 
 # G4 — Policy and authorization composition
 
-**Status: ACTIVE / D-GATE RESOLVED — IMPLEMENTATION ALLOWED**
+**Status: COMPLETE**
 
 ## Goal
 
@@ -344,13 +344,15 @@ The bounded G4 implementation is now **B — Missing Implementation**.
 
 ## Exit gate
 
-No code path can equate “Approval exists” with “Policy allows this action”.
+**SATISFIED.** See `docs/architecture/POLICY_G4_EVIDENCE.md`.
+
+No code path equates “Approval exists” with “Policy allows this action”. Policy is evaluated and recorded first; Approval only satisfies REQUIRE_APPROVAL.
 
 ---
 
 # G5 — Real Runtime Adapter boundary
 
-**Status: QUEUED**
+**Status: ACTIVE / D-GATE REQUIRED**
 
 ## Goal
 
