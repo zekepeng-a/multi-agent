@@ -413,6 +413,89 @@ export function createVerification({
   };
 }
 
+// ── Durable Effect (G3 external uncertainty boundary) ───────────────────────
+//
+// Effect is what may have happened in the external world. It is deliberately
+// separate from Command intent, Evidence, Verification and Acceptance.
+
+export const EffectStatus = Object.freeze({
+  REQUESTED: "REQUESTED",
+  DISPATCHED: "DISPATCHED",
+  SUCCEEDED: "SUCCEEDED",
+  FAILED_NO_EFFECT: "FAILED_NO_EFFECT",
+  UNKNOWN: "UNKNOWN",
+});
+
+export const EffectReconciliationStatus = Object.freeze({
+  NOT_REQUIRED: "NOT_REQUIRED",
+  REQUIRED: "REQUIRED",
+  IN_PROGRESS: "IN_PROGRESS",
+  RESOLVED: "RESOLVED",
+});
+
+export const EffectObservation = Object.freeze({
+  CONFIRMED_SUCCEEDED: "CONFIRMED_SUCCEEDED",
+  CONFIRMED_NO_EFFECT: "CONFIRMED_NO_EFFECT",
+  UNKNOWN: "UNKNOWN",
+});
+
+export function createEffect({
+  id,
+  projectId = null,
+  commandId,
+  action,
+  capability,
+  destination,
+  idempotencyKey,
+  status = EffectStatus.REQUESTED,
+  version = 1,
+  dispatchCount = 0,
+  externalReceipt = null,
+  reconciliation = null,
+} = {}) {
+  const required = { id, commandId, action, capability, destination, idempotencyKey };
+  for (const [field, value] of Object.entries(required)) {
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new Error(`effect requires a non-empty ${field}`);
+    }
+  }
+  if (!Object.values(EffectStatus).includes(status)) {
+    throw new Error(`unknown effect status: ${status}`);
+  }
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error("effect version must be a positive integer");
+  }
+  if (!Number.isInteger(dispatchCount) || dispatchCount < 0) {
+    throw new Error("effect dispatchCount must be a non-negative integer");
+  }
+
+  return {
+    id,
+    version,
+    projectId,
+    commandId,
+    action,
+    capability,
+    destination,
+    idempotencyKey,
+    status,
+    dispatchCount,
+    externalReceipt: externalReceipt ? structuredClone(externalReceipt) : {
+      provider: null,
+      receiptId: null,
+      resultRef: null,
+    },
+    reconciliation: reconciliation ? structuredClone(reconciliation) : {
+      status: EffectReconciliationStatus.NOT_REQUIRED,
+      lastObservation: null,
+      observationRef: null,
+      reconciledAt: null,
+    },
+    createdAt: now(),
+    updatedAt: now(),
+  };
+}
+
 // ── Durable Command (G2 authorization boundary) ─────────────────────────────
 //
 // A Command is a durable control-plane intent. G2 deliberately implements only
