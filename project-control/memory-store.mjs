@@ -30,6 +30,7 @@ export class MemoryStore extends ProjectControlStore {
     this.controlCommands = new Map();
     this.effects = new Map();
     this.policyDecisions = new Map();
+    this.workspaces = new Map();
     this.commands = new Map();
     this.events = [];
   }
@@ -49,6 +50,7 @@ export class MemoryStore extends ProjectControlStore {
       case Collection.COMMAND: return this.controlCommands;
       case Collection.EFFECT: return this.effects;
       case Collection.POLICY_DECISION: return this.policyDecisions;
+      case Collection.WORKSPACE: return this.workspaces;
       default: throw new Error(`unknown collection: ${collection}`);
     }
   }
