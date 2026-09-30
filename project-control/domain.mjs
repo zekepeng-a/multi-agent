@@ -596,6 +596,7 @@ export function createCommand({
     idempotencyKey,
     status,
     authorization: authorization ? structuredClone(authorization) : {
+      policyDecisionId: null,
       approvalId: null,
       authorizedAt: null,
       rejectedAt: null,
@@ -604,6 +605,58 @@ export function createCommand({
     },
     createdAt: now(),
     updatedAt: now(),
+  };
+}
+
+// ── Policy decision (G4 authorization composition) ───────────────────────────
+
+export const PolicyEffect = Object.freeze({
+  ALLOW: "ALLOW",
+  DENY: "DENY",
+  REQUIRE_APPROVAL: "REQUIRE_APPROVAL",
+});
+
+/**
+ * Immutable audit fact describing one policy evaluation of one concrete Command.
+ */
+export function createPolicyDecision({
+  id,
+  commandId,
+  commandVersion,
+  targetVersion,
+  effect,
+  policyVersion,
+  subjectId,
+  context = {},
+  reasons = [],
+  matchedRuleIds = [],
+} = {}) {
+  for (const [field, value] of Object.entries({ id, commandId, policyVersion, subjectId })) {
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new Error(`policy decision requires a non-empty ${field}`);
+    }
+  }
+  if (!Number.isInteger(commandVersion) || commandVersion < 1) {
+    throw new Error("policy decision requires a positive commandVersion");
+  }
+  if (!Number.isInteger(targetVersion) || targetVersion < 1) {
+    throw new Error("policy decision requires a positive targetVersion");
+  }
+  if (!Object.values(PolicyEffect).includes(effect)) {
+    throw new Error(`unknown policy effect: ${effect}`);
+  }
+  return {
+    id,
+    commandId,
+    commandVersion,
+    targetVersion,
+    effect,
+    policyVersion,
+    subjectId,
+    context: structuredClone(context ?? {}),
+    reasons: [...reasons],
+    matchedRuleIds: [...matchedRuleIds],
+    createdAt: now(),
   };
 }
 
