@@ -6,6 +6,7 @@ This changelog records meaningful architectural and governance evolution. It is 
 
 ### Governance
 
+- **G1 Baseline hardening completed.** GitHub Actions now separates the Node 20 package-floor check from the Node 22 full SQLite baseline. The full baseline is 435/435 with 0 skipped on Node 22.23.3; detailed evidence is recorded in `docs/architecture/BASELINE_EVIDENCE.md`. The Roadmap boundary advanced to G2's architecture gate; Command coding remains blocked until an ADR is accepted.
 - **G0 Governance convergence completed.** The durable boundary moved to G1 Baseline hardening only after governance/read-order, legacy-runtime scoping, reality map, Roadmap, Changelog and ADR convention existed in Git.
 
 - Added `PROJECT_BLUEPRINT.md` as the project constitution and long-term authority boundary.
