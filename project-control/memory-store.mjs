@@ -26,6 +26,8 @@ export class MemoryStore extends ProjectControlStore {
     // the decision lifecycle is enforced by Compare-And-Set on the record's
     // `version` in the shared rules, not by anything here.
     this.approvals = new Map();
+    // Durable Command domain (G2) is separate from the mutation replay registry.
+    this.controlCommands = new Map();
     this.commands = new Map();
     this.events = [];
   }
@@ -42,6 +44,7 @@ export class MemoryStore extends ProjectControlStore {
       case Collection.EVIDENCE: return this.evidence;
       case Collection.VERIFICATION: return this.verifications;
       case Collection.APPROVAL: return this.approvals;
+      case Collection.COMMAND: return this.controlCommands;
       default: throw new Error(`unknown collection: ${collection}`);
     }
   }
