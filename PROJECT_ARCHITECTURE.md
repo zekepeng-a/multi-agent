@@ -85,7 +85,7 @@ These labels describe the initial baseline plus the evidenced updates recorded b
 | Event | IMPLEMENTED | Append-oriented events are persisted with authoritative mutations and survive SQLite restart. Event is kept distinct from State. |
 | Decision | IMPLEMENTED | Durable Project Decision exists with HUMAN/CONTROL_PLANE authority, mandatory provenance, immutable meaning, ACTIVE→SUPERSEDED/REVOKED lifecycle, atomic supersession lineage, attributable revocation, optimistic concurrency, MemoryStore/SQLite persistence and restart proof. Runtime/model proposals are not Decision authority. |
 | Project-control Memory | IMPLEMENTED (G7.3 COMPLETE) | ADR-0008 is implemented: trusted validation and Control Plane promotion, closed type/confidence/source admission, four pinned same-project source families, CURRENT/INVALID/UNRESOLVED validity, STALE/no-resurrection, atomic new-id supersession, read-only eligibility-before-ranking queries, INFERRED opt-in and separate history. MemoryStore/SQLite parity, CAS, events, intent-bound replay, restart and independent-writer concurrency are evidenced. Legacy derived memory remains separate; no Capsule assembly or authority upgrade is included. |
-| Context Capsule | DOCUMENTED_ONLY / D — next candidate G7.4 | Defined conceptually; no Project Control implementation assembles or persists bounded capsules. Its architecture remains a separate D-GATE; completed Decision/Memory do not authorize Capsule coding. |
+| Context Capsule | MISSING / B — G7.4 architecture ACCEPTED | ADR-0009 freezes immutable per-Attempt snapshots, source pins/authority, required/supplemental UTF-8 budgets, pre-dispatch freshness, receipt versus persistence, UNKNOWN recovery and persistence/replay. No implementation yet assembles, persists or delivers these Capsules; the existing arbitrary runtimeContextFactory input is not this contract. Implementation execution requires separate task authorization. |
 | Runtime Adapter | IMPLEMENTED / PARTIAL | Normalized capability-shaped Runtime Adapter contract now exists. FakeRuntime migrated, LocalProcessRuntimeAdapter executes real child processes in CI, and DshWorkflowRuntimeAdapter binds the current DSH Workflow seam through injected workflowEngine. RuntimeRef persists on Attempt and survives restart while remaining distinct from Run/Attempt identity. G6 separately implements bounded local Workspace/isolation semantics; runtime-adapter capability alone does not establish write isolation. |
 | Workspace | IMPLEMENTED / PARTIAL | Durable Workspace identity now exists with SHARED/ISOLATED kind, READ_ONLY/WRITE access, MemoryStore/SQLite persistence, optimistic versioning, deterministic revision digests, enforced write scopes, conflict-safe local overlay integration, deterministic integration order and restart proof. Git-worktree/container providers and distributed coordination remain outside current scope. |
 | Workspace isolation | IMPLEMENTED / PARTIAL | Local WorkspaceManager gives parallel writers distinct roots, overlays reads over SHARED reality, records touched-path base digests, rejects out-of-scope/read-only/path-traversal writes, and detects integration conflicts before patch application. DSH Team writeScopes remain non-authoritative unless projected through this boundary. |
@@ -226,10 +226,12 @@ backend primitives, and are optionally exposed through trusted `Controller.memor
 composition. The retained `MEMORY_G7_3_EVIDENCE.md` maps all 23 ADR-0008 exit criteria
 to tests, including real restart and independent SQLite writer competition.
 
-Roadmap domain and Context Capsule remain absent or design-only. G7.4 Context
-Capsule is the next candidate but remains D-class: no generation, freshness/expiry,
-runtime injection or coding permission follows from Memory completion. G7 as a
-whole remains active, with G8 still future.
+Context Capsule remains unimplemented. Human acceptance of ADR-0009 resolves its
+architecture gap: G7.4 is B — Missing Implementation, not COMPLETE. The accepted
+boundary covers generation, immutable per-Attempt input archives, freshness,
+budget and delivery/recovery; no code or tests implement it in this governance
+update. A separate task must authorize implementation execution. Roadmap domain
+remains queued D-class work; G7 as a whole is active, with G8 still future.
 
 ## 8. Current conflicts and documentation drift
 

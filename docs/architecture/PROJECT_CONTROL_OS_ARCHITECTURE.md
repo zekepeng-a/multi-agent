@@ -945,35 +945,94 @@ ADR-0008 is the precise accepted contract and implementation exit checklist.
 ROADMAP records G7.3 COMPLETE after implementation evidence, independent review
 and explicit human closeout authorization. This changes implementation/completion
 status only; ADR-0008's authority and semantics remain unchanged.
-G7.4 Context Capsule is the next candidate and remains an independent D-GATE;
-this governance closeout does not authorize its research or implementation.
+G7.4 Context Capsule's independent architecture gate is now resolved by accepted
+ADR-0009. It is B — Missing Implementation; separate task authorization is required
+to execute implementation. Memory completion itself did not resolve Capsule.
 
 ---
 
 ## 5.14 ContextCapsule
 
-**Status: D — next candidate G7.4; independent architecture gate, coding blocked.**
-The conceptual shape below is not an accepted generation/freshness/expiry contract.
-Completed G7.2/G7.3 prerequisites do not resolve this gate or authorize coding.
+**Architecture: ACCEPTED — ADR-0009. Implementation: B / Missing Implementation.**
+Human accepted this bounded G7.4 contract on 2026-09-30. This section summarizes
+ADR-0009; its full source admission, delivery/recovery and 25 exit criteria govern.
+Architecture acceptance is not implementation or completion evidence; execution
+of implementation requires a separate authorized task.
 
-Purpose: minimal task-relevant context supplied to a runtime.
+Capsule is a derived, bounded execution input assembled at the trusted Control
+Plane boundary. It is not a second Project State, Acceptance or permission token.
+It preserves source authority, identity, ownership, provenance and exact pins.
+The complete formal snapshot is immutable from generation; fresh observations
+and delivery facts are separate.
 
-```yaml
-id: ContextCapsuleId
-task_id: TaskId
-task_ref: TaskId
-acceptance_ref: AcceptanceId
-project_state_ref: string
-decision_ids: DecisionId[]
-memory_ids: MemoryId[]
-evidence_ids: EvidenceId[]
-workspace_id: WorkspaceId
-agent_id: AgentId
-capabilities: string[]
-policy_context_ref: string
-generated_at: timestamp
-expires_at: timestamp?
-```
+Binding is ProjectId → TaskId → RunId → AttemptId → ContextCapsuleId. One Capsule
+belongs to one Attempt and cannot be reused by another. Run-level references are
+history/navigation, never a mutable current-context replacement for Attempt input.
+Multiple pre-dispatch snapshots may exist; one Attempt has at most one logical
+dispatch binding, which cannot be replaced after reservation.
+
+The bounded payload retains its execution binding, schema/assembler/profile
+versions, source manifest/pins/roles, generated_at and observations, selected
+content, budget and explicit Memory inference policy. V1 archives the complete
+canonical JSON UTF-8 bytes inline, with SHA-256 metadata outside the hashed bytes.
+Immutable artifact ref/hash is a permitted future representation only if complete
+bytes remain available and integrity checked; source IDs alone cannot prove input.
+
+Admitted sources are relevant Task/Goal/Milestone/Project State, pinned Acceptance
+Contracts, ACTIVE Decision/Constraint, current-use Project-control Memory,
+Evidence/Verification, Workspace/Reality, Policy/Approval and trusted Runtime
+capability/context. Real versions, fingerprints, contract/reality revisions and
+observations remain distinct; no universal source resolver is added. Runtime
+configuration may be execution-bound shared infrastructure, not fictitious
+project-owned state. Live handles, credentials and session internals stay outside
+Capsule serialization.
+
+The versioned trusted assembler classifies REQUIRED before relevance/budget:
+Task identity/objective, exact pinned contract, applicable directions/constraints,
+Workspace access/write scope, mandatory Policy/Approval restrictions, Runtime
+restrictions/forbidden actions and all other indispensable sources. Default v1
+includes all project ACTIVE Decisions; narrowing requires explicit deterministic,
+versioned applicability. Selection checkpoints detect newly applicable constraints.
+
+SUPPLEMENTAL eligible Memory, extra Evidence, explicitly labeled historical
+Evidence/Verification background and nonessential explanations may be selected in
+deterministic priority/relevance/source-identity order and trimmed as whole items.
+Historical/debug Memory and inactive Decision directives cannot enter current
+execution. Necessary content cannot be demoted or silently deleted.
+
+Budget measures the final canonical JSON UTF-8 bytes, including envelope,
+manifest/pins and observation overhead. Required input/completeness exceeding
+capacity fails closed; truncation, automatic summary or path substitution cannot
+bypass it. This byte contract does not guarantee final model token capacity.
+
+Before dispatch, recheck binding, archived integrity/budget, required pins and
+selection completeness in consistent Store reads and dispatch reservation.
+Reality/capability/policy observations are separately pinned/timed; no atomic
+database/filesystem snapshot or future validity is claimed. Invalid/unconfirmed
+required dependencies refuse dispatch. Included supplemental pin/eligibility drift
+also refuses the old snapshot: regenerate under a new CapsuleId and omit/refetch
+supplemental items. No in-place partial refresh, fixed v1 TTL or history cleanup.
+
+Memory follows ADR-0008 project-scoped eligibility-before-ranking current-use
+queries. INFERRED defaults off and requires recorded trusted assembler opt-in.
+Inclusion never upgrades Memory, Decision, Evidence, Approval or Acceptance.
+
+The Adapter receives a detached copy plus CapsuleId/hash and execution binding;
+a matching trusted receipt establishes acceptance at its input boundary only.
+It does not prove final model tokens, execution success or Acceptance. Runtime
+cannot edit the formal snapshot or write authoritative source state from output.
+
+Small Attempt delivery observations distinguish PREPARED, DISPATCHING, RECEIVED,
+NOT_RECEIVED and UNKNOWN. A pre-call durable reservation is intent, not invocation
+or receipt. Missing/mismatched receipt and crash ambiguity preserve UNKNOWN,
+Run BLOCKED / Attempt LOST and existing capability-gated recovery, without blind
+resend or substitution. No new Effect/dispatch subsystem or leases/fencing.
+
+Snapshot/binding/events/replay use the existing transactional Store rules and CAS.
+Restart retains exact bytes/hash, manifest, Attempt binding and receipt/unknown
+facts; it cannot regenerate the past or restore cached freshness. History is
+readable but never direct permission to execute. ADR-0009 defines parity,
+independent-writer, crash-window and restart proof before completion.
 
 Do not inject the entire project history into every agent context.
 
@@ -2107,7 +2166,7 @@ This is why UNKNOWN is necessary.
 | Verification | Reviewer/Verifier | Append-only | — | Acceptance | Control | Re-run |
 | Decision | Human | Human | — | Human | Human | Human |
 | Memory | Control Plane after validation | Lifecycle only | ADR-0008 validation + source checks | Promotion, not project Acceptance | HUMAN/Control: STALE | New validated MemoryId |
-| ContextCapsule | Controller | Regenerate | — | — | Controller | Regenerate |
+| ContextCapsule | Trusted Control Plane | Immutable snapshot; new ID to regenerate | Pre-dispatch source/integrity checks | —; receipt is not Acceptance | Refuse current use; preserve history | New per-Attempt snapshot; UNKNOWN reconciles existing Attempt |
 | Effect | Controller | Effect Controller | Reconciler | — | Controller | Reconcile |
 | Command | Controller | Controller | Runtime result | — | Controller | Controller |
 | DomainEvent | Runtime/Control | Append-only | — | — | Never rewrite | Compensating event |
@@ -2115,8 +2174,9 @@ This is why UNKNOWN is necessary.
 This matrix is **PROPOSED**, not yet frozen. Its historical Human-only Decision
 row is superseded by the accepted authority rules in §5.12 and ADR-0007:
 HUMAN and CONTROL_PLANE may author Decisions within the stated authority limits.
-The Memory row is governed by accepted §5.13 and ADR-0008; other proposed rows
-are not made accepted by that Memory decision.
+The Memory row is governed by accepted §5.13 and ADR-0008. The ContextCapsule row
+is governed by accepted §5.14 and ADR-0009; neither acceptance freezes the remaining
+proposed rows.
 
 ---
 
@@ -2209,6 +2269,10 @@ Small, queryable, versioned records:
 - Verification records
 - Evidence metadata
 - Effect receipts
+- immutable bounded Capsule input archives and append-oriented delivery facts
+  under ADR-0009; small mutable delivery observations live on the existing Attempt,
+  not as accepted Project State. V1 archives full payload bytes inline, with hash,
+  manifest/pins, generation information and dispatch binding. Persistence is not receipt.
 
 ### Externalized artifacts
 
@@ -2549,8 +2613,8 @@ Never silently reinterpret a confirmed concept.
 
 The sequence below records the early design plan, not the current work boundary.
 Current work is defined by `ROADMAP.md`: G7.3 Memory is COMPLETE after independent
-implementation review; G7.4 Context Capsule is the next candidate, with a separate
-D-GATE. This governance closeout starts neither Capsule research nor implementation.
+implementation review; G7.4 Context Capsule is B — Missing Implementation under
+accepted ADR-0009. This governance acceptance does not start Capsule implementation.
 
 At that design stage, the next architecture artifact was:
 
@@ -2593,6 +2657,7 @@ This matrix defines who may create, modify, execute, verify, and accept the cano
 | Acceptance | direct high-level override | authoritative transition | cannot accept | verify | evaluate |
 | Decision | authoritative direction | record | propose | advise | read |
 | Memory | validate/withdraw through control | source-check/promote/lifecycle | propose; cannot self-authorize validation | validate only through trusted assignment | read; Memory cannot authorize Acceptance |
+| ContextCapsule | accept architecture; read | assemble/archive/check/bind/reconcile delivery | consume detached input; matching Adapter receipt only | no new authority | read; Capsule cannot authorize Acceptance |
 | Effect | approve high-risk | authorize/reconcile | request/execute | verify result | read |
 | Command | approve where required | issue/authorize | execute | read | read |
 | Event | read | append/project | emit runtime facts | read | read |
@@ -2677,7 +2742,7 @@ Only the Control Plane may mutate authoritative project state. Agents and runtim
 
 ### Matrix status
 
-This matrix remains PROPOSED until validated against executable prototypes and external implementations. Its Memory row is refined by accepted §5.13 / ADR-0008; that acceptance does not freeze the remaining proposed matrix.
+This matrix remains PROPOSED until validated against executable prototypes and external implementations. Its Memory row is refined by accepted §5.13 / ADR-0008; its ContextCapsule row is governed by accepted §5.14 / ADR-0009. These acceptances do not freeze the remaining proposed matrix.
 
 
 ---

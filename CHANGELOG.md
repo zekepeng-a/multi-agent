@@ -6,6 +6,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 
 ### Governance
 
+- **G7.4 Context Capsule architecture gate resolved:** Human accepted ADR-0009 on 2026-09-30 after bounded inventory and source/test research. G7.4 moves D → B — Missing Implementation. Accepted v1 choices include immutable single-Attempt full input snapshots, all ACTIVE project Decisions by default, required-content byte-budget failure, supplemental-drift regeneration, Adapter-boundary receipt only, UNKNOWN without blind resend, and no fixed TTL/history cleanup/leases/new Effect subsystem. This commit changes governance only; Capsule remains unimplemented and implementation execution requires a separate authorized task. G7.5 is not advanced.
+
 - **G7.3 Memory governance closeout:** independent implementation review accepted HEAD `973f77e2d231ee6eaa4e9b348ebf2424da41f674`, found no new D/E issue or ADR-0008 authority/lifecycle violation, and confirmed CI run `36724720686` success. With explicit human authorization, ROADMAP now records G7.3 COMPLETE. G7 remains active; G7.4 Context Capsule is the next candidate with its own unresolved D-GATE. This closeout authorizes no Capsule research or coding.
 
 - **G7.3 Memory architecture gate resolved:** human accepted `ADR-0008-project-control-memory-boundary.md`, including all-required current sources, no STALE resurrection, INFERRED opt-in and PROJECT_STATE exact-version invalidation. The bounded gap is now B — Missing Implementation. This governance-only acceptance does not implement Memory or complete G7.3; implementation execution is reserved for a subsequent task.
@@ -75,7 +77,7 @@ Commit `e7a0a7d07356980d5ba9c49be5ebfa06a1bebad8`:
 
 ### Known current gaps
 
-Current architecture/reality gaps are tracked in `PROJECT_ARCHITECTURE.md` and ordered in `ROADMAP.md`. G0–G6 and G7.1–G7.3 have completed their bounded gates. Project-control Memory is implemented within ADR-0008 and independently reviewed. G7 remains active; G7.4 Context Capsule is the next D-class candidate, with research requiring a separate task and coding blocked by its independent D-GATE. The Roadmap domain remains queued D-class work. Broader production/provider/distributed capabilities are not implied by those completions.
+Current architecture/reality gaps are tracked in `PROJECT_ARCHITECTURE.md` and ordered in `ROADMAP.md`. G0–G6 and G7.1–G7.3 have completed their bounded gates. Project-control Memory is implemented within ADR-0008 and independently reviewed. G7 remains active; G7.4 Context Capsule's architecture is accepted under ADR-0009 and is B — Missing Implementation; implementation execution requires a separate task, and no Capsule implementation/completion is claimed. The Roadmap domain remains queued D-class work. Broader production/provider/distributed capabilities are not implied by those completions.
 
 ## V0.5 — Legacy DSH Multi-Agent Runtime
 

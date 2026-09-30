@@ -1,8 +1,8 @@
 # ADR-0009 — Context Capsule generation, delivery and recovery boundary
 
-**Status:** PROPOSED  
+**Status:** ACCEPTED  
 **Date:** 2026-09-30  
-**Roadmap phase:** G7.4 — Context Capsule / independent D-GATE  
+**Roadmap phase:** G7.4 — Context Capsule / architecture gate resolved; B  
 **Related invariants:** I-01..I-03, I-06, I-08..I-10, I-14, I-20..I-24, I-27..I-31, I-33..I-35, I-38..I-45
 
 ## Context
@@ -10,11 +10,13 @@
 Baseline: `project-control/controller-v0.1` at
 `b6fc9411c00297f0faba9439bbfde781d2931e6e`.
 G7.1 Project Acceptance, G7.2 Decision and G7.3 Project-control Memory are COMPLETE.
-G7.4 remains D — Architectural Gap. This proposal does not accept itself, change
-ROADMAP or authorize implementation execution.
+At draft time G7.4 was D — Architectural Gap. Human explicitly accepted this
+boundary and its v1 conservative tradeoffs on 2026-09-30. The authorized governance
+synchronization moves G7.4 to B — Missing Implementation. Architecture acceptance
+does not claim implementation or authorize execution of implementation in this task.
 
-Blueprint §12 defines bounded task-relevant execution context. Canonical §5.14
-names ContextCapsuleId and conceptual references, but explicitly leaves generation,
+At the draft baseline, Blueprint §12 defines bounded task-relevant execution
+context. Canonical §5.14 names ContextCapsuleId and conceptual references, but leaves generation,
 freshness, expiry and reference semantics unresolved. Its proposed authority matrix
 is not an accepted Capsule lifecycle. ADR-0004 supplies a Runtime Adapter input
 seam; ADR-0008 supplies current-use Memory, not Capsule assembly.
@@ -37,7 +39,7 @@ Boundary. It changes none of their authority or acceptance semantics.
 
 ## Decision
 
-All rules below are proposed choices requiring Human acceptance.
+The rules below were explicitly accepted by Human on 2026-09-30.
 
 ### 1. Nature and ownership
 
@@ -451,14 +453,14 @@ not determine our authority rules or prove cross-boundary atomicity.
 - Byte budgets are portable and testable, but do not prove final model token fit.
   No final-token guarantee or stronger authorization is claimed.
 
-The proposal preserves I-01..I-45 and five-layer authority. Its use of Attempt
+This decision preserves I-01..I-45 and five-layer authority. Its use of Attempt
 metadata, CAS and events refines recovery/persistence without distributed locks,
 new principals or a new top-level layer.
 
 ## Implementation boundary
 
-Only after explicit Human acceptance and authorized governance synchronization,
-the bounded G7.4 gap can become B — Missing Implementation:
+Human acceptance and authorized governance synchronization resolve the bounded
+G7.4 architecture gate. G7.4 is B — Missing Implementation for:
 
 - Capsule vocabulary, immutable finite-JSON snapshot and independent identity;
 - typed source manifest, trusted assembler/profile and required/supplemental rules;
@@ -472,7 +474,8 @@ the bounded G7.4 gap can become B — Missing Implementation:
 
 Acceptance of architecture is not completion evidence or automatic permission to
 start implementation; implementation execution requires the repository's phase
-rules and explicit task authorization. This PROPOSED file advances neither gate.
+rules and explicit task authorization. This ACCEPTED decision resolves the
+architecture gate only; the governance acceptance task does not start implementation.
 
 Non-goals:
 

@@ -436,7 +436,7 @@ Parallel execution now has real isolated writable roots, enforced scopes, confli
 
 # G7 — Long-horizon Project Control objects
 
-**Status: ACTIVE — G7.1–G7.3 COMPLETE; NEXT CANDIDATE G7.4 D-GATE**
+**Status: ACTIVE — G7.1–G7.3 COMPLETE; G7.4 B / Missing Implementation**
 
 This phase is intentionally decomposed. See `docs/architecture/G7_DECOMPOSITION.md`.
 
@@ -445,7 +445,7 @@ Current candidate sequence:
 1. G7.1 Project-level Acceptance — COMPLETE.
 2. G7.2 Decision — COMPLETE.
 3. G7.3 Project-control Memory — D → B → COMPLETE.
-4. G7.4 Context Capsule — D, next candidate; independent architecture gate, coding blocked.
+4. G7.4 Context Capsule — D → B, ADR-0009 ACCEPTED; implementation execution reserved for a separate authorized task.
 5. G7.5 Roadmap domain — D, queued; distinct from repository `ROADMAP.md`.
 6. G7.6 Observability hardening — only to demonstrated G8 need.
 7. leases/fencing — not currently required; do not implement without a concrete ownership problem.
@@ -487,13 +487,34 @@ Completion proof:
 - independent review found no new D/E issue, authority leak or lifecycle defect;
 - this authorized governance update records satisfaction of G7.3's exit gate.
 
-The next candidate is **G7.4 Context Capsule — D / Architectural Gap**.
-Decision and Memory prerequisites are complete, but Capsule generation, reference
-authority, freshness/expiry and its precise query/assembly boundary remain a
-separate D-GATE. Focused architecture work and an accepted ADR are required before
-any bounded implementation can become B-class work.
-This closeout authorizes neither G7.4 research nor implementation; a separate task
-must authorize its architecture work. No G7.4 coding permission is granted.
+**G7.4 Context Capsule — B / Missing Implementation.**
+Human explicitly accepted `docs/architecture/decisions/ADR-0009-context-capsule-boundary.md`
+on 2026-09-30 after the bounded inventory and external research. Its architecture
+gate is resolved; this governance update does not implement or complete Capsule.
+
+The accepted v1 boundary includes:
+
+- derived immutable input, independent ContextCapsuleId and exactly one Attempt;
+- complete delivered payload/hash, typed manifest/pins and assembler version;
+- all project ACTIVE Decisions by default unless an explicit deterministic,
+  versioned applicability rule narrows them;
+- preserved source ownership/authority/provenance and ADR-0008 current-use Memory,
+  with trusted explicit INFERRED opt-in only;
+- required content cannot be silently removed; final serialized UTF-8 byte budget,
+  including envelope overhead, fails closed when required input cannot fit;
+- pre-dispatch source/selection checks, separate Store and Reality observations;
+  no cross-boundary atomic snapshot;
+- included supplemental drift requires a new CapsuleId, not in-place refresh;
+- persisted/reserved is not received; matching Adapter-boundary receipt and
+  UNKNOWN recovery on the existing Attempt, with no blind resend;
+- inline v1 persistence, CAS, events, intent-bound replay, backend parity and restart;
+- no fixed TTL, history cleanup, leases/fencing or new Effect/dispatch subsystem.
+
+Architecture-level implementation authorization is limited to ADR-0009's
+Implementation boundary. Implementation execution requires a separately authorized
+task; no code is written by this acceptance task. Completion still requires all
+25 ADR exit criteria, implementation Evidence, independent review and an explicitly
+authorized ROADMAP closeout. G7.1–G7.3 Evidence/history is retained unchanged.
 G7.5 Roadmap domain remains queued D-class work.
 No bundle implementation, runtime-memory migration or broader research is authorized.
 
@@ -547,8 +568,8 @@ COMPLETE: G7.1 Project-level Acceptance
 COMPLETE: G7.2 Project Decision
 COMPLETE: G7.3 Project-control Memory — ADR-0008 implementation reviewed
 ACTIVE:   G7 convergence; not all candidates are complete
-NEXT:     G7.4 Context Capsule — D / independent architecture gate
-          research requires a separate task; coding remains blocked
+NEXT:     G7.4 Context Capsule — B / Missing Implementation; ADR-0009 ACCEPTED
+          architecture boundary authorized; implementation needs a separate task
 AFTER G7 CONVERGENCE:
           G8 End-to-end dogfood + release convergence
 BLOCKED FROM BUNDLE CODING:
