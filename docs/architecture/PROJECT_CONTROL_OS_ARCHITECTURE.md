@@ -307,6 +307,8 @@ name: string
 description: string
 status: ACTIVE | PAUSED | COMPLETED | ARCHIVED
 current_revision: string?
+acceptance_id: AcceptanceId?
+acceptance_version: integer?
 created_at: timestamp
 updated_at: timestamp
 metadata: object
@@ -417,13 +419,15 @@ Consequences recorded for v0.1:
   contract, or another Goal's contract, is refused at seed and at update.
 - Both halves of the pin are required. A bare `acceptance_id` is not a revision,
   and a bare `acceptance_version` names nothing.
-- `PROJECT` is a declared target type with **no v0.1 acceptance flow**: Project
-  status is still only ever completed by observing completed milestones.
+- Project follows the same optional contract rule at the lifecycle root:
+  completed Milestones are aggregate Evidence input; a pinned PROJECT contract
+  requires Verification before Project may become COMPLETED. Without a contract,
+  aggregate completion remains legal.
 - A parent in a terminal state, or in `BLOCKED`, is never accepted by contract —
   the same source-state whitelist rule as a Task (`READY`, `IN_PROGRESS`).
 - The acceptance write moves the parent's status and the contract's decision in
   one transaction, recording the lifecycle event for the status reached
-  (`goal.accepted`, `milestone.completed`).
+  (`goal.accepted`, `milestone.completed`, `project.completed`).
 
 ---
 
@@ -512,11 +516,11 @@ acceptance **decision** state, not contract content: `PENDING → PASSED` is not
 contract revision change.
 
 `target_type` makes a contract unambiguous about what it is about. A Task
-contract is bound at creation; a Goal or Milestone contract is bound by the
-parent's own pin, and the revision must target that record's type and id — so one
-contract id can never be read as covering a task **and** a goal. In v0.1 only
-`TASK`, `GOAL` and `MILESTONE` have an acceptance flow; `PROJECT` is defined but
-not yet reachable.
+contract is bound at creation; a Goal, Milestone or Project contract is bound by
+the aggregate's own pin, and the revision must target that record's type and id —
+so one contract id can never be read as covering two different targets.
+`TASK`, `GOAL`, `MILESTONE` and `PROJECT` now all have a contract-bound
+acceptance flow.
 
 A content fingerprint is stored beside every revision and re-checked on every
 resolution, so a revision edited in place fails closed instead of being trusted.
