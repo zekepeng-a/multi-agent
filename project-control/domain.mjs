@@ -365,6 +365,8 @@ export function createEvidence({
   status = EvidenceStatus.CANDIDATE,
   contentRef = null,
   sourceRefs = [],
+  workspaceId = null,
+  workspaceRevision = null,
 } = {}) {
   const resolvedTargetId = targetId ?? taskId;
   if (!id || !resolvedTargetId || !acceptanceId || !acceptanceVersion) {
@@ -372,6 +374,9 @@ export function createEvidence({
   }
   if (targetType === AcceptanceTargetType.TASK && (!taskId || !runId || !attemptId)) {
     throw new Error("task evidence requires taskId, runId and attemptId");
+  }
+  if ((workspaceId == null) !== (workspaceRevision == null)) {
+    throw new Error("workspace-bound evidence requires workspaceId and workspaceRevision together");
   }
   return {
     id,
@@ -386,6 +391,8 @@ export function createEvidence({
     status,
     contentRef,
     sourceRefs: structuredClone(sourceRefs),
+    workspaceId,
+    workspaceRevision,
     createdAt: now(),
   };
 }
@@ -419,6 +426,93 @@ export function createVerification({
     verdict,
     revision,
     createdAt: now(),
+  };
+}
+
+// ── Durable Workspace (G6 Reality/isolation boundary) ───────────────────────
+
+export const WorkspaceKind = Object.freeze({
+  SHARED: "SHARED",
+  ISOLATED: "ISOLATED",
+});
+
+export const WorkspaceAccess = Object.freeze({
+  READ_ONLY: "READ_ONLY",
+  WRITE: "WRITE",
+});
+
+export const WorkspaceStatus = Object.freeze({
+  CREATED: "CREATED",
+  ACTIVE: "ACTIVE",
+  DIRTY: "DIRTY",
+  READY_TO_INTEGRATE: "READY_TO_INTEGRATE",
+  INTEGRATED: "INTEGRATED",
+  CONFLICTED: "CONFLICTED",
+  DISCARDED: "DISCARDED",
+});
+
+export function createWorkspace({
+  id,
+  projectId,
+  kind,
+  access,
+  owner = null,
+  parentWorkspaceId = null,
+  rootRef,
+  baseRevision,
+  currentRevision,
+  writeScopes = [],
+  status = WorkspaceStatus.CREATED,
+  touchedPaths = {},
+  integration = null,
+  version = 1,
+} = {}) {
+  for (const [field, value] of Object.entries({ id, projectId, rootRef, baseRevision, currentRevision })) {
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new Error(`workspace requires a non-empty ${field}`);
+    }
+  }
+  if (!Object.values(WorkspaceKind).includes(kind)) {
+    throw new Error(`unknown workspace kind: ${kind}`);
+  }
+  if (!Object.values(WorkspaceAccess).includes(access)) {
+    throw new Error(`unknown workspace access: ${access}`);
+  }
+  if (!Object.values(WorkspaceStatus).includes(status)) {
+    throw new Error(`unknown workspace status: ${status}`);
+  }
+  if (!Array.isArray(writeScopes) || writeScopes.some((scope) => typeof scope !== "string")) {
+    throw new Error("workspace writeScopes must be an array of strings");
+  }
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error("workspace version must be a positive integer");
+  }
+  if (kind === WorkspaceKind.ISOLATED && (!parentWorkspaceId || typeof parentWorkspaceId !== "string")) {
+    throw new Error("isolated workspace requires parentWorkspaceId");
+  }
+
+  return {
+    id,
+    version,
+    projectId,
+    kind,
+    access,
+    owner: owner ? structuredClone(owner) : { runId: null, attemptId: null },
+    parentWorkspaceId,
+    rootRef,
+    baseRevision,
+    currentRevision,
+    writeScopes: [...writeScopes],
+    status,
+    touchedPaths: structuredClone(touchedPaths ?? {}),
+    integration: integration ? structuredClone(integration) : {
+      targetWorkspaceId: null,
+      integratedRevision: null,
+      conflictPaths: [],
+      integratedAt: null,
+    },
+    createdAt: now(),
+    updatedAt: now(),
   };
 }
 
