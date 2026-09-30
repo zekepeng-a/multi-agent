@@ -184,6 +184,18 @@ CREATE TABLE IF NOT EXISTS policy_decisions (
   body           TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS workspaces (
+  id                  TEXT PRIMARY KEY,
+  version             INTEGER NOT NULL,
+  project_id          TEXT NOT NULL,
+  kind                TEXT NOT NULL,
+  access              TEXT NOT NULL,
+  parent_workspace_id TEXT,
+  status              TEXT NOT NULL,
+  current_revision    TEXT NOT NULL,
+  body                TEXT NOT NULL
+);
+
 -- An Approval is a durable CONTROL FACT in its own right, so it gets its own
 -- table rather than a column somewhere else: a permission that exists only as a
 -- flag on the thing it authorizes cannot be reasoned about after that thing
@@ -233,6 +245,7 @@ CREATE INDEX IF NOT EXISTS approvals_by_target ON approvals (target_type, target
 CREATE INDEX IF NOT EXISTS control_commands_by_target ON control_commands (target_type, target_id);
 CREATE INDEX IF NOT EXISTS effects_by_command ON effects (command_id);
 CREATE INDEX IF NOT EXISTS policy_decisions_by_command ON policy_decisions (command_id);
+CREATE INDEX IF NOT EXISTS workspaces_by_project ON workspaces (project_id);
 CREATE INDEX IF NOT EXISTS events_by_aggregate ON events (aggregate_id);
 `;
 
@@ -375,6 +388,21 @@ const SHAPES = {
       policy_version: r.policyVersion,
     }),
     filters: { id: "id", commandId: "command_id" },
+  },
+  [Collection.WORKSPACE]: {
+    table: "workspaces",
+    scope: "id",
+    columns: (r) => ({
+      id: r.id,
+      version: r.version,
+      project_id: r.projectId,
+      kind: r.kind,
+      access: r.access,
+      parent_workspace_id: r.parentWorkspaceId ?? null,
+      status: r.status,
+      current_revision: r.currentRevision,
+    }),
+    filters: { id: "id", projectId: "project_id", parentWorkspaceId: "parent_workspace_id" },
   },
 };
 
