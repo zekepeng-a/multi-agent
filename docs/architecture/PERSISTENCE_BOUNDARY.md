@@ -3,6 +3,8 @@
 **Status:** PROTOTYPE VALIDATED (v0.1 spike — see §18). **Not production ready.**
 **Purpose:** define what must be durable, what is authoritative, what is append-oriented, and what may remain externalized before choosing a storage technology.
 
+> **Historical spike scope:** prototype observations and next-step/engine-declaration notes below describe the spike when recorded. G1 later established the Node 20 package floor versus Node 22 SQLite baseline (`BASELINE_EVIDENCE.md`); current implementation and phase status are in `PROJECT_ARCHITECTURE.md` and `ROADMAP.md`. Historical results and limitations are not a current feature inventory.
+
 ---
 
 ## 1. Decision

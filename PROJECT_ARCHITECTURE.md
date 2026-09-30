@@ -2,7 +2,8 @@
 
 **Status:** CURRENT REALITY MAP  
 **Baseline branch:** `project-control/controller-v0.1`  
-**Baseline commit when written:** `c9d365a0d66100327951602dcdfe4d4f6a676731`  
+**Initial baseline commit when written:** `c9d365a0d66100327951602dcdfe4d4f6a676731`
+**Latest implementation evidence:** G7.2 at `ca665f1fe2ff162efb9d6eaba398c204459bd8e9`; see `docs/architecture/DECISION_G7_2_EVIDENCE.md`.
 **Purpose:** describe what this repository actually implements now. This file is not a target design and must not promote documented intentions into implemented reality.
 
 ## 1. Authority and read order
@@ -27,7 +28,7 @@ This repository contains two distinct architectural eras:
 
 The root runtime files (`orchestrator.mjs`, `executors.mjs`, `distiller.mjs`, `retriever.mjs`, `context.mjs`, `state-summary.mjs`) implement the earlier DSH Multi-Agent Runtime prototype.
 
-`AGENTS.md`, `package.json`, and `docs/architecture.md` still primarily describe this era.
+`package.json` retains the legacy package identity. `docs/architecture.md` explicitly documents this era; `AGENTS.md` governs the current Project Control OS repository.
 
 This code remains valid historical/runtime implementation. It is **not the current top-level product definition**.
 
@@ -58,7 +59,7 @@ Every concept in this file uses one of these labels:
 - **MISSING** — required concept has no current Project Control implementation.
 - **CONFLICT** — current repository documents or implementation contradict the Blueprint/canonical authority model.
 
-These labels describe the baseline commit above only.
+These labels describe the initial baseline plus the evidenced updates recorded below; the initial baseline commit is historical, not the revision of every current entry.
 
 ## 4. Current reality map
 
@@ -69,7 +70,7 @@ These labels describe the baseline commit above only.
 | Milestone | IMPLEMENTED | Durable/versioned object, child-side project relationship, aggregation from Goals, optional pinned Acceptance. |
 | Goal | IMPLEMENTED | Durable/versioned object, project/milestone relationship, aggregation from Tasks, optional pinned Acceptance. |
 | Task | IMPLEMENTED | Durable/versioned object, pinned Acceptance revision, Run linkage, lifecycle and acceptance flow. |
-| Acceptance Contract | PARTIAL | Revisioned contracts exist for Task/Goal/Milestone flows. PROJECT is in the target vocabulary but Project-level acceptance is not implemented. |
+| Acceptance Contract | PARTIAL | Revisioned contracts exist for Task/Goal/Milestone/Project flows, including G7.1 Project-level acceptance; the full canonical design remains broader than this bounded prototype. |
 | Run | IMPLEMENTED | Durable/versioned execution record distinct from Task. |
 | Attempt | IMPLEMENTED | Concrete execution attempt distinct from Run, including LOST/FAILED/etc. states. |
 | Evidence | IMPLEMENTED | Task execution Evidence and parent aggregate Evidence exist with lineage, revision/pinning and stale/superseded semantics. |
@@ -79,17 +80,17 @@ These labels describe the baseline commit above only.
 | Recovery | PARTIAL | Safe recovery exists for the current LOST-attempt path; typed recovery across Command/Effect/runtime/project boundaries is not complete. |
 | Approval | IMPLEMENTED | Durable scoped human approval lifecycle, target-version pinning, attribution, expiry/revocation, action/capability/scope checks, fail-closed semantics. |
 | Policy | IMPLEMENTED / PARTIAL | Deterministic StaticPolicyEngine now evaluates stored Command/current-target facts with DENY > REQUIRE_APPROVAL > ALLOW precedence and fail-closed default. Immutable PolicyDecision audit facts persist in MemoryStore/SQLite and survive restart. Controller re-evaluates policy at every authorization attempt; Approval only satisfies REQUIRE_APPROVAL. External policy adapters/management remain future work. |
-| Command | IMPLEMENTED / PARTIAL | Durable Command now exists with immutable stored intent, independent version, MemoryStore/SQLite persistence, CREATED→AUTHORIZED/REJECTED transitions, events, restart proof, and Command-based Controller authorization. DISPATCHED/EXECUTING/SUCCEEDED/FAILED/UNKNOWN remain reserved for G3. Historical store-mutation replay rows remain a separate mechanism. COMMAND-target Approval remains intentionally refused. |
+| Command | IMPLEMENTED / PARTIAL | Durable Command now exists with immutable stored intent, independent version, MemoryStore/SQLite persistence, CREATED→AUTHORIZED/REJECTED transitions, events, restart proof, and Command-based Controller authorization. DISPATCHED/EXECUTING/SUCCEEDED/FAILED/UNKNOWN Command transitions remain reserved; G3 implements separate Effect outcomes, not overall Command completion. Historical store-mutation replay rows remain a separate mechanism. COMMAND-target Approval remains intentionally refused. |
 | Effect | IMPLEMENTED / PARTIAL | Durable Effect ledger now exists with REQUESTED/DISPATCHED/SUCCEEDED/FAILED_NO_EFFECT/UNKNOWN semantics, MemoryStore/SQLite persistence, fake driver seam, idempotency/replay handling, typed reconciliation, and real restart proof for orphaned DISPATCHED state. Real provider/runtime integrations remain future work. |
 | Event | IMPLEMENTED | Append-oriented events are persisted with authoritative mutations and survive SQLite restart. Event is kept distinct from State. |
 | Decision | IMPLEMENTED | Durable Project Decision exists with HUMAN/CONTROL_PLANE authority, mandatory provenance, immutable meaning, ACTIVE→SUPERSEDED/REVOKED lifecycle, atomic supersession lineage, attributable revocation, optimistic concurrency, MemoryStore/SQLite persistence and restart proof. Runtime/model proposals are not Decision authority. |
 | Project-control Memory | MISSING | The legacy runtime has derived memory machinery, but the Blueprint's source-referenced Project Control memory model is not implemented. |
 | Context Capsule | DOCUMENTED_ONLY | Defined conceptually; no Project Control implementation assembles or persists bounded capsules. |
-| Runtime Adapter | IMPLEMENTED / PARTIAL | Normalized capability-shaped Runtime Adapter contract now exists. FakeRuntime migrated, LocalProcessRuntimeAdapter executes real child processes in CI, and DshWorkflowRuntimeAdapter binds the current DSH Workflow seam through injected workflowEngine. RuntimeRef persists on Attempt and survives restart while remaining distinct from Run/Attempt identity. Workspace/isolation semantics remain G6. |
+| Runtime Adapter | IMPLEMENTED / PARTIAL | Normalized capability-shaped Runtime Adapter contract now exists. FakeRuntime migrated, LocalProcessRuntimeAdapter executes real child processes in CI, and DshWorkflowRuntimeAdapter binds the current DSH Workflow seam through injected workflowEngine. RuntimeRef persists on Attempt and survives restart while remaining distinct from Run/Attempt identity. G6 separately implements bounded local Workspace/isolation semantics; runtime-adapter capability alone does not establish write isolation. |
 | Workspace | IMPLEMENTED / PARTIAL | Durable Workspace identity now exists with SHARED/ISOLATED kind, READ_ONLY/WRITE access, MemoryStore/SQLite persistence, optimistic versioning, deterministic revision digests, enforced write scopes, conflict-safe local overlay integration, deterministic integration order and restart proof. Git-worktree/container providers and distributed coordination remain outside current scope. |
 | Workspace isolation | IMPLEMENTED / PARTIAL | Local WorkspaceManager gives parallel writers distinct roots, overlays reads over SHARED reality, records touched-path base digests, rejects out-of-scope/read-only/path-traversal writes, and detects integration conflicts before patch application. DSH Team writeScopes remain non-authoritative unless projected through this boundary. |
 | Optimistic concurrency | IMPLEMENTED | Version-aware updates reject stale expected versions; persistence tests cover rollback/conflict behavior. |
-| Command idempotency key | IMPLEMENTED | Durable command-id replay/operation binding exists in store semantics, but this is not a durable Command domain. |
+| Store-mutation replay identity | IMPLEMENTED | Command-id replay/operation binding deduplicates store mutations; it is separate from durable Command identity and the Command's idempotency key. |
 | Parent relationship authority | IMPLEMENTED | Child-side links are authoritative; parent cached ID lists are not used as relationship truth. |
 | Goal/Milestone parent Acceptance | IMPLEMENTED | Aggregate child snapshots become identified Evidence and flow through Verification/Acceptance. |
 | Project Acceptance | IMPLEMENTED | Project may optionally pin a PROJECT Acceptance revision. Contract-free projects still complete by Milestone aggregation; contract-bound projects require current Milestone aggregate Evidence + PASS Verification, with atomic Project COMPLETED + contract PASSED and restart proof. |
@@ -116,7 +117,7 @@ Project
 
 The store layer owns shared control semantics rather than duplicating them per persistence backend.
 
-Current durable collections include Project, Milestone, Goal, Task, Acceptance, Run, Attempt, Evidence, Verification, and Approval. Events and command-id replay records are also persisted by the backends.
+Current durable collections include Project, Milestone, Goal, Task, Acceptance, Run, Attempt, Evidence, Verification, Approval, Command, Effect, PolicyDecision, Decision, and Workspace. Events and command-id replay records are also persisted by the backends.
 
 ## 6. Verified architectural boundaries already represented in code
 
@@ -210,7 +211,6 @@ Current reality does **not** yet include:
 
 - a live-in-DSH smoke test in CI;
 - DSH Subagent/Agent Team adapters;
-- workspace isolation/write scopes;
 - automatic provider/model routing.
 
 ### 7.4 Reality/workspace control
@@ -219,7 +219,7 @@ G6 now implements a bounded local WorkspaceManager: durable Workspace identity, 
 
 ### 7.5 Long-horizon project semantics
 
-Roadmap, Decision, Project-control Memory and Context Capsule remain absent or design-only. Project-level Acceptance is now implemented.
+Roadmap, Project-control Memory and Context Capsule remain absent or design-only. Project-level Acceptance (G7.1) and durable Decision (G7.2) are implemented within their accepted ADR boundaries.
 
 ## 8. Current conflicts and documentation drift
 
@@ -238,6 +238,8 @@ G1 deliberately does not rename or split the package. Repository-level product d
 ### C-03 — Node version boundary — RESOLVED AS A CAPABILITY MATRIX
 
 The package declares Node `>=20`. CI now verifies that floor separately from the full persistence baseline.
+
+Historical G1 baseline (not the latest suite count):
 
 - Node 20.20.2: 435 discovered, 295 pass, 140 skipped, 0 fail; SQLite-backed tests are capability-gated because `node:sqlite` is unavailable.
 - Node 22.23.3: 435/435 pass, 0 skipped; CI explicitly asserts `node:sqlite` availability before running tests.
@@ -278,8 +280,8 @@ This file does not claim:
 - that every invariant I-01..I-45 has complete implementation coverage;
 - that the current persistence schema is production-migration-ready;
 - that fake runtime tests prove real external-runtime behavior;
-- that DSH Workflow/Team integration exists;
-- that Roadmap, Decision, Project-control Memory or Context Capsule are implemented because they appear in architecture documents;
+- that a live DSH Workflow smoke test or DSH Agent Team integration has been proven; the bounded Workflow adapter itself exists;
+- that Roadmap, Project-control Memory or Context Capsule are implemented because they appear in architecture documents; Decision implementation is separately evidenced by G7.2;
 - that current local Workspace isolation proves distributed multi-coordinator safety.
 
 ## 11. Change rule

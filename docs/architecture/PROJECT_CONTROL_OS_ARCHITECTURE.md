@@ -708,7 +708,7 @@ Purpose: evaluate Evidence against Acceptance criteria.
 
 ```yaml
 id: VerificationId
-target_type: TASK | GOAL | MILESTONE
+target_type: TASK | GOAL | MILESTONE | PROJECT
 target_id: string
 task_id: TaskId?
 evidence_ids: EvidenceId[]
@@ -734,7 +734,7 @@ A verification is about one target, and the target decides how it is proved:
 - `TASK` verification: `task_id` is required, and the whole
   `Task ← Run ← Attempt ← Evidence` lineage is re-proved against the task the
   verification declares — and again against the task actually being accepted.
-- `GOAL` / `MILESTONE` verification: no `task_id` at all. What replaces lineage is
+- `GOAL` / `MILESTONE` / `PROJECT` verification: no `task_id` at all. What replaces lineage is
   the snapshot identity: the evidence must belong to that target, must carry no
   Run or Attempt, must be of the revision the target pins, and must still
   describe the current child state.
@@ -1036,11 +1036,11 @@ status:
   - CREATED
   - AUTHORIZED
   - REJECTED
-  - DISPATCHED      # reserved until G3
-  - EXECUTING       # reserved until G3
-  - SUCCEEDED       # reserved until G3
-  - FAILED          # reserved until G3
-  - UNKNOWN         # reserved until G3
+  - DISPATCHED      # reserved: overall Command execution is not implemented
+  - EXECUTING       # reserved; G3 implements Effect outcomes separately
+  - SUCCEEDED       # reserved
+  - FAILED          # reserved
+  - UNKNOWN         # reserved
 authorization:
   approval_id: ApprovalId?
   authorized_at: timestamp?
@@ -1062,8 +1062,9 @@ CREATED
 ```
 
 `DISPATCHED / EXECUTING / SUCCEEDED / FAILED / UNKNOWN` remain canonical future
-states but are **reserved and non-writable during G2**. G3 owns their interaction
-with Effect, runtime acknowledgement, external receipts, uncertainty and retry.
+Command states and are currently **reserved and non-writable**. G3 implements
+external Effect outcomes separately; it does not aggregate overall Command
+completion.
 
 ### Durable intent
 
@@ -1389,9 +1390,9 @@ failure is a refusal with a machine-readable reason
 a caller never has to parse a message to learn why. A status this version cannot
 reason about is `UNKNOWN`, not "probably fine".
 
-Consumption is deliberately **not recorded** in v0.1: there is no Effect ledger,
-and a "used" flag would claim knowledge about the external world that this layer
-does not have. Authorization is a decision, not a fact about what happened.
+Approval consumption is not modeled as a "used" flag. Command authorization is
+recorded with its PolicyDecision and, when required, Approval; G3 separately
+records Effect outcomes. Authorization is still not proof of external execution.
 
 ---
 
@@ -1596,40 +1597,36 @@ PENDING ──► APPROVED ──► REVOKED
 
 ## Command authorization
 
-v0.1 implements the **gate**, not the Command lifecycle:
+G2 implements durable Command authorization; G4 composes Policy and Approval:
 
 ```text
-Command intent
+stored CREATED Command + current target
   ↓
-Approval check (existence, effective status, attribution, target, version,
-                action, scope, bound command, deadline)
-  ↓                    ↘
-AUTHORIZED            WAIT (<reason>)
-  ↓
-(execution belongs to the Runtime / Effect layer — not implemented here)
+Policy evaluation → persisted PolicyDecision
+  ├── DENY             → REJECTED
+  ├── ALLOW            → AUTHORIZED
+  └── REQUIRE_APPROVAL → Approval check → WAIT / AUTHORIZED / REJECTED
 ```
 
-- Passing the gate is not running the Command, and it is not recorded: there is
-  no Effect ledger in v0.1, so authorization leaves no "consumed" fact behind.
+- Authorization is recorded but is not dispatch or success. G3's Effect ledger
+  records external outcomes separately (§5.15).
 - An Approval never waives the Command's own `expectedVersion`. A permission is
   not an exemption from optimistic concurrency.
-- Nothing decides *when* approval is required yet. That is the Policy layer's
-  question, and no per-object flag stands in for it.
+- Policy decides whether Approval is required; Approval satisfies only
+  REQUIRE_APPROVAL and cannot override DENY.
 
 ## Effect
 
 ```text
-REQUESTED
+AUTHORIZED Command
   ↓
-AUTHORIZED
+Effect REQUESTED
   ↓
 DISPATCHED
   ↓
-SUCCEEDED / FAILED
-       or
-     UNKNOWN
-       ↓
-   RECONCILIATION
+SUCCEEDED / FAILED_NO_EFFECT / UNKNOWN
+                              ↓
+                         RECONCILIATION
 ```
 
 ---
@@ -2033,7 +2030,9 @@ This is why UNKNOWN is necessary.
 | Command | Controller | Controller | Runtime result | — | Controller | Controller |
 | DomainEvent | Runtime/Control | Append-only | — | — | Never rewrite | Compensating event |
 
-This matrix is **PROPOSED**, not yet frozen.
+This matrix is **PROPOSED**, not yet frozen. Its historical Human-only Decision
+row is superseded by the accepted authority rules in §5.12 and ADR-0007:
+HUMAN and CONTROL_PLANE may author Decisions within the stated authority limits.
 
 ---
 
@@ -2197,12 +2196,10 @@ Approval:  a named human decided, for THIS action, on THIS target version,
 `context.approval_state` in the policy schema is therefore backed by a real,
 queryable fact rather than a string nobody owns.
 
-v0.1 deliberately implements **neither** a Policy Engine nor the `REQUIRE_APPROVAL`
-decision: nothing in the prototype decides that an action must be approved. What
-exists is the other half — the gate that refuses to authorize a command without a
-current, attributable, correctly scoped Approval — plus the durable record of the
-decision itself. Wiring "which actions require approval" onto that gate is the
-next Policy problem, not a reason to guess per object today.
+G4 implements a bounded deterministic StaticPolicyEngine and durable
+PolicyDecision facts (§5.18, ADR-0003). ALLOW needs no Approval; DENY cannot be
+overridden; REQUIRE_APPROVAL uses the durable Approval gate. Broader external
+policy adapters and policy management remain outside this implementation.
 
 ---
 
@@ -2393,12 +2390,12 @@ The following are currently CONFIRMED:
 - Exact DSH integration mechanism.
 - Exact Team/Workflow mapping.
 - Exact Agent Bridge implementation.
-- Exact Policy Engine (v0.1 has a durable Approval and a gate, but nothing decides
-  that an approval is required).
-- Command lifecycle states (v0.1 has the authorization gate, not a Command record
-  with its own status).
-- The COMMAND approval target: reserved in the vocabulary, refused everywhere in
-  v0.1, and only meaningful once Command is a durable control object.
+- Production/external Policy adapters and management; the bounded G4 evaluator
+  and composition semantics are implemented (§5.18).
+- Overall Command execution/completion states beyond the implemented durable
+  CREATED / AUTHORIZED / REJECTED lifecycle.
+- The COMMAND approval target: still unsupported. Durable Command exists, but
+  ADR-0003 binds Approval to the underlying Project/Task action.
 - Approval scope algebra (v0.1 compares `scope` exactly; no wildcards, prefixes,
   or containment).
 - Whether approval consumption is recorded (that is an Effect-ledger question).
@@ -2464,11 +2461,13 @@ Never silently reinterpret a confirmed concept.
 
 ---
 
-# 26. Current Next Step
+# 26. Initial architecture next-step plan — historical
 
-Do NOT jump directly into implementation.
+The sequence below records the early design plan, not the current work boundary.
+Current authorized work is defined by `ROADMAP.md`: G7.3 Memory remains a D-GATE
+requiring focused research and an accepted ADR before implementation.
 
-The next architecture artifact should be:
+At that design stage, the next architecture artifact was:
 
 **Authority + Relationship Matrix v0.1**
 

@@ -69,7 +69,7 @@ Commit `e7a0a7d07356980d5ba9c49be5ebfa06a1bebad8`:
 
 ### Known current gaps
 
-Current architecture/reality gaps are tracked in `PROJECT_ARCHITECTURE.md` and ordered in `ROADMAP.md`. Major gaps include durable Command, Effect ledger/reconciliation, Policy, real runtime adapters, Workspace/reality isolation, Roadmap domain, Decision, Project-control Memory, Context Capsule and Project-level Acceptance.
+Current architecture/reality gaps are tracked in `PROJECT_ARCHITECTURE.md` and ordered in `ROADMAP.md`. G0–G6, G7.1 Project Acceptance and G7.2 Decision have completed their bounded gates. G7.3 Project-control Memory is the active D-GATE; Context Capsule and the Roadmap domain remain queued. Broader production/provider/distributed capabilities are not implied by those completions.
 
 ## V0.5 — Legacy DSH Multi-Agent Runtime
 

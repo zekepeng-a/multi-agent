@@ -3,6 +3,8 @@
 **Status:** IMPLEMENTATION PROTOTYPE  
 **Scope:** first executable control loop; deliberately in-memory and runtime-independent.
 
+> **Historical prototype scope:** this document records the early control-loop boundary, not the current branch feature inventory. Later persistence, Policy, runtime, Workspace, Project Acceptance and Decision work is recorded in `PROJECT_ARCHITECTURE.md` and phase Evidence; current work is governed by `ROADMAP.md`.
+
 ## Goal
 
 Prove that Project Control can own project state without becoming another agent runtime.

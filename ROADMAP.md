@@ -142,7 +142,9 @@ Each phase has an entry condition, allowed work, and exit gate.
 
 Make the repository itself a reliable shared memory for human, GPT, DSH and future agents.
 
-## Current facts
+## Entry facts at G0 start — historical
+
+The following records G0's starting conditions, not current missing work. G0 is complete; packaging identity remains consciously deferred under G1.
 
 Already present:
 
@@ -153,7 +155,7 @@ Already present:
 - `PROJECT_ARCHITECTURE.md`
 - this `ROADMAP.md`
 
-Still drifting:
+Drift at G0 entry:
 
 - `AGENTS.md` describes the repository as frozen V0.5 Multi-Agent Runtime.
 - `docs/architecture.md` is the legacy V0.5 architecture without explicit legacy scope.
@@ -261,7 +263,7 @@ Completed for the architecture gate:
 1. focused external evidence was reviewed from the existing source-traceability chain;
 2. `ADR-0001-durable-command-boundary.md` was accepted;
 3. canonical architecture was updated to separate G2 durable authorization from G3 external execution;
-4. the bounded G2 Command implementation is now **B — Missing Implementation**.
+4. the bounded G2 Command implementation became **B — Missing Implementation** at that gate, and was subsequently completed (see Exit gate).
 
 Implementation must remain inside ADR-0001's boundary.
 
@@ -298,7 +300,7 @@ The accepted G3 boundary now defines:
 - Effect receipt/observation remaining distinct from Evidence;
 - a narrow abstract Effect driver seam.
 
-The bounded G3 implementation is now **B — Missing Implementation**.
+The bounded G3 implementation became **B — Missing Implementation** at that gate, and was subsequently completed (see Exit gate).
 
 ## Exit gate
 
@@ -340,7 +342,7 @@ The accepted G4 boundary defines:
 - re-evaluation at each authorization attempt;
 - Approval only as the satisfier of REQUIRE_APPROVAL.
 
-The bounded G4 implementation is now **B — Missing Implementation**.
+The bounded G4 implementation became **B — Missing Implementation** at that gate, and was subsequently completed (see Exit gate).
 
 ## Exit gate
 
@@ -380,7 +382,7 @@ optional/capability-gated:
   pause()
 ```
 
-Project Control Run/Attempt identities stay separate from runtime Session/Workflow/Team/process identities. Runtime observations/results are normalized and non-authoritative. The bounded G5 implementation is now **B — Missing Implementation**.
+Project Control Run/Attempt identities stay separate from runtime Session/Workflow/Team/process identities. Runtime observations/results are normalized and non-authoritative. The bounded G5 implementation became **B — Missing Implementation** at that gate, and was subsequently completed (see Exit gate).
 
 ## Candidate first adapter
 
@@ -422,7 +424,7 @@ The accepted G6 boundary defines:
 - optional Workspace lineage on Evidence;
 - no distributed leases/fencing until a concrete multi-coordinator need appears.
 
-The bounded G6 implementation is now **B — Missing Implementation**.
+The bounded G6 implementation became **B — Missing Implementation** at that gate, and was subsequently completed (see Exit gate).
 
 ## Exit gate
 
@@ -517,7 +519,8 @@ COMPLETE: G4 Policy / authorization composition
 COMPLETE: G5 Real Runtime Adapter boundary
 COMPLETE: G6 Workspace / Reality / concurrency boundary
 ACTIVE:   G7.3 Project-control Memory — D-GATE
-NEXT:     G8 End-to-end dogfood + release convergence
+AFTER G7 CONVERGENCE:
+          G8 End-to-end dogfood + release convergence
 BLOCKED FROM BUNDLE CODING:
           Roadmap / Decision / Memory / Context Capsule / Project Acceptance /
           Observability / leases-fencing may not be implemented as one

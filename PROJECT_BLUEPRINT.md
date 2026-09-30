@@ -496,22 +496,13 @@ If code or another document contradicts these invariants, that contradiction mus
 
 ## 16. Current implementation boundary
 
-This blueprint intentionally separates **direction** from **implementation status**.
+This blueprint defines direction, not a rolling implementation inventory.
 
-At the current controller-v0.1 stage, several concepts exist only partially or are reserved for later rounds. In particular:
+For current bounded implementations and remaining gaps, read `PROJECT_ARCHITECTURE.md` and its referenced Evidence. For authorized work, read `ROADMAP.md`. G0–G6, G7.1 Project Acceptance and G7.2 Decision have recorded completion evidence; G7.3 Project-control Memory remains a D-GATE.
 
-- Project / Milestone / Goal / Task lifecycle exists in prototype form.
-- Task and parent Acceptance flows exist in prototype form.
-- Run / Attempt / Evidence / Verification and reconciliation exist in prototype form.
-- durable Approval exists in prototype form.
-- COMMAND approval target is reserved but intentionally unsupported until a durable Command model exists.
-- Effect Ledger is not yet implemented.
-- Policy is architectural, not yet a complete runtime-enforced policy engine.
-- Runtime adapters are still prototype-level and must remain replaceable.
-- Roadmap is architectural and not yet a complete lifecycle domain.
-- Project-level Acceptance is not implemented.
+COMMAND-target Approval remains intentionally unsupported despite durable Command now existing: the accepted Policy boundary binds Approval to the underlying Project/Task action. Durable identity alone does not authorize this target.
 
-The detailed “what exists now” view belongs in `PROJECT_ARCHITECTURE.md`, after a repository reality audit.
+Prototype completion does not imply production readiness or full implementation of every Blueprint concept.
 
 ---
 
@@ -584,7 +575,9 @@ Fail closed is preferred to silently pretending the architecture is more complet
 
 ---
 
-## 20. Immediate governance objective
+## 20. Initial governance objective — completed in G0
+
+The following records the original governance entry requirements, not the current next phase. Current work is governed by `ROADMAP.md`:
 
 Before the next major control-plane feature:
 

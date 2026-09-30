@@ -10,9 +10,9 @@ G7 candidates must be classified and advanced independently.
 
 | Candidate | Class | Why | Dependency / next action |
 |---|---|---|---|
-| Project-level Acceptance | D → first | `PROJECT` is a declared Acceptance target, but Project has no pinned contract fields or acceptance lifecycle. Parent acceptance precedent exists, but Project semantics are not frozen. | Focused acceptance-lineage review + ADR-0006 before code. |
-| Decision | D | Schema exists, but create/supersede/revoke authority, versioning and relationship to human direction are not fully settled. | ADR after Project Acceptance. |
-| Project-control Memory | D | Schema/truth hierarchy/provenance exist, but promotion, invalidation, supersession and retrieval authority are not settled. | Depends on Decision semantics. |
+| Project-level Acceptance | D → B → COMPLETE (G7.1) | Optional pinned PROJECT contracts and aggregate Evidence/Verification are implemented. | ADR-0006; `PROJECT_ACCEPTANCE_G7_1_EVIDENCE.md`. |
+| Decision | D → B → COMPLETE (G7.2) | Durable authority, provenance, immutable meaning and supersede/revoke lifecycle are implemented. | ADR-0007; `DECISION_G7_2_EVIDENCE.md`. |
+| Project-control Memory | D — ACTIVE G7.3 | Schema/truth hierarchy/provenance exist, but promotion, invalidation, supersession and retrieval authority are not settled. | Decision dependency is satisfied; focused research + accepted ADR before Memory code. |
 | Context Capsule | D | Shape exists, but generation/freshness/expiry and exact authority of references are not frozen. | Depends on Decision + Memory + current Policy/Workspace/Runtime boundaries. |
 | Roadmap domain | D | Basic object schema exists, but human authority, activation, Milestone membership, competing roadmaps and lifecycle reconciliation are underspecified. | Focused ADR; do not confuse this domain object with repository `ROADMAP.md`. |
 | Observability identity | D / hardening | Trace/Span/Correlation/Causation IDs are named, but propagation and persistence semantics are not defined. | Resolve only when needed for G8 auditability. |
@@ -38,9 +38,11 @@ G7.6 Observability hardening (only to G8 need)
 
 This order is dependency-driven, not a claim that every item must ship before dogfood.
 
-## Why Project Acceptance is first
+## Why Project Acceptance was first — historical G7 entry rationale
 
-The current hierarchy already has:
+The following records the pre-G7.1 gap, now closed by ADR-0006 and its implementation Evidence. It is not the current hierarchy limitation.
+
+At G7 entry the hierarchy had:
 
 ```text
 Task Acceptance
