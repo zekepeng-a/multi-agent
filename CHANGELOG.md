@@ -6,6 +6,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 
 ### Governance
 
+- **G7.3 Memory architecture gate resolved:** human accepted `ADR-0008-project-control-memory-boundary.md`, including all-required current sources, no STALE resurrection, INFERRED opt-in and PROJECT_STATE exact-version invalidation. The bounded gap is now B — Missing Implementation. This governance-only acceptance does not implement Memory or complete G7.3; implementation execution is reserved for a subsequent task.
+
 - **G7.2 Decision architecture gate resolved:** focused Agent Harness + ADR Tools evidence established proposal≠Decision, human direction precedence, mandatory provenance and append/supersede history. Accepted `ADR-0007-decision-authority-lifecycle.md`; bounded implementation is now allowed.
 
 - **G6 architecture gate resolved:** targeted Agent Harness, DSH Agent Team, ExcelManus and Earthwalker Agent OS review established a conservative Workspace rule: parallel writers require distinct isolated roots, write scopes must be enforced, and only the control plane integrates patches into shared reality. Accepted `ADR-0005-workspace-isolation-boundary.md`.
@@ -69,7 +71,7 @@ Commit `e7a0a7d07356980d5ba9c49be5ebfa06a1bebad8`:
 
 ### Known current gaps
 
-Current architecture/reality gaps are tracked in `PROJECT_ARCHITECTURE.md` and ordered in `ROADMAP.md`. G0–G6, G7.1 Project Acceptance and G7.2 Decision have completed their bounded gates. G7.3 Project-control Memory is the active D-GATE; Context Capsule and the Roadmap domain remain queued. Broader production/provider/distributed capabilities are not implied by those completions.
+Current architecture/reality gaps are tracked in `PROJECT_ARCHITECTURE.md` and ordered in `ROADMAP.md`. G0–G6, G7.1 Project Acceptance and G7.2 Decision have completed their bounded gates. G7.3 Project-control Memory is the active B — Missing Implementation boundary under accepted ADR-0008; no Memory implementation is claimed. Context Capsule and the Roadmap domain remain queued D-class work. Broader production/provider/distributed capabilities are not implied by those completions.
 
 ## V0.5 — Legacy DSH Multi-Agent Runtime
 

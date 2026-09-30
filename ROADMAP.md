@@ -436,7 +436,7 @@ Parallel execution now has real isolated writable roots, enforced scopes, confli
 
 # G7 — Long-horizon Project Control objects
 
-**Status: ACTIVE — G7.3 MEMORY D-GATE**
+**Status: ACTIVE — G7.3 MEMORY B — MISSING IMPLEMENTATION**
 
 This phase is intentionally decomposed. See `docs/architecture/G7_DECOMPOSITION.md`.
 
@@ -444,7 +444,7 @@ Current candidate sequence:
 
 1. G7.1 Project-level Acceptance — COMPLETE.
 2. G7.2 Decision — COMPLETE.
-3. G7.3 Project-control Memory — D, active.
+3. G7.3 Project-control Memory — D → B, active; architecture accepted, implementation missing.
 4. G7.4 Context Capsule — D, queued after Decision/Memory.
 5. G7.5 Roadmap domain — D, queued; distinct from repository `ROADMAP.md`.
 6. G7.6 Observability hardening — only to demonstrated G8 need.
@@ -456,21 +456,36 @@ G7.1 Project Acceptance and G7.2 Decision are complete.
 
 G7.2 evidence: `docs/architecture/DECISION_G7_2_EVIDENCE.md`.
 
-G7.3 Project-control Memory is now the only active design question.
+G7.3's architecture gate is resolved by accepted
+`docs/architecture/decisions/ADR-0008-project-control-memory-boundary.md`
+after bounded source review, two human review rounds and explicit human acceptance
+of the current boundary and conservative tradeoffs on 2026-09-30.
 
-Before Memory code, settle:
+The active gap is now **B — Missing Implementation**. The accepted boundary covers:
 
-- what may be promoted into Memory and by which authority;
-- source-ref validation/provenance requirements;
-- FACT / DECISION / CONSTRAINT / LESSON semantics;
-- VERIFIED / ACCEPTED / INFERRED confidence meaning;
-- ACTIVE / STALE / SUPERSEDED lifecycle;
-- how current reality invalidates/stales remembered facts;
-- whether Memory content is immutable and replacement uses new identity;
-- how Decision becomes a Memory source without increasing authority;
-- retrieval/query semantics needed by Context Capsule.
+- trusted-boundary proposal/validation/promotion authority, without a new Reviewer authentication system;
+- closed FACT / DECISION / CONSTRAINT / LESSON × confidence × source admission;
+- pinned, same-project necessary sources; all required sources must be CURRENT;
+- conservative PROJECT_STATE exact-version invalidation;
+- immutable meaning and new MemoryId on replacement;
+- ACTIVE → STALE; ACTIVE/STALE → SUPERSEDED; no STALE resurrection;
+- source invalidation versus human withdrawal reasons;
+- Decision authority remaining unchanged;
+- read-only current-use queries: project/lifecycle/source-validity filtering before ranking;
+- INFERRED excluded by default, with explicit opt-in; history reads kept separate;
+- store consistency and independent reality observation pins/times, without cross-boundary atomicity;
+- transactional state/events/replay, optimistic concurrency, backend parity and restart proof.
 
-Focused source review + ADR required before implementation.
+Architecture-level implementation permission is now open only inside ADR-0008.
+The current human instruction authorizes architecture acceptance and governance
+migration only; do not start Memory code in this task. A subsequent implementation
+task may execute this B-class boundary without reopening the settled D questions.
+
+G7.3 is not COMPLETE. Its implementation exit requires ADR-0008's verification
+criteria, current code/tests/Git evidence, full Node 22 CI with zero skips,
+independent review and a subsequent evidenced ROADMAP update.
+G7.4 Context Capsule and G7.5 Roadmap domain remain queued D-class work.
+No bundle implementation, runtime-memory migration or broader research is authorized.
 
 ## Exit gate
 
@@ -518,7 +533,8 @@ COMPLETE: G3 External Effect + reconciliation boundary
 COMPLETE: G4 Policy / authorization composition
 COMPLETE: G5 Real Runtime Adapter boundary
 COMPLETE: G6 Workspace / Reality / concurrency boundary
-ACTIVE:   G7.3 Project-control Memory — D-GATE
+ACTIVE:   G7.3 Project-control Memory — B / Missing Implementation
+          ADR-0008 ACCEPTED; architecture permission open, no implementation yet
 AFTER G7 CONVERGENCE:
           G8 End-to-end dogfood + release convergence
 BLOCKED FROM BUNDLE CODING:

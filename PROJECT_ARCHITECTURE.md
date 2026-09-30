@@ -84,7 +84,7 @@ These labels describe the initial baseline plus the evidenced updates recorded b
 | Effect | IMPLEMENTED / PARTIAL | Durable Effect ledger now exists with REQUESTED/DISPATCHED/SUCCEEDED/FAILED_NO_EFFECT/UNKNOWN semantics, MemoryStore/SQLite persistence, fake driver seam, idempotency/replay handling, typed reconciliation, and real restart proof for orphaned DISPATCHED state. Real provider/runtime integrations remain future work. |
 | Event | IMPLEMENTED | Append-oriented events are persisted with authoritative mutations and survive SQLite restart. Event is kept distinct from State. |
 | Decision | IMPLEMENTED | Durable Project Decision exists with HUMAN/CONTROL_PLANE authority, mandatory provenance, immutable meaning, ACTIVE→SUPERSEDED/REVOKED lifecycle, atomic supersession lineage, attributable revocation, optimistic concurrency, MemoryStore/SQLite persistence and restart proof. Runtime/model proposals are not Decision authority. |
-| Project-control Memory | MISSING | The legacy runtime has derived memory machinery, but the Blueprint's source-referenced Project Control memory model is not implemented. |
+| Project-control Memory | MISSING / B — Missing Implementation | ADR-0008 is ACCEPTED and settles promotion, provenance, type/confidence/source admission, invalidation, new-id supersession and current/history queries. Architecture gate is resolved; Project-control Memory code and exit evidence are still absent. Legacy derived memory is a separate runtime subsystem. |
 | Context Capsule | DOCUMENTED_ONLY | Defined conceptually; no Project Control implementation assembles or persists bounded capsules. |
 | Runtime Adapter | IMPLEMENTED / PARTIAL | Normalized capability-shaped Runtime Adapter contract now exists. FakeRuntime migrated, LocalProcessRuntimeAdapter executes real child processes in CI, and DshWorkflowRuntimeAdapter binds the current DSH Workflow seam through injected workflowEngine. RuntimeRef persists on Attempt and survives restart while remaining distinct from Run/Attempt identity. G6 separately implements bounded local Workspace/isolation semantics; runtime-adapter capability alone does not establish write isolation. |
 | Workspace | IMPLEMENTED / PARTIAL | Durable Workspace identity now exists with SHARED/ISOLATED kind, READ_ONLY/WRITE access, MemoryStore/SQLite persistence, optimistic versioning, deterministic revision digests, enforced write scopes, conflict-safe local overlay integration, deterministic integration order and restart proof. Git-worktree/container providers and distributed coordination remain outside current scope. |
@@ -219,7 +219,7 @@ G6 now implements a bounded local WorkspaceManager: durable Workspace identity, 
 
 ### 7.5 Long-horizon project semantics
 
-Roadmap, Project-control Memory and Context Capsule remain absent or design-only. Project-level Acceptance (G7.1) and durable Decision (G7.2) are implemented within their accepted ADR boundaries.
+Roadmap, Project-control Memory and Context Capsule remain absent or design-only. Project-control Memory's architecture is now accepted under ADR-0008 (B — Missing Implementation); Context Capsule remains a separately queued D-class gap. Project-level Acceptance (G7.1) and durable Decision (G7.2) are implemented within their accepted ADR boundaries.
 
 ## 8. Current conflicts and documentation drift
 

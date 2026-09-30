@@ -1,6 +1,6 @@
 # ADR-0008 — Project-control Memory promotion, validity and lifecycle
 
-Status: PROPOSED
+Status: ACCEPTED
 Date: 2026-09-30
 Roadmap phase: G7.3 — Project-control Memory
 Related invariants: I-02, I-09, I-10, I-12, I-14, I-20, I-21, I-23, I-24, I-25, I-27, I-28, I-34, I-35, I-38, I-45
@@ -15,22 +15,26 @@ Inputs are `PROJECT_BLUEPRINT.md` §§5–8, 12–15;
 `ROADMAP.md` G7.3; ADR-0007; `PERSISTENCE_BOUNDARY.md` §§2–4, 8–12;
 and the bounded external source review described below.
 
-G7.2 supplies durable Decisions. G7.3 still lacks promotion authority, confidence
-meaning, source validation, invalidation, replacement and query semantics.
-The canonical vocabulary exists; its Memory authority matrix is partly proposed.
+At design entry, G7.2 supplied durable Decisions while G7.3 lacked settled
+promotion authority, confidence meaning, source validation, invalidation,
+replacement and query semantics. The canonical vocabulary existed; its Memory
+authority matrix was partly proposed.
 
 Legacy V0.5 memory is a rebuildable runtime product under `.ai/memory`.
 Its planner decisions, keyword ranking, unknown provenance and in-place lesson
 aggregation are not the Project-control Memory contract.
 `project-control/memory-store.mjs` is an in-process storage backend, not this domain.
 
-This ADR proposes a minimal boundary. It does not amend frozen invariants.
-While PROPOSED it grants no implementation permission and does not close the
-ROADMAP D-GATE.
+Human acceptance on 2026-09-30 closes the G7.3 architecture D-GATE and advances
+the bounded Memory work to B — Missing Implementation. This ADR does not amend
+frozen invariants or claim implementation. The acceptance task authorizes only
+governance synchronization; Memory implementation must not begin in this task.
 
 ## Decision
 
-All choices below are proposed for explicit acceptance.
+The following boundary is accepted. The human explicitly accepted the conservative
+all-required-source rule, no STALE resurrection, INFERRED opt-in and PROJECT_STATE
+exact-version invalidation.
 
 ### 1. Memory is retained knowledge, not state or permission authority
 
@@ -480,14 +484,14 @@ Costs and risks:
 - PROJECT_STATE exact-version invalidation may suppress otherwise unchanged
   knowledge; this conservative v1 cost is intentional.
 
-Human acceptance must explicitly approve these tradeoffs and the confidence/type
-matrix, including the conservative exact-version strategy. They are candidate
-choices, not unspecified future semantics.
+The human accepted these tradeoffs and the type/confidence/source matrix on
+2026-09-30, including the conservative exact-version strategy. These are settled
+architecture choices, not implementation or completion evidence.
 
 ## Implementation boundary
 
-Only after explicit acceptance of this ADR, G7.3's settled boundary becomes
-**B — Missing Implementation**, subject to the repository's active ROADMAP gate:
+With explicit human acceptance, G7.3's settled boundary is now
+**B — Missing Implementation**, within the active ROADMAP phase:
 
 - Memory vocabulary/record and immutable validation metadata;
 - bounded candidate-validation and control-plane promotion operations;
@@ -498,8 +502,11 @@ Only after explicit acceptance of this ADR, G7.3's settled boundary becomes
 - shared-store/MemoryStore/SQLite parity;
 - version/CAS, events, intent-bound mutation replay and restart tests.
 
-PROPOSED status does not authorize any of those changes. This file alone neither
-changes ROADMAP nor claims implementation/completion.
+The synchronized ROADMAP records architecture-level permission for this bounded
+implementation. The current human instruction authorizes architecture acceptance
+and governance migration only: do not begin Memory implementation in this task.
+A subsequent implementation task may execute the accepted B-class boundary.
+No Memory code, tests or exit evidence are claimed by this acceptance.
 
 Non-goals:
 - G7.4 Context Capsule generation, assembly, budgets, expiry or runtime injection;

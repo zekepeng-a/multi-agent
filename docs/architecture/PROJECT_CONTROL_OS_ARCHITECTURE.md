@@ -843,32 +843,104 @@ See `docs/architecture/decisions/ADR-0007-decision-authority-lifecycle.md`.
 
 ## 5.13 Memory
 
-Purpose: promoted project knowledge, not chat history.
+**Architecture boundary: ACCEPTED — ADR-0008.**
+**Implementation: MISSING (G7.3 B); this acceptance does not claim executable support.**
 
-Types:
+Purpose: promoted, project-scoped knowledge, not chat history, accepted state or
+permission authority. The truth hierarchy and I-20/I-21 remain unchanged.
 
-```text
-FACT
-DECISION
-CONSTRAINT
-LESSON
-```
-
-Schema:
+Core record vocabulary:
 
 ```yaml
 id: MemoryId
+version: integer
 project_id: ProjectId
 type: FACT | DECISION | CONSTRAINT | LESSON
 content: string
-source_refs: object[]
+source_refs: object[]  # necessary support only, project-bound and pinned
 confidence: VERIFIED | ACCEPTED | INFERRED
 status: ACTIVE | STALE | SUPERSEDED
+applicability: object
+validation_attestation: object
+promoted_by: object
+supersedes_memory_id: MemoryId?
+superseded_by_memory_id: MemoryId?
+staleness: object?  # SOURCE_INVALIDATION | HUMAN_WITHDRAWAL, actor/reason/observations
 created_at: timestamp
 updated_at: timestamp
 ```
 
-Memory requires provenance.
+### Authority and admission
+
+HUMAN, CONTROL_PLANE or Runtime/Agent may propose; only CONTROL_PLANE promotes
+after current source checks and an exact, attributable validation attestation.
+Semantic validation uses HUMAN or a Reviewer assignment established by the
+existing trusted control boundary and traceable identity/task relationship.
+Self-reported roles do not confer permission. CONTROL_PLANE may validate only
+deterministic exact field renderings, not free-form inference.
+No Reviewer identity/authentication subsystem is added.
+
+| Type | Confidence | Required source meaning |
+|---|---|---|
+| DECISION | ACCEPTED | Faithful restatement of exactly one corresponding ACTIVE Decision. |
+| CONSTRAINT | ACCEPTED | Explicit constraint in exactly one corresponding ACTIVE Decision; no new direction. |
+| FACT | ACCEPTED | Contract-bound accepted PROJECT_STATE with current Evidence/Verification proof; Decision is not an admissible supporting source. |
+| FACT | VERIFIED | Current Evidence and matching Verification support the exact scoped assertion. |
+| FACT | INFERRED | Explicit interpretation from Evidence, Verification and/or Project State; not verified/accepted conclusion. |
+| LESSON | VERIFIED | Current Evidence and matching Verification support the exact demonstrated pattern. |
+| LESSON | INFERRED | Explicit scoped generalization supported by necessary control sources. |
+
+Other combinations are refused. Confidence denotes source support, not project
+Acceptance or increased authority. Decision summarized in Memory retains its
+original authority; it cannot be revoked, superseded or upgraded through Memory.
+
+### Sources and lifecycle
+
+Only DECISION, EVIDENCE, VERIFICATION and PROJECT_STATE are direct source families.
+Refs require same-project ownership, concrete version/revision or immutable
+fingerprint, claimed scope and current lineage. All refs are necessary support;
+optional/contextual refs, quorum rules and claim graphs are excluded.
+PROJECT_STATE exact-version invalidation is deliberately conservative in v1.
+Evidence uses CANDIDATE/VERIFIED/ACCEPTED/STALE/SUPERSEDED, not REJECTED;
+Candidate Evidence cannot acquire stronger status through Memory.
+
+Source resolver results CURRENT/INVALID/UNRESOLVED are separate from Memory status.
+INVALID/UNRESOLVED exclude current use; only known INVALID is reconciled to STALE.
+Human withdrawal is separately attributable and does not assert source invalidity.
+
+Meaning, sources, confidence and validation/promotion provenance are immutable.
+
+```text
+promotion → ACTIVE
+ACTIVE → STALE
+ACTIVE or STALE → SUPERSEDED + new ACTIVE MemoryId, atomically
+```
+
+STALE never returns to ACTIVE; re-validation creates a new MemoryId.
+Source replacement alone does not manufacture replacement Memory.
+Historical meaning and replacement lineage remain readable.
+
+### Queries and persistence
+
+Current-use reads require ProjectId, recorded ACTIVE status and all sources CURRENT
+before type/confidence selection, relevance ordering and result limiting.
+INFERRED is excluded unless explicitly opted in. History reads are explicit and
+never merged into current results. Reads do not change lifecycle/events/timestamps.
+
+Control Store may provide a consistent database snapshot; Current Reality is a
+separate observation with its own pin/time. No database/filesystem atomic snapshot
+or persistent validity after observation is claimed.
+
+Small versioned Memory records and validation provenance use existing shared-store
+semantics, optimistic CAS and mutation replay. State/events/replay commit together;
+new-id replacement links commit atomically. SQLite restart must preserve history
+and recompute eligibility from current sources. Large artifacts stay external.
+No new durable Command execution lifecycle, event sourcing or distributed lock
+is introduced.
+
+ADR-0008 is the precise accepted contract and implementation exit checklist.
+ROADMAP governs execution: this acceptance task is governance-only; G7.3 remains
+unimplemented B work. G7.4 Context Capsule is separately gated.
 
 ---
 
@@ -2024,7 +2096,7 @@ This is why UNKNOWN is necessary.
 | Evidence | Runtime | Immutable after creation | Reviewer | Acceptance | Control | Re-verify |
 | Verification | Reviewer/Verifier | Append-only | — | Acceptance | Control | Re-run |
 | Decision | Human | Human | — | Human | Human | Human |
-| Memory | Control/Promotion | Control | Source verification | Control | Control | Re-promote |
+| Memory | Control Plane after validation | Lifecycle only | ADR-0008 validation + source checks | Promotion, not project Acceptance | HUMAN/Control: STALE | New validated MemoryId |
 | ContextCapsule | Controller | Regenerate | — | — | Controller | Regenerate |
 | Effect | Controller | Effect Controller | Reconciler | — | Controller | Reconcile |
 | Command | Controller | Controller | Runtime result | — | Controller | Controller |
@@ -2033,6 +2105,8 @@ This is why UNKNOWN is necessary.
 This matrix is **PROPOSED**, not yet frozen. Its historical Human-only Decision
 row is superseded by the accepted authority rules in §5.12 and ADR-0007:
 HUMAN and CONTROL_PLANE may author Decisions within the stated authority limits.
+The Memory row is governed by accepted §5.13 and ADR-0008; other proposed rows
+are not made accepted by that Memory decision.
 
 ---
 
@@ -2464,8 +2538,9 @@ Never silently reinterpret a confirmed concept.
 # 26. Initial architecture next-step plan — historical
 
 The sequence below records the early design plan, not the current work boundary.
-Current authorized work is defined by `ROADMAP.md`: G7.3 Memory remains a D-GATE
-requiring focused research and an accepted ADR before implementation.
+Current authorized work is defined by `ROADMAP.md`: ADR-0008 has resolved G7.3's
+architecture D-GATE; Memory is B — Missing Implementation. This acceptance task
+is governance-only and does not begin Memory implementation.
 
 At that design stage, the next architecture artifact was:
 
@@ -2507,7 +2582,7 @@ This matrix defines who may create, modify, execute, verify, and accept the cano
 | Approval | **authoritative decision** | record/enforce, never manufacture | request only | read | read |
 | Acceptance | direct high-level override | authoritative transition | cannot accept | verify | evaluate |
 | Decision | authoritative direction | record | propose | advise | read |
-| Memory | curate | maintain | propose with provenance | validate | consume |
+| Memory | validate/withdraw through control | source-check/promote/lifecycle | propose; cannot self-authorize validation | validate only through trusted assignment | read; Memory cannot authorize Acceptance |
 | Effect | approve high-risk | authorize/reconcile | request/execute | verify result | read |
 | Command | approve where required | issue/authorize | execute | read | read |
 | Event | read | append/project | emit runtime facts | read | read |
@@ -2592,7 +2667,7 @@ Only the Control Plane may mutate authoritative project state. Agents and runtim
 
 ### Matrix status
 
-This matrix remains PROPOSED until validated against executable prototypes and external implementations.
+This matrix remains PROPOSED until validated against executable prototypes and external implementations. Its Memory row is refined by accepted §5.13 / ADR-0008; that acceptance does not freeze the remaining proposed matrix.
 
 
 ---
