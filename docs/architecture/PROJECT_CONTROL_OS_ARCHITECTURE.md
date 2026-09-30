@@ -2517,3 +2517,47 @@ Only the Control Plane may mutate authoritative project state. Agents and runtim
 ### Matrix status
 
 This matrix remains PROPOSED until validated against executable prototypes and external implementations.
+
+
+---
+
+# 7. Runtime Adapter
+
+ADR-0004 defines the Project Control execution seam.
+
+Mandatory semantics:
+
+```text
+capabilities()
+start()
+observe()
+collectResult()
+cancel()
+```
+
+Optional operations are capability-gated and fail loud when unsupported:
+
+```text
+resume()
+sendMessage()
+subscribeEvents()
+reconcile()
+pause()
+```
+
+Project Control owns RunId/AttemptId. Runtime-specific SessionId/WorkflowId/
+TeamId/process ids are carried only in an opaque RuntimeRef and never become
+Project State identity.
+
+Normalized RuntimeObservation is observation only. Normalized RuntimeResult is
+candidate execution output only. A COMPLETED result may feed Candidate Evidence
+through the Controller; runtime success does not itself produce Verification or
+Acceptance.
+
+G5 implementation targets:
+
+- LocalProcessRuntimeAdapter — real OS-process execution proof in CI;
+- DshWorkflowRuntimeAdapter — adapter over DSH `workflowEngine.start()`,
+  WorkflowRun.result/cancel/dispose, with resume/pause reported unsupported.
+
+See `docs/architecture/decisions/ADR-0004-runtime-adapter-boundary.md`.
