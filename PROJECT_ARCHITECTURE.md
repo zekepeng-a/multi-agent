@@ -86,8 +86,8 @@ These labels describe the baseline commit above only.
 | Project-control Memory | MISSING | The legacy runtime has derived memory machinery, but the Blueprint's source-referenced Project Control memory model is not implemented. |
 | Context Capsule | DOCUMENTED_ONLY | Defined conceptually; no Project Control implementation assembles or persists bounded capsules. |
 | Runtime Adapter | IMPLEMENTED / PARTIAL | Normalized capability-shaped Runtime Adapter contract now exists. FakeRuntime migrated, LocalProcessRuntimeAdapter executes real child processes in CI, and DshWorkflowRuntimeAdapter binds the current DSH Workflow seam through injected workflowEngine. RuntimeRef persists on Attempt and survives restart while remaining distinct from Run/Attempt identity. Workspace/isolation semantics remain G6. |
-| Workspace | DOCUMENTED_ONLY / G6 READY | ADR-0005 now settles durable Workspace identity, SHARED vs ISOLATED semantics, enforced write scopes, deterministic revision digests, conflict-safe integration and optional Evidence workspace lineage. No Workspace implementation exists yet. |
-| Workspace isolation | DOCUMENTED_ONLY / G6 READY | G6 design now requires distinct writable roots for parallel writers and control-plane integration; DSH Team writeScopes remain advisory until enforced by Project Control. Implementation is pending. |
+| Workspace | IMPLEMENTED / PARTIAL | Durable Workspace identity now exists with SHARED/ISOLATED kind, READ_ONLY/WRITE access, MemoryStore/SQLite persistence, optimistic versioning, deterministic revision digests, enforced write scopes, conflict-safe local overlay integration, deterministic integration order and restart proof. Git-worktree/container providers and distributed coordination remain outside current scope. |
+| Workspace isolation | IMPLEMENTED / PARTIAL | Local WorkspaceManager gives parallel writers distinct roots, overlays reads over SHARED reality, records touched-path base digests, rejects out-of-scope/read-only/path-traversal writes, and detects integration conflicts before patch application. DSH Team writeScopes remain non-authoritative unless projected through this boundary. |
 | Optimistic concurrency | IMPLEMENTED | Version-aware updates reject stale expected versions; persistence tests cover rollback/conflict behavior. |
 | Command idempotency key | IMPLEMENTED | Durable command-id replay/operation binding exists in store semantics, but this is not a durable Command domain. |
 | Parent relationship authority | IMPLEMENTED | Child-side links are authoritative; parent cached ID lists are not used as relationship truth. |
@@ -215,7 +215,7 @@ Current reality does **not** yet include:
 
 ### 7.4 Reality/workspace control
 
-Workspace identity, isolation, write scope, revision observation, deterministic integration and concurrent-write safety are architecturally defined but not enforced by Project Control code.
+G6 now implements a bounded local WorkspaceManager: durable Workspace identity, SHARED/ISOLATED roots, enforced write scopes, deterministic revision observation, conflict-safe sequential integration, and optional Workspace-bound Evidence lineage. This proves the local control boundary; distributed leases/fencing, Git-worktree/container providers, and multi-coordinator ownership remain unimplemented.
 
 ### 7.5 Long-horizon project semantics
 
@@ -279,7 +279,8 @@ This file does not claim:
 - that the current persistence schema is production-migration-ready;
 - that fake runtime tests prove real external-runtime behavior;
 - that DSH Workflow/Team integration exists;
-- that Command, Effect, Policy, Workspace, Roadmap, Decision, Project-control Memory or Context Capsule are implemented because they appear in architecture documents.
+- that Roadmap, Decision, Project-control Memory or Context Capsule are implemented because they appear in architecture documents;
+- that current local Workspace isolation proves distributed multi-coordinator safety.
 
 ## 11. Change rule
 
