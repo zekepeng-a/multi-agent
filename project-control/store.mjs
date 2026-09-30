@@ -1239,10 +1239,10 @@ export class ProjectControlStore {
           reconciliation: {
             status: status === EffectStatus.UNKNOWN
               ? EffectReconciliationStatus.REQUIRED
-              : EffectReconciliationStatus.RESOLVED,
+              : EffectReconciliationStatus.NOT_REQUIRED,
             lastObservation: outcome,
             observationRef,
-            reconciledAt: status === EffectStatus.UNKNOWN ? null : now(),
+            reconciledAt: null,
           },
         };
       },
@@ -1900,9 +1900,11 @@ export class ProjectControlStore {
     }
     if (
       [EffectStatus.SUCCEEDED, EffectStatus.FAILED_NO_EFFECT].includes(effect.status) &&
-      rs !== EffectReconciliationStatus.RESOLVED
+      ![EffectReconciliationStatus.NOT_REQUIRED, EffectReconciliationStatus.RESOLVED].includes(rs)
     ) {
-      throw new InvariantError(`effect ${effect.id} terminal state must have resolved reconciliation`);
+      throw new InvariantError(
+        `effect ${effect.id} terminal state must be directly observed or reconciliation-resolved`,
+      );
     }
   }
 
