@@ -1109,3 +1109,132 @@ Evidence and Acceptance.
 No new top-level layer is needed. G5 can be resolved by a capability-shaped
 Runtime Adapter boundary.
 
+---
+
+## 24. G6 focused workspace/concurrency pass — isolation is the safety boundary
+
+This pass is opened only by the G6 D-class gap. Broad archaeology remains closed.
+
+### Agent Harness — isolation or sequential writers
+
+Source:
+- Repository: `0xenzyme/agent-harness`
+- `plugins/agent-harness/hosts/cursor/execution.md`
+
+Observed host contract:
+
+- isolation maps to a locked worktree or separate agent cwd;
+- when isolation is unavailable, the fallback is **sequential writers only**;
+- authorization to delegate a worker does not imply authorization to create a
+  workspace/worktree.
+
+Transferable boundary:
+
+> Parallel execution is not equivalent to parallel writing. Parallel writers need a concrete isolation boundary; without one, write work is sequential.
+
+### DeepSeek Harness Agent Team — writeScopes are advisory, not authority
+
+Source:
+- Repository: `deepseek-ai/deepseek-harness`
+- `docs/subsystems/agent-team.md`
+- `packages/experimental/agent-team/README.md`
+
+Observed implementation:
+
+- Team tasks persist normalized workspace-relative `writeScopes`;
+- views warn when in-progress tasks overlap;
+- overlap warnings do **not** block claim and do **not** authorize writes;
+- Team task revision protects Team task state, not filesystem writes.
+
+Transferable boundary:
+
+> Runtime write-scope metadata can be useful planning information, but advisory overlap warnings are not a concurrency-control proof.
+
+Therefore Project Control must not treat DSH Team `writeScopes` as satisfying
+I-22 by themselves.
+
+### ExcelManus — fail before publishing conflicting parallel mutation
+
+Source:
+- Repository: `kilolonion/excelmanus`
+- `tests/test_subagent_runtime.py`
+
+Observed tests:
+
+- parallel mutating subagents are rejected with `PARALLEL_CONFLICT` before
+  publication;
+- a mixed write + read-only parallel request is rejected by the conservative
+  scheduler in the tested configuration;
+- multiple read-only explorers may read the same file concurrently.
+
+Transferable boundary:
+
+> A safe scheduler may conservatively reject a parallel plan before work begins; "we will notice later" is not the only valid conflict policy.
+
+### Earthwalker Agent OS — isolated overlays + deterministic integration
+
+Source:
+- Repository: `earthwalker17/agent-os`
+- `README.md`
+- `ARCHITECTURE.md`
+- `backend/execution/patch_workspace.py`
+- `backend/execution/integration.py`
+
+Observed implementation:
+
+- each parallel write task gets a private patch workspace;
+- reads fall through to the shared repo while writes land only in the overlay;
+- shell/Git/global executors are blocked inside the patch workspace;
+- after the wave settles, one deterministic integration path applies overlays to
+  the shared repo;
+- identical same-path output can de-duplicate;
+- different same-path output is surfaced as a conflict rather than silently
+  overwritten;
+- the losing patch remains inspectable;
+- the coordinator is the sole writer of shared run/plan artifacts.
+
+Transferable boundaries:
+
+1. private write workspaces can make parallel writers safe without pretending paths never overlap;
+2. integration is a distinct authority step after execution;
+3. conflicts are durable/reportable outcomes, not prompt advice;
+4. shared/global executors should not be freely available from isolated write sandboxes.
+
+### G6 synthesis
+
+The evidence supports a conservative first Project Control rule:
+
+```text
+parallel readers
+    → may share one observed revision
+
+single writer
+    → may use the authoritative shared workspace
+
+parallel writers
+    → each MUST receive a distinct isolated workspace
+       and integration MUST occur through one control-plane owner
+```
+
+Declared `writeScopes` are not enough to prove non-overlap unless the workspace
+boundary actually enforces those scopes.
+
+The Workspace object must therefore carry:
+
+- durable WorkspaceId;
+- base reality revision;
+- current/produced revision;
+- isolation kind;
+- owner Run/Attempt;
+- enforced write scopes;
+- lifecycle/integration state;
+- integration/conflict result.
+
+Candidate execution output from an isolated workspace is not proof that the
+authoritative shared workspace changed. Acceptance of a code/file outcome must
+bind to the revision that is current **after integration**, not merely to a patch
+workspace revision.
+
+No new top-level layer is required. G6 is a Reality-layer object + Control-layer
+integration boundary.
+
