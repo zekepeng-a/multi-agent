@@ -11,6 +11,8 @@
 //        node pc-persist-child.mjs parent-read <dbfile> <json ids from the parent phase>
 //        node pc-persist-child.mjs approval <dbfile>
 //        node pc-persist-child.mjs approval-read <dbfile> <json ids from the approval phase>
+//        node pc-persist-child.mjs command <dbfile>
+//        node pc-persist-child.mjs command-read <dbfile> <json ids from the command phase>
 
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -29,6 +31,8 @@ const {
   ApprovalDecision,
   ApprovalError,
   ApprovalTargetType,
+  CommandStatus,
+  CommandTargetType,
   GoalStatus,
   RiskLevel,
   TaskStatus,
@@ -300,6 +304,91 @@ try {
       staleReason,
       capabilityReason,
       eventCount: store.getEvents().length,
+    };
+  } else if (mode === "command") {
+    store.seedProject(createProject({ id: "project-1", name: "Command restart" }));
+    store.seedAcceptance(createAcceptance({
+      id: "acceptance-1",
+      targetId: "task-1",
+      criteria: [{ id: "build", type: "BUILD", required: true }],
+    }));
+    store.seedTask(createTask({
+      id: "task-1",
+      projectId: "project-1",
+      title: "command-restart task",
+      acceptanceId: "acceptance-1",
+      acceptanceVersion: 1,
+    }));
+
+    const controller = controllerFor(store);
+    const command = controller.createCommand({
+      id: "command-1",
+      targetType: CommandTargetType.TASK,
+      targetId: "task-1",
+      action: "deploy",
+      capability: "deploy.production",
+      scope: "production",
+      riskLevel: RiskLevel.HIGH,
+      requestedBy: "requester-1",
+      expectedVersion: 1,
+      parameters: { environment: "production" },
+      idempotencyKey: "deploy:task-1:v1",
+    }, { mutationId: "child-create-command" });
+
+    const pending = store.requestApproval({
+      id: "approval-command",
+      targetType: ApprovalTargetType.TASK,
+      targetId: "task-1",
+      action: "deploy",
+      capability: "deploy.production",
+      scope: "production",
+      riskLevel: RiskLevel.HIGH,
+      requestedBy: "requester-1",
+      commandId: command.id,
+    }, { commandId: "child-request-command-approval" });
+    store.decideApproval(pending.id, pending.version, {
+      decision: ApprovalDecision.APPROVE,
+      decidedBy: "alice",
+    }, { commandId: "child-approve-command" });
+
+    const authorized = controller.authorizeCommand(command.id, command.version, {
+      approvalId: pending.id,
+      mutationId: "child-authorize-command",
+    });
+
+    payload = {
+      status: authorized.command.status,
+      version: authorized.command.version,
+      targetVersion: authorized.command.targetVersion,
+      action: authorized.command.action,
+      capability: authorized.command.capability,
+      scope: authorized.command.scope,
+      eventCount: store.getEvents().length,
+      ids: { commandId: command.id, approvalId: pending.id },
+    };
+  } else if (mode === "command-read") {
+    const ids = JSON.parse(idsJson ?? "{}");
+    const command = store.getControlCommand(ids.commandId);
+    const replay = store.authorizeControlCommand(
+      ids.commandId,
+      1,
+      { approvalId: ids.approvalId },
+      { mutationId: "child-authorize-command" },
+    );
+    payload = {
+      status: command.status,
+      version: command.version,
+      targetVersion: command.targetVersion,
+      action: command.action,
+      capability: command.capability,
+      scope: command.scope,
+      idempotencyKey: command.idempotencyKey,
+      replayAction: replay.action,
+      replayVersion: replay.command.version,
+      authorizedEvents: store.getEvents().filter((event) => event.type === "command.authorized").length,
+      createdEvents: store.getEvents().filter((event) => event.type === "command.created").length,
+      eventCount: store.getEvents().length,
+      isAuthorized: command.status === CommandStatus.AUTHORIZED,
     };
   } else {
     throw new Error(`unknown mode: ${mode}`);
