@@ -30,6 +30,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 
 ### Project Control prototype
 
+- **G7.2 Project Decision completed.** Added durable Decision authority (HUMAN/CONTROL_PLANE only), mandatory provenance, immutable decision meaning, ACTIVE→SUPERSEDED/REVOKED lifecycle, supersession lineage, attributable revocation and SQLite restart proof. Verified CI: 533/533, 0 skipped on Node 22.23.3.
+
 - **G7.1 Project-level Acceptance completed.** Project now supports optional pinned PROJECT Acceptance revisions, deterministic Milestone aggregate Evidence, stale-evidence re-proof, PASS Verification gating and atomic Project COMPLETED + contract PASSED. Contract-free aggregate completion remains compatible. Verified CI: 518/518, 0 skipped on Node 22.23.2.
 
 - **G6 Workspace / Reality / concurrency completed for the bounded local provider.** Added durable Workspace identity, SHARED/ISOLATED local roots, enforced write scopes, deterministic revision digests, touched-path conflict detection, deterministic integration order, optional Evidence workspace lineage and SQLite restart proof. Verified CI at the G6 test head: 501/501, 0 skipped on Node 22.23.2. See `docs/architecture/WORKSPACE_G6_EVIDENCE.md`.
