@@ -13,6 +13,8 @@
 //        node pc-persist-child.mjs approval-read <dbfile> <json ids from the approval phase>
 //        node pc-persist-child.mjs command <dbfile>
 //        node pc-persist-child.mjs command-read <dbfile> <json ids from the command phase>
+//        node pc-persist-child.mjs effect <dbfile>
+//        node pc-persist-child.mjs effect-read <dbfile> <json ids from the effect phase>
 
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -26,6 +28,7 @@ const { Collection } = await load("store.mjs");
 const { Controller } = await load("controller.mjs");
 const { FakeRuntime } = await load("fake-runtime.mjs");
 const { FakeVerifier } = await load("fake-verifier.mjs");
+const { FakeEffectDriver } = await load("fake-effect-driver.mjs");
 const {
   AcceptanceTargetType,
   ApprovalDecision,
@@ -33,6 +36,8 @@ const {
   ApprovalTargetType,
   CommandStatus,
   CommandTargetType,
+  EffectObservation,
+  EffectStatus,
   GoalStatus,
   RiskLevel,
   TaskStatus,
@@ -389,6 +394,99 @@ try {
       createdEvents: store.getEvents().filter((event) => event.type === "command.created").length,
       eventCount: store.getEvents().length,
       isAuthorized: command.status === CommandStatus.AUTHORIZED,
+    };
+  } else if (mode === "effect") {
+    store.seedProject(createProject({ id: "project-1", name: "Effect restart" }));
+    store.seedAcceptance(createAcceptance({
+      id: "acceptance-1",
+      targetId: "task-1",
+      criteria: [{ id: "build", type: "BUILD", required: true }],
+    }));
+    store.seedTask(createTask({
+      id: "task-1",
+      projectId: "project-1",
+      title: "effect-restart task",
+      acceptanceId: "acceptance-1",
+      acceptanceVersion: 1,
+    }));
+
+    const command = store.createControlCommand({
+      id: "command-effect",
+      targetType: CommandTargetType.TASK,
+      targetId: "task-1",
+      action: "deploy",
+      capability: "deploy.production",
+      scope: "production",
+      riskLevel: RiskLevel.HIGH,
+      requestedBy: "requester-1",
+      expectedVersion: 1,
+      idempotencyKey: "deploy:task-1:v1:effect",
+    });
+    const pending = store.requestApproval({
+      id: "approval-effect",
+      targetType: ApprovalTargetType.TASK,
+      targetId: "task-1",
+      action: "deploy",
+      capability: "deploy.production",
+      scope: "production",
+      riskLevel: RiskLevel.HIGH,
+      requestedBy: "requester-1",
+      commandId: command.id,
+    });
+    store.decideApproval(pending.id, pending.version, {
+      decision: ApprovalDecision.APPROVE,
+      decidedBy: "alice",
+    });
+    const authorized = store.authorizeControlCommand(command.id, command.version, { approvalId: pending.id }).command;
+
+    // Persist DISPATCHED and then EXIT THE PROCESS without recording a result.
+    // This models the crash window after the external boundary may have been
+    // crossed and before local completion was durably observed.
+    let effect = store.createEffectFromCommand({
+      id: "effect-1",
+      commandId: authorized.id,
+      destination: "production",
+    });
+    effect = store.markEffectDispatched(effect.id, effect.version);
+
+    payload = {
+      status: effect.status,
+      version: effect.version,
+      dispatchCount: effect.dispatchCount,
+      taskStatus: store.getTask("task-1").status,
+      evidenceCount: store.allRecords(Collection.EVIDENCE).length,
+      ids: { effectId: effect.id, commandId: authorized.id },
+    };
+  } else if (mode === "effect-read") {
+    const ids = JSON.parse(idsJson ?? "{}");
+    const before = store.getEffect(ids.effectId);
+    const driver = new FakeEffectDriver({
+      reconcileOutcome: EffectObservation.CONFIRMED_SUCCEEDED,
+    });
+    const controller = new Controller({
+      store,
+      runtime: new FakeRuntime({ mode: "success" }),
+      verifier: new FakeVerifier({}),
+      effectDriver: driver,
+    });
+
+    const resolved = await controller.reconcileEffect(before.id, before.version, {
+      mutationId: "child-effect-reconcile",
+    });
+
+    payload = {
+      beforeStatus: before.status,
+      status: resolved.status,
+      version: resolved.version,
+      dispatchCount: resolved.dispatchCount,
+      observationRef: resolved.reconciliation.observationRef,
+      receiptId: resolved.externalReceipt.receiptId,
+      driverDispatches: driver.dispatched.length,
+      driverReconciles: driver.reconciled.length,
+      taskStatus: store.getTask("task-1").status,
+      evidenceCount: store.allRecords(Collection.EVIDENCE).length,
+      reconciledEvents: store.getEvents().filter((event) => event.type === "effect.reconciled_succeeded").length,
+      isSucceeded: resolved.status === EffectStatus.SUCCEEDED,
     };
   } else {
     throw new Error(`unknown mode: ${mode}`);
