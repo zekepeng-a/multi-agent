@@ -26,6 +26,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 
 ### Project Control prototype
 
+- **G5 Runtime Adapter completed.** Added normalized capability-shaped runtime contracts, migrated FakeRuntime, added a real LocalProcessRuntimeAdapter and a DshWorkflowRuntimeAdapter over the public workflow seam, persisted opaque runtime refs on Attempts, and proved real-process execution plus restart identity separation. Full verified CI: 492/492, 0 skipped on Node 22.23.2.
+
 - **G4 Policy / Approval composition completed.** Added deterministic StaticPolicyEngine, immutable PolicyDecision audit facts, ALLOW/DENY/REQUIRE_APPROVAL composition, deny precedence, per-attempt policy re-evaluation, backend parity and cross-process persistence proof. Full verified CI: 484/484, 0 skipped on Node 22.23.2.
 
 - **G3 External Effect + reconciliation completed.** Added durable Effect records, persist-before-dispatch ordering, typed SUCCEEDED/FAILED_NO_EFFECT/UNKNOWN outcomes, fake effect driver, UNKNOWN retry prohibition, reconciliation with observation references, replay safety, and a real cross-process orphaned-DISPATCHED recovery proof. Full CI at the verified G3 head: 467/467, 0 skipped on Node 22.23.2.
