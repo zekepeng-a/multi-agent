@@ -2521,6 +2521,36 @@ This matrix remains PROPOSED until validated against executable prototypes and e
 
 ---
 
+# 6. Workspace / Reality Boundary
+
+ADR-0005 defines Workspace as a durable Reality-layer object.
+
+Core semantics:
+
+```text
+parallel readers → may share one observed SHARED revision
+single writer    → may use SHARED with exclusive ownership
+parallel writers → MUST use distinct ISOLATED workspaces
+```
+
+An ISOLATED workspace reads overlay-over-shared and writes only to its own root.
+`write_scopes` are enforced by the WorkspaceManager, not treated as advisory.
+
+Workspace `version` is control-record concurrency. Workspace `revision` is a
+deterministic identity for observed file reality. They are different concepts.
+
+Integration is a Control Plane action. It re-observes every touched path against
+the base observation and fails closed on conflict before claiming integration.
+An isolated patch revision is not authoritative shared reality.
+
+Workspace-bound Evidence may carry `workspace_id` +
+`workspace_revision`; acceptance-relevant code/file evidence must bind to a
+current integrated shared revision.
+
+See `docs/architecture/decisions/ADR-0005-workspace-isolation-boundary.md`.
+
+---
+
 # 7. Runtime Adapter
 
 ADR-0004 defines the Project Control execution seam.
