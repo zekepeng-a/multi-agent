@@ -822,43 +822,111 @@ Do not inject the entire project history into every agent context.
 
 ## 5.15 Effect
 
-Purpose: represent an external side effect and its reconciliation.
+Purpose: represent one durable logical external mutation and its uncertainty.
 
-Examples:
+ADR-0002 freezes the G3 safety boundary:
 
-- deploy
-- create GitHub PR
-- send message
-- modify external database
-- delete external resource
-- external API mutation
+```text
+AUTHORIZED Command
+  ↓
+Effect REQUESTED persisted
+  ↓
+Effect DISPATCHED persisted
+  ↓
+cross external-call boundary
+  ↓
+SUCCEEDED | FAILED_NO_EFFECT | UNKNOWN
+```
+
+Target schema:
 
 ```yaml
 id: EffectId
-project_id: ProjectId
-run_id: RunId
-requested_by: string
-capability: string
+version: integer
+project_id: ProjectId?
+command_id: CommandId
 action: string
+capability: string
 destination: string
 idempotency_key: string
 status:
   - REQUESTED
-  - AUTHORIZED
   - DISPATCHED
-  - UNKNOWN
   - SUCCEEDED
-  - FAILED
+  - FAILED_NO_EFFECT
+  - UNKNOWN
+dispatch_count: integer
 external_receipt:
   provider: string?
   receipt_id: string?
+  result_ref: string?
 reconciliation:
   status: NOT_REQUIRED | REQUIRED | IN_PROGRESS | RESOLVED
+  last_observation: CONFIRMED_SUCCEEDED | CONFIRMED_NO_EFFECT | UNKNOWN | null
+  observation_ref: string?
+  reconciled_at: timestamp?
 created_at: timestamp
 updated_at: timestamp
 ```
 
-UNKNOWN is a first-class state.
+### Meaning of DISPATCHED
+
+`DISPATCHED` does not mean success. It means Project Control has crossed (or
+committed to crossing) the external-call boundary and may no longer assume that
+nothing happened.
+
+If a process restarts with an Effect still DISPATCHED and no terminal observation,
+the safe interpretation is reconciliation-required, not retry.
+
+### Terminal meanings
+
+- `SUCCEEDED` — external success was positively observed.
+- `FAILED_NO_EFFECT` — non-occurrence was positively established.
+- `UNKNOWN` — the system cannot establish whether the mutation happened.
+
+There is deliberately no ambiguous terminal `FAILED` in G3.
+
+### Reconciliation
+
+UNKNOWN (and orphaned DISPATCHED after recovery) may only proceed through
+observation/reconciliation:
+
+```text
+CONFIRMED_SUCCEEDED → SUCCEEDED
+CONFIRMED_NO_EFFECT → FAILED_NO_EFFECT
+UNKNOWN             → UNKNOWN
+```
+
+Resolving uncertainty requires an observation reference. The reference is not
+automatically Acceptance Evidence: Effect ≠ Evidence (I-18).
+
+### Idempotency
+
+Every managed Effect carries an idempotency key and should present it to providers
+that support idempotency. The key reduces duplicate-effect risk; it is not proof
+of exactly-once behavior.
+
+### Driver seam
+
+G3 uses an abstract external-effect seam conceptually equivalent to:
+
+```text
+dispatch(effect)
+reconcile(effect)
+```
+
+This is narrower than the real Runtime Adapter planned later. G3 may use a fake
+driver for deterministic safety/restart tests.
+
+### Relationship to Command
+
+An Effect may be created only from a durable AUTHORIZED Command, and its
+action/capability come from stored Command intent.
+
+G3 does not infer overall Command success from one Effect. Command completion
+aggregation remains outside this boundary.
+
+See `docs/architecture/decisions/ADR-0002-effect-reconciliation-boundary.md`.
 
 ---
 
