@@ -7,12 +7,26 @@ on:
 
 jobs:
   test:
+    name: test (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
       - run: npm install
-      # Unit + integration only — no external LLM/CLI credentials are required here.
+      # Node 20 verifies the advertised package floor. The SQLite backend is
+      # capability-gated there and may be skipped because node:sqlite is absent.
+      # Node 22 is the full Project Control baseline and MUST expose node:sqlite.
+      - if: matrix.node == 22
+        run: >-
+          node -e "import('./project-control/sqlite-store.mjs').then(
+          ({isSqliteAvailable,SQLITE_REQUIREMENT}) => {
+          if (!isSqliteAvailable()) throw new Error(SQLITE_REQUIREMENT)
+          })"
+      # Unit + integration only — no external LLM/CLI credentials are required.
       - run: npm test
