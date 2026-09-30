@@ -86,8 +86,8 @@ These labels describe the baseline commit above only.
 | Project-control Memory | MISSING | The legacy runtime has derived memory machinery, but the Blueprint's source-referenced Project Control memory model is not implemented. |
 | Context Capsule | DOCUMENTED_ONLY | Defined conceptually; no Project Control implementation assembles or persists bounded capsules. |
 | Runtime Adapter | IMPLEMENTED / PARTIAL | Normalized capability-shaped Runtime Adapter contract now exists. FakeRuntime migrated, LocalProcessRuntimeAdapter executes real child processes in CI, and DshWorkflowRuntimeAdapter binds the current DSH Workflow seam through injected workflowEngine. RuntimeRef persists on Attempt and survives restart while remaining distinct from Run/Attempt identity. Workspace/isolation semantics remain G6. |
-| Workspace | DOCUMENTED_ONLY | Workspace/isolation model is specified architecturally; no Project Control Workspace domain/store/controller implementation exists. |
-| Workspace isolation | DOCUMENTED_ONLY | No enforced worktree/container/non-overlap mechanism exists in the Project Control prototype. |
+| Workspace | DOCUMENTED_ONLY / G6 READY | ADR-0005 now settles durable Workspace identity, SHARED vs ISOLATED semantics, enforced write scopes, deterministic revision digests, conflict-safe integration and optional Evidence workspace lineage. No Workspace implementation exists yet. |
+| Workspace isolation | DOCUMENTED_ONLY / G6 READY | G6 design now requires distinct writable roots for parallel writers and control-plane integration; DSH Team writeScopes remain advisory until enforced by Project Control. Implementation is pending. |
 | Optimistic concurrency | IMPLEMENTED | Version-aware updates reject stale expected versions; persistence tests cover rollback/conflict behavior. |
 | Command idempotency key | IMPLEMENTED | Durable command-id replay/operation binding exists in store semantics, but this is not a durable Command domain. |
 | Parent relationship authority | IMPLEMENTED | Child-side links are authoritative; parent cached ID lists are not used as relationship truth. |
