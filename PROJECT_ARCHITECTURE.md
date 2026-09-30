@@ -80,7 +80,7 @@ These labels describe the baseline commit above only.
 | Approval | IMPLEMENTED | Durable scoped human approval lifecycle, target-version pinning, attribution, expiry/revocation, action/capability/scope checks, fail-closed semantics. |
 | Policy | DOCUMENTED_ONLY | Approval is implemented, but a general runtime-enforced Policy Engine deciding ALLOW/DENY/REQUIRE_APPROVAL is not. |
 | Command | IMPLEMENTED / PARTIAL | Durable Command now exists with immutable stored intent, independent version, MemoryStore/SQLite persistence, CREATED→AUTHORIZED/REJECTED transitions, events, restart proof, and Command-based Controller authorization. DISPATCHED/EXECUTING/SUCCEEDED/FAILED/UNKNOWN remain reserved for G3. Historical store-mutation replay rows remain a separate mechanism. COMMAND-target Approval remains intentionally refused. |
-| Effect | MISSING | No durable external Effect ledger/lifecycle exists. |
+| Effect | DOCUMENTED_ONLY / G3 READY | ADR-0002 now settles the external-effect uncertainty boundary (REQUESTED/DISPATCHED/SUCCEEDED/FAILED_NO_EFFECT/UNKNOWN, reconciliation and idempotency semantics), but no durable Effect object/driver implementation exists yet. |
 | Event | IMPLEMENTED | Append-oriented events are persisted with authoritative mutations and survive SQLite restart. Event is kept distinct from State. |
 | Decision | MISSING | No dedicated Project Control Decision object/store/lifecycle exists. |
 | Project-control Memory | MISSING | The legacy runtime has derived memory machinery, but the Blueprint's source-referenced Project Control memory model is not implemented. |
