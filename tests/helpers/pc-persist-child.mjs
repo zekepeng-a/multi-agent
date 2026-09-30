@@ -29,6 +29,7 @@ const { Controller } = await load("controller.mjs");
 const { FakeRuntime } = await load("fake-runtime.mjs");
 const { FakeVerifier } = await load("fake-verifier.mjs");
 const { FakeEffectDriver } = await load("fake-effect-driver.mjs");
+const { StaticPolicyEngine } = await load("policy-engine.mjs");
 const {
   AcceptanceTargetType,
   ApprovalDecision,
@@ -39,6 +40,7 @@ const {
   EffectObservation,
   EffectStatus,
   GoalStatus,
+  PolicyEffect,
   RiskLevel,
   TaskStatus,
   VerificationVerdict,
@@ -62,6 +64,15 @@ function controllerFor(store) {
     store,
     runtime: new FakeRuntime({ mode: "success" }),
     verifier: new FakeVerifier({}),
+    policyEngine: new StaticPolicyEngine({
+      version: "child-policy-v1",
+      rules: [{
+        id: "require-deploy",
+        effect: PolicyEffect.REQUIRE_APPROVAL,
+        action: "deploy",
+        capability: "deploy.production",
+      }],
+    }),
     idFactory: (prefix) => `child-${prefix}-${++n}`,
   });
 }
@@ -369,7 +380,11 @@ try {
       capability: authorized.command.capability,
       scope: authorized.command.scope,
       eventCount: store.getEvents().length,
-      ids: { commandId: command.id, approvalId: pending.id },
+      ids: {
+        commandId: command.id,
+        approvalId: pending.id,
+        policyDecisionId: authorized.command.authorization.policyDecisionId,
+      },
     };
   } else if (mode === "command-read") {
     const ids = JSON.parse(idsJson ?? "{}");
@@ -377,8 +392,8 @@ try {
     const replay = store.authorizeControlCommand(
       ids.commandId,
       1,
-      { approvalId: ids.approvalId },
-      { mutationId: "child-authorize-command" },
+      { policyDecisionId: ids.policyDecisionId, approvalId: ids.approvalId },
+      { mutationId: "child-authorize-command:authorize" },
     );
     payload = {
       status: command.status,
@@ -437,7 +452,10 @@ try {
       decision: ApprovalDecision.APPROVE,
       decidedBy: "alice",
     });
-    const authorized = store.authorizeControlCommand(command.id, command.version, { approvalId: pending.id }).command;
+    const authorized = controllerFor(store).authorizeCommand(command.id, command.version, {
+      approvalId: pending.id,
+      mutationId: "child-authorize-effect-command",
+    }).command;
 
     // Persist DISPATCHED and then EXIT THE PROCESS without recording a result.
     // This models the crash window after the external boundary may have been
