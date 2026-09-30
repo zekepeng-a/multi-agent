@@ -36,6 +36,7 @@ import {
   ApprovalFailureReason,
   ApprovalStatus,
   ApprovalTargetType,
+  COMMAND_APPROVAL_UNAVAILABLE,
   ConflictError,
   GoalStatus,
   InvariantError,
@@ -129,6 +130,7 @@ function deployIntent(over = {}) {
     targetId: "task-1",
     targetVersion: 1,
     action: "deploy",
+    capability: "deploy.production",
     scope: "production",
     ...over,
   };
@@ -497,6 +499,81 @@ for (const backend of BACKENDS) {
     );
   });
 
+  // ── capability: part of the authorized action ──────────────────────────────
+
+  test(label("C1 the capability that was approved is the capability that authorizes"), { skip }, (t) => {
+    const store = backend.make(t);
+    seedWorld(store);
+    approvedDeploy(store);
+
+    // A: the approved capability authorizes
+    assert.equal(store.assertApprovalUsable(deployIntent()).request.capability, "deploy.production");
+
+    // B: a different capability does NOT, even with the same action and scope
+    assertRefused(
+      () => store.assertApprovalUsable(deployIntent({ capability: "delete.production" })),
+      ApprovalFailureReason.CAPABILITY_MISMATCH,
+      /authorizes capability "deploy.production", not "delete.production"/,
+    );
+
+    // C: same capability, different action → the action rule refuses it
+    assertRefused(
+      () => store.assertApprovalUsable(deployIntent({ action: "delete" })),
+      ApprovalFailureReason.ACTION_MISMATCH,
+    );
+
+    // D: same action, different capability → the capability rule refuses it
+    assertRefused(
+      () => store.assertApprovalUsable(deployIntent({ action: "deploy", capability: "deploy.staging" })),
+      ApprovalFailureReason.CAPABILITY_MISMATCH,
+    );
+
+    // E: different scope is still the scope rule
+    assertRefused(
+      () => store.assertApprovalUsable(deployIntent({ scope: "staging" })),
+      ApprovalFailureReason.SCOPE_MISMATCH,
+    );
+
+    // F: repeating the exact same authorization is stable, and writes nothing
+    const eventsBefore = store.getEvents().length;
+    for (let round = 0; round < 3; round += 1) {
+      assert.equal(store.assertApprovalUsable(deployIntent()).id, "approval-1");
+    }
+    assert.equal(store.getEvents().length, eventsBefore, "consumption is a read");
+
+    // …and an unnamed capability is not a wildcard
+    assert.throws(
+      () => store.assertApprovalUsable(deployIntent({ capability: undefined })),
+      (error) => error instanceof InvariantError && /must present the capability it exercises/.test(error.message),
+    );
+    assert.throws(
+      () => store.assertApprovalUsable(deployIntent({ capability: "   " })),
+      /must present the capability it exercises/,
+    );
+  });
+
+  test(label("C2 capability is bound like every other part of the request"), { skip }, (t) => {
+    const store = backend.make(t);
+    seedWorld(store);
+    store.requestApproval(deployRequest());
+
+    // G: an update may not re-point the permission at another capability
+    assert.throws(
+      () => store.updateApproval("approval-1", 1, { capability: "another-capability" }),
+      /binds capability: it defines what was approved and cannot be changed/,
+    );
+    assert.equal(store.getApproval("approval-1").version, 1, "a refused update writes nothing");
+    assert.equal(store.getApproval("approval-1").request.capability, "deploy.production");
+    assert.equal(countEvents(store, "approval.updated"), 0);
+
+    // the request still decides it, and only at creation
+    assert.throws(
+      () => store.requestApproval(deployRequest({ id: "approval-nocap", capability: "" })),
+      /requires a non-empty capability/,
+    );
+    assert.equal(store.getRecord(Collection.APPROVAL, "approval-nocap"), null);
+  });
+
   // ── O: attribution ─────────────────────────────────────────────────────────
 
   test(label("O no approver, no approval"), { skip }, (t) => {
@@ -565,6 +642,7 @@ for (const backend of BACKENDS) {
       targetId: "task-1",
       targetVersion: 1,
       action: "deploy",
+      capability: "deploy.production",
       scope: "production",
       approvalId: "approval-1",
       commandId: "cmd-1",
@@ -591,6 +669,7 @@ for (const backend of BACKENDS) {
       targetId: "task-1",
       targetVersion: 1,
       action: "deploy",
+      capability: "deploy.production",
       scope: "production",
     });
     assert.equal(noApproval.action, "WAIT");
@@ -612,6 +691,7 @@ for (const backend of BACKENDS) {
       targetId: "task-1",
       targetVersion: 1,
       action: "deploy",
+      capability: "deploy.production",
       scope: "production",
       approvalId: "approval-1",
       commandId: "cmd-1",
@@ -715,6 +795,7 @@ for (const backend of BACKENDS) {
       targetId: "task-1",
       targetVersion: 1,
       action: "deploy",
+      capability: "deploy.production",
       scope: "production",
       approvalId: "approval-1",
       commandId: "cmd-1",
@@ -752,6 +833,7 @@ for (const backend of BACKENDS) {
       targetId: "task-1",
       targetVersion: 1,
       action: "deploy",
+      capability: "deploy.production",
       scope: "production",
       approvalId: "approval-1",
       commandId: "cmd-1",
@@ -800,71 +882,88 @@ for (const backend of BACKENDS) {
     assert.equal(store.getProject("project-1").status, ProjectStatus.ACTIVE);
   });
 
-  test(label("X a COMMAND approval is bound by command identity, not by a version"), { skip }, (t) => {
+  test(label("X COMMAND is a reserved target type that v0.1 cannot honour"), { skip }, (t) => {
     const store = backend.make(t);
     seedWorld(store);
-    const approval = store.requestApproval({
-      id: "approval-cmd",
-      targetType: ApprovalTargetType.COMMAND,
-      targetId: "deploy-cmd-1",
-      commandId: "deploy-cmd-1",
-      action: "deploy",
-      capability: "deploy.production",
-      scope: "production",
-      riskLevel: RiskLevel.HIGH,
-      requestedBy: "requester-1",
-    });
-    assert.equal(approval.request.targetVersion, null, "a command has no version to pin");
-    store.decideApproval("approval-cmd", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
 
-    const usable = store.assertApprovalUsable({
-      approvalId: "approval-cmd",
-      targetType: ApprovalTargetType.COMMAND,
-      targetId: "deploy-cmd-1",
-      action: "deploy",
-      scope: "production",
-      commandId: "deploy-cmd-1",
-    });
-    assert.equal(usable.id, "approval-cmd");
-
-    // another command cannot use it
-    assertRefused(
-      () => store.assertApprovalUsable({
-        approvalId: "approval-cmd",
-        targetType: ApprovalTargetType.COMMAND,
-        targetId: "deploy-cmd-1",
-        action: "deploy",
-        scope: "production",
-        commandId: "deploy-cmd-2",
-      }),
-      ApprovalFailureReason.COMMAND_MISMATCH,
-    );
-    // and it is not a version-shaped fact
-    assertRefused(
-      () => store.assertApprovalUsable({
-        approvalId: "approval-cmd",
-        targetType: ApprovalTargetType.COMMAND,
-        targetId: "deploy-cmd-1",
-        targetVersion: 1,
-        action: "deploy",
-        scope: "production",
-        commandId: "deploy-cmd-1",
-      }),
-      ApprovalFailureReason.COMMAND_MISMATCH,
-      /no target version/,
-    );
-    // a COMMAND approval must bind its command at creation
+    // 1. it cannot be REQUESTED: there is no durable Command object to authorize
     assert.throws(
       () => store.requestApproval({
-        id: "approval-bad",
+        id: "approval-cmd",
         targetType: ApprovalTargetType.COMMAND,
-        targetId: "deploy-cmd-3",
+        targetId: "deploy-cmd-1",
+        commandId: "deploy-cmd-1",
         action: "deploy",
         capability: "deploy.production",
         scope: "production",
+        riskLevel: RiskLevel.HIGH,
         requestedBy: "requester-1",
       }),
-      /must bind the command it is about/,
+      (error) => error instanceof InvariantError && error.message === COMMAND_APPROVAL_UNAVAILABLE,
+    );
+    assert.equal(store.getRecord(Collection.APPROVAL, "approval-cmd"), null, "nothing was created");
+    assert.equal(countEvents(store, "approval.requested"), 0);
+
+    // 2. it cannot be SEEDED either — not even as a decided historical grant
+    assert.throws(
+      () => store.seedApproval({
+        ...createApproval({ ...deployRequest(), targetVersion: 1 }),
+        id: "approval-cmd",
+        request: {
+          targetType: ApprovalTargetType.COMMAND,
+          targetId: "deploy-cmd-1",
+          targetVersion: null,
+          action: "deploy",
+          capability: "deploy.production",
+          scope: "production",
+          riskLevel: RiskLevel.HIGH,
+        },
+        commandId: "deploy-cmd-1",
+      }),
+      (error) => error instanceof InvariantError && error.message === COMMAND_APPROVAL_UNAVAILABLE,
+    );
+
+    // 3. durable state written by an older writer (which DID allow it) cannot be
+    //    consumed: the boundary is enforced at use, not only at creation
+    const now = new Date().toISOString();
+    store.putRecord(Collection.APPROVAL, "approval-legacy", {
+      id: "approval-legacy",
+      version: 1,
+      request: {
+        targetType: ApprovalTargetType.COMMAND,
+        targetId: "deploy-cmd-1",
+        targetVersion: null,
+        action: "deploy",
+        capability: "deploy.production",
+        scope: "production",
+        riskLevel: RiskLevel.HIGH,
+      },
+      requestedBy: "requester-1",
+      decision: { status: ApprovalStatus.APPROVED, decidedBy: "alice", decidedAt: now, reason: null },
+      revocation: null,
+      commandId: "deploy-cmd-1",
+      expiresAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    assert.equal(store.getApproval("approval-legacy").decision.status, ApprovalStatus.APPROVED);
+    assert.throws(
+      () => store.assertApprovalUsable({
+        approvalId: "approval-legacy",
+        targetType: ApprovalTargetType.COMMAND,
+        targetId: "deploy-cmd-1",
+        action: "deploy",
+        capability: "deploy.production",
+        scope: "production",
+        commandId: "deploy-cmd-1",
+      }),
+      (error) => error instanceof InvariantError && error.message === COMMAND_APPROVAL_UNAVAILABLE,
+    );
+    // …and a caller that pretends the COMMAND approval is about a Task is refused
+    // by the ordinary target-type rule
+    assertRefused(
+      () => store.assertApprovalUsable(deployIntent({ approvalId: "approval-legacy" })),
+      ApprovalFailureReason.TARGET_TYPE_MISMATCH,
     );
   });
 
@@ -933,6 +1032,7 @@ test("end-to-end: an approval authorizes the version it was granted for, and onl
     targetId: "task-1",
     targetVersion: 1,
     action: "deploy",
+    capability: "deploy.production",
     scope: "production",
     expectedVersion: 1,
   };
@@ -998,6 +1098,56 @@ test("end-to-end: an approval authorizes the version it was granted for, and onl
   assert.equal(runtime.started.length, 0, "no refusal ever executes anything");
 });
 
+test("capability end-to-end: one Approval, four authorization attempts", { skip: BACKENDS[1].skip }, (t) => {
+  const store = new MemoryStore();
+  seedWorld(store);
+  const { controller, runtime } = makeController(store);
+
+  // Task v1 · Approval: TASK task-1 v1 / deploy / deploy.production / production
+  approvedDeploy(store);
+  const intent = {
+    targetType: ApprovalTargetType.TASK,
+    targetId: "task-1",
+    targetVersion: 1,
+    action: "deploy",
+    capability: "deploy.production",
+    scope: "production",
+    approvalId: "approval-1",
+    commandId: "C1",
+  };
+  const eventsBefore = store.getEvents().length;
+
+  // Case 1 — the approved action, capability and scope authorize
+  const authorized = controller.authorizeCommand(intent);
+  assert.equal(authorized.action, "AUTHORIZE");
+  assert.equal(authorized.reason, "command-authorized");
+  assert.equal(authorized.intent.capability, "deploy.production");
+
+  // Case 2 — same action and scope, DIFFERENT capability: fail closed
+  const wrongCapability = controller.authorizeCommand({ ...intent, capability: "delete.production" });
+  assert.equal(wrongCapability.action, "WAIT");
+  assert.equal(wrongCapability.reason, "approval-capability-mismatch");
+  assert.equal(wrongCapability.approvalReason, ApprovalFailureReason.CAPABILITY_MISMATCH);
+  assert.equal(wrongCapability.approval.request.capability, "deploy.production", "the approval is untouched");
+
+  // Case 3 — different action, same capability: the action rule refuses it
+  const wrongAction = controller.authorizeCommand({ ...intent, action: "delete" });
+  assert.equal(wrongAction.action, "WAIT");
+  assert.equal(wrongAction.reason, "approval-action-mismatch");
+  assert.equal(wrongAction.approvalReason, ApprovalFailureReason.ACTION_MISMATCH);
+
+  // Case 4 — different scope, same action and capability
+  const wrongScope = controller.authorizeCommand({ ...intent, scope: "staging" });
+  assert.equal(wrongScope.action, "WAIT");
+  assert.equal(wrongScope.reason, "approval-scope-mismatch");
+  assert.equal(wrongScope.approvalReason, ApprovalFailureReason.SCOPE_MISMATCH);
+
+  // every case is a decision about durable facts, never an action
+  assert.equal(runtime.started.length, 0);
+  assert.equal(store.getTask("task-1").status, TaskStatus.READY);
+  assert.equal(store.getEvents().length, eventsBefore, "authorizing and refusing both write nothing");
+});
+
 test("the gate reports every refusal with a distinct, actionable reason", { skip: BACKENDS[1].skip }, (t) => {
   const memory = new MemoryStore();
   seedWorld(memory);
@@ -1008,6 +1158,7 @@ test("the gate reports every refusal with a distinct, actionable reason", { skip
     targetId: "task-1",
     targetVersion: 1,
     action: "deploy",
+    capability: "deploy.production",
     scope: "production",
     approvalId: "approval-1",
     commandId: "cmd-1",
@@ -1015,6 +1166,7 @@ test("the gate reports every refusal with a distinct, actionable reason", { skip
 
   const cases = [
     [{ action: "delete" }, "approval-action-mismatch"],
+    [{ capability: "delete.production" }, "approval-capability-mismatch"],
     [{ scope: "staging" }, "approval-scope-mismatch"],
     [{ targetType: ApprovalTargetType.GOAL, targetId: "goal-1" }, "approval-target-type-mismatch"],
     [{ targetId: "task-2" }, "approval-target-id-mismatch"],

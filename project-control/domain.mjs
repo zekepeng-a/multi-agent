@@ -488,9 +488,24 @@ export const ApprovalFailureReason = Object.freeze({
   TARGET_ID_MISMATCH: "TARGET_ID_MISMATCH",
   STALE: "STALE",
   ACTION_MISMATCH: "ACTION_MISMATCH",
+  // The capability a caller presents IS part of the authorized action, so a
+  // different capability is a different authorization — not a variation of one.
+  CAPABILITY_MISMATCH: "CAPABILITY_MISMATCH",
   SCOPE_MISMATCH: "SCOPE_MISMATCH",
   COMMAND_MISMATCH: "COMMAND_MISMATCH",
 });
+
+/**
+ * Refusal for a declared-but-unsupported target type.
+ *
+ * `ApprovalTargetType.COMMAND` stays in the vocabulary because the canonical
+ * model has Commands and the next round will give them durable identity — but
+ * v0.1 has no durable Command control object, so nothing may create or consume a
+ * COMMAND approval. The message is a shared constant so every door (domain
+ * factory, store seed/request, controller gate) refuses with the same words.
+ */
+export const COMMAND_APPROVAL_UNAVAILABLE =
+  "COMMAND approvals are unavailable in v0.1 because Command is not yet a durable control object";
 
 const REQUIRED_APPROVAL_FIELDS = Object.freeze(["targetId", "action", "capability", "scope", "requestedBy"]);
 
@@ -498,13 +513,15 @@ const REQUIRED_APPROVAL_FIELDS = Object.freeze(["targetId", "action", "capabilit
  * Creates a PENDING Approval request.
  *
  * `targetVersion` is the version of the target state this approval is requested
- * against, and `action` + `scope` + `targetId` are what it will authorize —
- * together they are the answer to "which concrete action was approved?". A bare
- * "the project is approved" is not representable here: there is no shape of an
- * Approval that does not name a target, a version, an action and a scope.
+ * against, and `action` + `capability` + `scope` + `targetId` are what it will
+ * authorize — together they are the answer to "which concrete action was
+ * approved?". A bare "the project is approved" is not representable here: there
+ * is no shape of an Approval that does not name a target, a version, an action,
+ * the capability it exercises, and a scope.
  *
- * A COMMAND target is identified by its command id rather than a version, so
- * `commandId` is required, must equal `targetId`, and `targetVersion` stays null.
+ * `ApprovalTargetType.COMMAND` is RESERVED BUT UNSUPPORTED in v0.1: there is no
+ * durable Command object to be the subject of such a permission, so constructing
+ * one fails closed rather than producing a permission about nothing.
  */
 export function createApproval({
   id,
@@ -524,6 +541,9 @@ export function createApproval({
   if (!Object.values(ApprovalTargetType).includes(targetType)) {
     throw new Error(`unknown approval target type: ${targetType}`);
   }
+  if (targetType === ApprovalTargetType.COMMAND) {
+    throw new InvariantError(COMMAND_APPROVAL_UNAVAILABLE);
+  }
   const identity = { targetId, action, capability, scope, requestedBy };
   for (const field of REQUIRED_APPROVAL_FIELDS) {
     if (typeof identity[field] !== "string" || identity[field].trim() === "") {
@@ -536,14 +556,7 @@ export function createApproval({
   if (expiresAt != null && Number.isNaN(Date.parse(expiresAt))) {
     throw new Error(`expiresAt is not a timestamp: ${expiresAt}`);
   }
-  if (targetType === ApprovalTargetType.COMMAND) {
-    if (!commandId || commandId !== targetId) {
-      throw new Error("a COMMAND approval must bind the command it is about (commandId === targetId)");
-    }
-    if (targetVersion != null) {
-      throw new Error("a COMMAND approval has no target version to pin");
-    }
-  } else if (typeof targetVersion !== "number" || !Number.isInteger(targetVersion) || targetVersion < 1) {
+  if (typeof targetVersion !== "number" || !Number.isInteger(targetVersion) || targetVersion < 1) {
     throw new Error("an approval of a lifecycle aggregate must pin the target version it was requested against");
   }
 

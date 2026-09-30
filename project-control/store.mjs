@@ -16,6 +16,7 @@ import {
   ApprovalFailureReason,
   ApprovalStatus,
   ApprovalTargetType,
+  COMMAND_APPROVAL_UNAVAILABLE,
   EvidenceStatus,
   ConflictError,
   InvariantError,
@@ -988,13 +989,20 @@ export class ProjectControlStore {
    *
    * The version is READ FROM THE TARGET, never taken from the caller: an
    * approval that merely claims to be about v3 while the target is already at v4
-   * would be a permission for a state that does not exist. A COMMAND target has
-   * no version; it is bound by command identity instead.
+   * would be a permission for a state that does not exist.
+   *
+   * A COMMAND target is refused outright: v0.1 has no durable Command object, so
+   * such a permission would name a target that cannot exist — a control fact
+   * claiming support for a control object the model does not have.
    */
   requestApproval(request, { commandId = null } = {}) {
     return this.runInTransaction(() => {
       const replay = this.#replayCommand(commandId, "requestApproval");
       if (replay) return this.getApproval(replay);
+
+      if (request.targetType === ApprovalTargetType.COMMAND) {
+        throw new InvariantError(COMMAND_APPROVAL_UNAVAILABLE);
+      }
 
       const targetVersion = this.#approvalTargetVersion(request.targetType, request.targetId);
       const declared = request.targetVersion ?? null;
@@ -1166,20 +1174,40 @@ export class ProjectControlStore {
    *
    * Every check fails closed, and the failure carries a machine-readable reason:
    * existence, effective status, attribution, target type, target id, action,
-   * scope, the bound command, expiry, and — the one that matters most — the
-   * target's CURRENT version. An approval pinned to v3 authorizes v3 and nothing
-   * else; when the target moves to v4 the permission is STALE, not extended.
+   * CAPABILITY, scope, the bound command, expiry, and — the one that matters most
+   * — the target's CURRENT version. An approval pinned to v3 authorizes v3 and
+   * nothing else; when the target moves to v4 the permission is STALE, not
+   * extended.
+   *
+   * `capability` is checked as strictly as `action`: an approval to run a
+   * capability is not a permission to do something else that happens to look
+   * similar, and the presented capability is part of what is being authorized.
    */
+
   assertApprovalUsable({
     approvalId,
     targetType,
     targetId,
     targetVersion = null,
     action,
+    capability,
     scope,
     commandId = null,
     at = new Date(),
   } = {}) {
+    // A consumption must SAY which capability it exercises. An unnamed capability
+    // is a caller that cannot be authorized, not a wildcard.
+    if (typeof capability !== "string" || capability.trim() === "") {
+      throw new InvariantError(
+        `approval consumption must present the capability it exercises (approval ${approvalId})`,
+      );
+    }
+    // There is no durable Command control object in v0.1, so no Command-typed
+    // permission can be consumed — not even one left behind by an older writer.
+    if (targetType === ApprovalTargetType.COMMAND) {
+      throw new InvariantError(COMMAND_APPROVAL_UNAVAILABLE);
+    }
+
     const approval = this.getRecord(Collection.APPROVAL, approvalId);
     if (!approval) {
       throw new ApprovalError(
@@ -1239,6 +1267,15 @@ export class ProjectControlStore {
     if (request.action !== action) {
       throw mismatch(ApprovalFailureReason.ACTION_MISMATCH, `authorizes action "${request.action}", not "${action}"`);
     }
+    // The capability is part of the authorized action, so it is compared exactly
+    // and independently: matching action + scope with a different capability is a
+    // different authorization, not a variation of this one.
+    if (request.capability !== capability) {
+      throw mismatch(
+        ApprovalFailureReason.CAPABILITY_MISMATCH,
+        `authorizes capability "${request.capability}", not "${capability}"`,
+      );
+    }
     if (request.scope !== scope) {
       throw mismatch(ApprovalFailureReason.SCOPE_MISMATCH, `authorizes scope "${request.scope}", not "${scope}"`);
     }
@@ -1251,23 +1288,10 @@ export class ProjectControlStore {
       );
     }
 
-    if (request.targetType === ApprovalTargetType.COMMAND) {
-      // A command is identified by its id; it has no concurrency version, and the
-      // consumer must be that same command.
-      if (commandId !== request.targetId) {
-        throw mismatch(
-          ApprovalFailureReason.COMMAND_MISMATCH,
-          `authorizes command ${request.targetId}, not ${commandId ?? "(none)"}`,
-        );
-      }
-      if (targetVersion != null) {
-        throw mismatch(
-          ApprovalFailureReason.COMMAND_MISMATCH,
-          "is about a command, which is identified by its command id and has no target version",
-        );
-      }
-      return structuredClone(approval);
-    }
+    // No COMMAND branch: an approval about a Command cannot exist in v0.1 (see
+    // the guard at the top), so anything reaching here is a real aggregate with a
+    // real version, and current reality decides whether the permission still
+    // applies.
 
     // Current Reality outranks a recorded permission: the version that was
     // approved must still be the version that exists.
@@ -1363,8 +1387,9 @@ export class ProjectControlStore {
   #approvalTargetVersion(targetType, targetId) {
     const collection = APPROVAL_TARGET_COLLECTION[targetType];
     if (!collection) {
-      // A COMMAND target is identified by its command id and has no version.
-      return null;
+      // Only COMMAND is absent from the map, and a COMMAND approval cannot reach
+      // this far: every door refuses it first (see COMMAND_APPROVAL_UNAVAILABLE).
+      throw new InvariantError(COMMAND_APPROVAL_UNAVAILABLE);
     }
     const record = this.getRecord(collection, targetId);
     if (!record) {
@@ -1403,15 +1428,11 @@ export class ProjectControlStore {
       throw new InvariantError(`approval ${id} names no requester`);
     }
     if (request.targetType === ApprovalTargetType.COMMAND) {
-      if (approval.commandId !== request.targetId) {
-        throw new InvariantError(
-          `approval ${id} is about a command and must bind it (commandId === targetId)`,
-        );
-      }
-      if (request.targetVersion != null) {
-        throw new InvariantError(`approval ${id} is about a command, which has no target version`);
-      }
-    } else if (!Number.isInteger(request.targetVersion) || request.targetVersion < 1) {
+      // Reserved in the vocabulary, unsupported in the model: a Command has no
+      // durable identity yet, so no permission about one may be stored.
+      throw new InvariantError(COMMAND_APPROVAL_UNAVAILABLE);
+    }
+    if (!Number.isInteger(request.targetVersion) || request.targetVersion < 1) {
       throw new InvariantError(
         `approval ${id} must pin the target version it authorizes, got ${request.targetVersion}`,
       );

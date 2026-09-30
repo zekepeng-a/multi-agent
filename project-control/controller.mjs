@@ -2,6 +2,7 @@ import {
   ApprovalError,
   ApprovalTargetType,
   AttemptStatus,
+  COMMAND_APPROVAL_UNAVAILABLE,
   EvidenceStatus,
   GoalStatus,
   InvariantError,
@@ -503,9 +504,10 @@ export class Controller {
   // ── Human approval gate ───────────────────────────────────────────────────
   //
   // The gate asks ONE question: does an Approval authorize this concrete action,
-  // on this concrete target, at its current version? It is deliberately
-  // SYNCHRONOUS — it reads durable facts and starts nothing, so it cannot be
-  // mistaken for, or accidentally wired into, an execution path.
+  // on this concrete target, exercising this concrete capability, at its current
+  // version? It is deliberately SYNCHRONOUS — it reads durable facts and starts
+  // nothing, so it cannot be mistaken for, or accidentally wired into, an
+  // execution path.
   //
   // What passing the gate means, and what it does not:
   //
@@ -529,13 +531,17 @@ export class Controller {
     targetId,
     targetVersion = null,
     action,
+    capability,
     scope,
     approvalId = null,
     commandId = null,
     expectedVersion = null,
   } = {}) {
-    const intent = { targetType, targetId, targetVersion, action, scope, commandId };
-    for (const field of ["targetType", "targetId", "action", "scope"]) {
+    const intent = { targetType, targetId, targetVersion, action, capability, scope, commandId };
+    // The request must name the capability it exercises: without it the gate
+    // cannot tell which authorization is being exercised, and "no capability
+    // stated" is never a wildcard.
+    for (const field of ["targetType", "targetId", "action", "capability", "scope"]) {
       if (typeof intent[field] !== "string" || intent[field].trim() === "") {
         throw new InvariantError(`a command authorization must name its ${field}`);
       }
@@ -544,8 +550,17 @@ export class Controller {
       throw new InvariantError("a command target has no version, so no command can expect one");
     }
 
+    // No approval to check: the answer is the same as it has always been, and it
+    // is decided before anything else is asked of the request.
     if (!approvalId) {
       return { action: "WAIT", reason: "approval-required", intent };
+    }
+
+    // There is no durable Command control object in v0.1, so a COMMAND-typed
+    // permission cannot be validated — let alone authorized. Fail closed, loudly,
+    // the moment one is presented.
+    if (targetType === ApprovalTargetType.COMMAND) {
+      throw new InvariantError(COMMAND_APPROVAL_UNAVAILABLE);
     }
 
     let approval;
@@ -556,6 +571,7 @@ export class Controller {
         targetId,
         targetVersion,
         action,
+        capability,
         scope,
         commandId,
       });

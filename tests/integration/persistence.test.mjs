@@ -502,6 +502,7 @@ test("restart: an approval granted in one process authorizes in another", { skip
   assert.equal(seen.usableId, "approval-1", "the durable permission authorizes in the second process");
   assert.equal(seen.targetVersion, 1);
   assert.equal(seen.version, 2);
+  assert.equal(seen.capabilityReason, "CAPABILITY_MISMATCH", "and the capability it binds survives the restart");
 
   // the decision command replays across the process boundary: no second decision
   assert.equal(seen.replayedVersion, 2);
@@ -552,6 +553,7 @@ test("schema: a file written before approvals existed gains the table and still 
     targetId: "task-1",
     targetVersion: 1,
     action: "deploy",
+    capability: "deploy.production",
     scope: "production",
   }).id, "approval-1");
 });

@@ -242,6 +242,7 @@ try {
       targetId: "task-1",
       targetVersion: 1,
       action: "deploy",
+      capability: "deploy.production",
       scope: "production",
       commandId: "C1",
     });
@@ -250,6 +251,23 @@ try {
       decision: ApprovalDecision.APPROVE,
       decidedBy: "alice",
     }, { commandId: "child-approve" });
+
+    // the CAPABILITY is part of the durable permission in the new process too
+    let capabilityReason = null;
+    try {
+      store.assertApprovalUsable({
+        approvalId: ids.approvalId,
+        targetType: ApprovalTargetType.TASK,
+        targetId: "task-1",
+        targetVersion: 1,
+        action: "deploy",
+        capability: "delete.production",
+        scope: "production",
+        commandId: "C1",
+      });
+    } catch (error) {
+      capabilityReason = error instanceof ApprovalError ? error.approvalReason : error.name;
+    }
 
     // …and once the target moves, the same record stops applying
     store.updateTask("task-1", 1, { status: TaskStatus.IN_PROGRESS }, { commandId: "child-move-task" });
@@ -261,6 +279,7 @@ try {
         targetId: "task-1",
         targetVersion: 1,
         action: "deploy",
+        capability: "deploy.production",
         scope: "production",
         commandId: "C1",
       });
@@ -279,6 +298,7 @@ try {
       approvedEvents: store.getEvents().filter((event) => event.type === "approval.approved").length,
       taskVersion: store.getTask("task-1").version,
       staleReason,
+      capabilityReason,
       eventCount: store.getEvents().length,
     };
   } else {

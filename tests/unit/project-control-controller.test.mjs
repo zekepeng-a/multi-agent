@@ -5,6 +5,7 @@ import {
   ApprovalDecision,
   ApprovalTargetType,
   AttemptStatus,
+  COMMAND_APPROVAL_UNAVAILABLE,
   ConflictError,
   EvidenceStatus,
   InvariantError,
@@ -838,6 +839,7 @@ function approvalFixture() {
     targetId: "task-1",
     targetVersion: 1,
     action: "deploy",
+    capability: "deploy.production",
     scope: "production",
     approvalId: "approval-1",
     commandId: "C1",
@@ -854,10 +856,11 @@ test("the gate fails closed while nothing has been approved", () => {
   assert.equal(result.reason, "approval-pending");
   assert.equal(result.approvalReason, "PENDING");
   assert.equal(result.intent.action, "deploy", "the refused intent is reported back verbatim");
+  assert.equal(result.intent.capability, "deploy.production");
   assert.equal(store.getTask("task-1").status, TaskStatus.READY);
 });
 
-test("the gate authorizes only the action, scope and version that were approved", () => {
+test("the gate authorizes only the action, capability, scope and version that were approved", () => {
   const { store, controller, intent } = approvalFixture();
   store.decideApproval("approval-1", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
 
@@ -867,8 +870,25 @@ test("the gate authorizes only the action, scope and version that were approved"
   assert.equal(authorized.approval.decision.decidedBy, "alice");
 
   assert.equal(controller.authorizeCommand({ ...intent, action: "delete" }).reason, "approval-action-mismatch");
+  assert.equal(
+    controller.authorizeCommand({ ...intent, capability: "delete.production" }).reason,
+    "approval-capability-mismatch",
+  );
   assert.equal(controller.authorizeCommand({ ...intent, scope: "staging" }).reason, "approval-scope-mismatch");
   assert.equal(controller.authorizeCommand({ ...intent, commandId: "C2" }).reason, "approval-command-mismatch");
+});
+
+test("the gate will not authorize an action whose capability is not named", () => {
+  const { controller, intent } = approvalFixture();
+
+  assert.throws(
+    () => controller.authorizeCommand({ ...intent, capability: undefined }),
+    (error) => error instanceof InvariantError && /must name its capability/.test(error.message),
+  );
+  assert.throws(
+    () => controller.authorizeCommand({ ...intent, capability: "  " }),
+    /must name its capability/,
+  );
 });
 
 test("an authorized command is not an executed command, and not an accepted task", () => {
@@ -921,39 +941,47 @@ test("an approval does not waive the command's own expectedVersion", async () =>
   );
 });
 
-test("a command target is identified by its command id, never by a version", async () => {
-  const { store, controller } = fixture();
-  store.requestApproval({
-    id: "approval-cmd",
+test("the gate refuses a COMMAND target, because v0.1 has no durable Command", () => {
+  const { store, runtime, controller } = fixture();
+  const commandIntent = {
     targetType: ApprovalTargetType.COMMAND,
     targetId: "C9",
-    commandId: "C9",
     action: "deploy",
     capability: "deploy.production",
     scope: "production",
-    requestedBy: "requester-1",
-  });
-  store.decideApproval("approval-cmd", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
-
-  assert.equal(controller.authorizeCommand({
-    targetType: ApprovalTargetType.COMMAND,
-    targetId: "C9",
-    action: "deploy",
-    scope: "production",
     approvalId: "approval-cmd",
     commandId: "C9",
-  }).action, "AUTHORIZE");
+  };
 
+  // never authorized, whatever anyone claims exists — and the store agrees
   assert.throws(
-    () => controller.authorizeCommand({
+    () => controller.authorizeCommand(commandIntent),
+    (error) => error instanceof InvariantError && error.message === COMMAND_APPROVAL_UNAVAILABLE,
+  );
+  assert.throws(
+    () => store.requestApproval({
+      id: "approval-cmd",
       targetType: ApprovalTargetType.COMMAND,
       targetId: "C9",
-      action: "deploy",
-      scope: "production",
-      approvalId: "approval-cmd",
       commandId: "C9",
-      expectedVersion: 1,
+      action: "deploy",
+      capability: "deploy.production",
+      scope: "production",
+      requestedBy: "requester-1",
     }),
+    (error) => error instanceof InvariantError && error.message === COMMAND_APPROVAL_UNAVAILABLE,
+  );
+  assert.equal(store.getRecord("approval", "approval-cmd"), null, "no Command approval can be created");
+
+  // asking about a COMMAND target with no approval keeps the established answer,
+  // and a command target still cannot pretend to have a version
+  assert.equal(
+    controller.authorizeCommand({ ...commandIntent, approvalId: null }).reason,
+    "approval-required",
+  );
+  assert.throws(
+    () => controller.authorizeCommand({ ...commandIntent, expectedVersion: 1 }),
     (error) => error instanceof InvariantError && /no version/.test(error.message),
   );
+  assert.equal(runtime.started.length, 0, "a refused COMMAND gate executes nothing");
 });

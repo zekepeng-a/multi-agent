@@ -893,9 +893,10 @@ v0.1 implements the control gate a Command must pass, and not the Command
 lifecycle above:
 
 ```text
-Command intent (target, target_version, action, scope, expected_version)
+Command intent (target, target_version, action, capability, scope, expected_version)
   ↓
-Approval gate — a current, attributable, correctly scoped Approval must exist
+Approval gate — a current, attributable, correctly scoped Approval must exist,
+                for that action AND that capability
   ↓
 concurrency guard — the command's own expectedVersion must still hold
   ↓
@@ -908,6 +909,12 @@ AUTHORIZED  (or WAIT with a reason)
   `expected_version`; a stale command is still refused.
 - Authorization is read-only: the gate writes no fact, because recording
   consumption would be effect tracking (see §5.19, I-42, I-43).
+- **A command target is not offered yet.** A Command has no durable identity in
+  v0.1, so an approval cannot be about one and the gate refuses a COMMAND target
+  outright: `ApprovalTargetType.COMMAND` is reserved for the round that gives
+  Command durable identity (I-45). Half-supporting it — an approval that looks
+  legal while no Command object exists — is exactly what a control plane must not
+  do.
 
 ---
 
@@ -1009,6 +1016,17 @@ created_at: timestamp
 updated_at: timestamp
 ```
 
+`capability` is part of the authorized action, not decoration: an approval for
+`deploy.production` on `task-1` is not an approval to run `delete.production`
+against it, even though the target, version, action name and scope are identical.
+It is bound at request time like every other part of the request and is compared
+exactly at authorization time (I-44).
+
+`ApprovalTargetType.COMMAND` is **reserved but unsupported in v0.1**. Command is
+not yet a durable control object, so an approval about one would be a control fact
+claiming support for something the model does not have (I-45). Requesting, seeding
+or consuming a COMMAND approval therefore fails closed with one explicit message.
+
 ### What an Approval is not
 
 | Neighbour | The distinction |
@@ -1022,21 +1040,24 @@ updated_at: timestamp
 
 ### Binding: what was approved
 
-There is no shape of an Approval that means "the project is approved". Four
+There is no shape of an Approval that means "the project is approved". Five
 things are bound at request time and can never be edited afterwards:
 
 ```text
-target    (target_type, target_id)  →  WHICH thing
-version   (target_version)          →  WHICH state of it
-action    (action, capability)      →  WHICH operation
-scope     (scope)                   →  WHERE / HOW FAR
+target     (target_type, target_id)  →  WHICH thing
+version    (target_version)          →  WHICH state of it
+action     (action)                  →  WHICH operation
+capability (capability)              →  WHICH ability it exercises
+scope      (scope)                   →  WHERE / HOW FAR
 ```
 
 The target version is **read from the target**, not supplied by the requester: an
 approval that merely claims to be about v3 while the target is already at v4 would
-be a permission for a state that does not exist. `scope` is compared exactly in
-v0.1 — there is no wildcard, prefix, or hierarchy algebra, so an approval for
-`production` is not an approval for `production-eu`.
+be a permission for a state that does not exist. `scope` and `capability` are
+compared exactly in v0.1 — there is no wildcard, prefix, or hierarchy algebra, so
+an approval for `production` is not an approval for `production-eu`, and an
+approval to exercise `deploy.production` is not one to exercise
+`delete.production`.
 
 A `COMMAND` target is identified by its command id and has no version; the
 approval binds that command and can be consumed by no other.
@@ -1065,14 +1086,16 @@ PENDING ──► APPROVED ──► REVOKED
 
 An Approval is consumed through one read-only proof
 (`assertApprovalUsable`), which re-checks existence, effective status,
-attributability, target type, target id, action, scope, the bound command, the
-deadline, and — the check that matters most — the target's **current** version.
-Any failure is a refusal with a machine-readable reason
+attributability, target type, target id, action, **capability**, scope, the bound
+command, the deadline, and — the check that matters most — the target's **current**
+version. A consumption must also SAY which capability it exercises: an unnamed
+capability is not a wildcard, it is a request that cannot be authorized. Any
+failure is a refusal with a machine-readable reason
 (`MISSING`, `PENDING`, `REJECTED`, `REVOKED`, `EXPIRED`, `UNKNOWN`, `UNATTRIBUTED`,
 `TARGET_TYPE_MISMATCH`, `TARGET_ID_MISMATCH`, `TARGET_MISSING`, `STALE`,
-`ACTION_MISMATCH`, `SCOPE_MISMATCH`, `COMMAND_MISMATCH`), so a caller never has to
-parse a message to learn why. A status this version cannot reason about is
-`UNKNOWN`, not "probably fine".
+`ACTION_MISMATCH`, `CAPABILITY_MISMATCH`, `SCOPE_MISMATCH`, `COMMAND_MISMATCH`), so
+a caller never has to parse a message to learn why. A status this version cannot
+reason about is `UNKNOWN`, not "probably fine".
 
 Consumption is deliberately **not recorded** in v0.1: there is no Effect ledger,
 and a "used" flag would claim knowledge about the external world that this layer
@@ -1375,6 +1398,8 @@ I-40 Approval authorizes a specific action on a specific target and scope; it is
 I-41 An Approval is bound to a concrete target version and cannot authorize a newer authoritative version.
 I-42 Approval does not imply execution success or Acceptance.
 I-43 A revoked, expired, rejected, or stale Approval cannot authorize a Command.
+I-44 An Approval's capability is part of the authorized action and must match the capability presented at authorization time.
+I-45 A control fact must not claim support for a target type whose authoritative control object does not exist in the current Project Control model.
 ```
 
 ---
@@ -2080,6 +2105,8 @@ The following are currently CONFIRMED:
   that an approval is required).
 - Command lifecycle states (v0.1 has the authorization gate, not a Command record
   with its own status).
+- The COMMAND approval target: reserved in the vocabulary, refused everywhere in
+  v0.1, and only meaningful once Command is a durable control object.
 - Approval scope algebra (v0.1 compares `scope` exactly; no wildcards, prefixes,
   or containment).
 - Whether approval consumption is recorded (that is an Effect-ledger question).
@@ -2253,7 +2280,7 @@ An Approval is about a target, not owned by it:
 
 ```text
 Approval.request.target_type + target_id + target_version  →  what it authorizes
-Approval.action + scope + capability                       →  how far it reaches
+Approval.action + capability + scope                       →  how far it reaches
 Approval.command_id                                        →  the command it is for
 Approval.decision.decided_by                               →  who decided (required)
 ```
@@ -2262,6 +2289,9 @@ Approval.decision.decided_by                               →  who decided (req
   still a READY Task, and no approval is created by accepting anything.
 - It does not follow the target: when the target's version moves, the approval is
   STALE and authorizes nothing.
+- It does not widen: matching target, version, action and scope with a different
+  **capability** is a different authorization, and `CAPABILITY_MISMATCH` is its own
+  refusal — the capability is not a label on the action, it is part of it.
 - Project membership and approval scope are unrelated mechanisms: `scope` is an
   opaque, exactly-compared label in v0.1, not a tree of project resources.
 
