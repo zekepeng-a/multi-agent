@@ -864,13 +864,25 @@ UNKNOWN is a first-class state.
 
 ## 5.16 Command
 
-Purpose: requested action issued by a controller.
+Purpose: one durable, concrete action requested by the Control Plane.
+
+ADR-0001 freezes the boundary between **durable intent/authorization** and later
+external execution. A Command is not the current replay-row mechanism and is not
+an Effect.
+
+Target schema:
 
 ```yaml
 id: CommandId
-command_type: string
-target_type: string
+version: integer
+project_id: ProjectId?
+target_type: PROJECT | MILESTONE | GOAL | TASK
 target_id: string
+target_version: integer
+action: string
+capability: string
+scope: string
+risk_level: LOW | MODERATE | HIGH | CRITICAL
 requested_by: string
 expected_version: integer?
 parameters: object
@@ -878,43 +890,115 @@ idempotency_key: string
 status:
   - CREATED
   - AUTHORIZED
-  - DISPATCHED
-  - EXECUTING
-  - SUCCEEDED
-  - FAILED
   - REJECTED
-  - UNKNOWN
+  - DISPATCHED      # reserved until G3
+  - EXECUTING       # reserved until G3
+  - SUCCEEDED       # reserved until G3
+  - FAILED          # reserved until G3
+  - UNKNOWN         # reserved until G3
+authorization:
+  approval_id: ApprovalId?
+  authorized_at: timestamp?
+  rejected_at: timestamp?
+  reason: string?
+  approval_reason: string?
 created_at: timestamp
+updated_at: timestamp
 ```
 
-### Command authorization (v0.1)
+### G2 supported lifecycle
 
-v0.1 implements the control gate a Command must pass, and not the Command
-lifecycle above:
+G2 implements only the lifecycle whose semantics do not require an Effect ledger:
 
 ```text
-Command intent (target, target_version, action, capability, scope, expected_version)
-  ↓
-Approval gate — a current, attributable, correctly scoped Approval must exist,
-                for that action AND that capability
-  ↓
-concurrency guard — the command's own expectedVersion must still hold
-  ↓
-AUTHORIZED  (or WAIT with a reason)
+CREATED
+   ├──→ AUTHORIZED
+   └──→ REJECTED
 ```
 
-- **An Approval is not an authorization result.** The gate consumes the
-  permission; there is no `Command` record and no `SUCCEEDED` state in v0.1.
-- **An Approval is not a concurrency exemption.** Passing the gate does not waive
-  `expected_version`; a stale command is still refused.
-- Authorization is read-only: the gate writes no fact, because recording
-  consumption would be effect tracking (see §5.19, I-42, I-43).
-- **A command target is not offered yet.** A Command has no durable identity in
-  v0.1, so an approval cannot be about one and the gate refuses a COMMAND target
-  outright: `ApprovalTargetType.COMMAND` is reserved for the round that gives
-  Command durable identity (I-45). Half-supporting it — an approval that looks
-  legal while no Command object exists — is exactly what a control plane must not
-  do.
+`DISPATCHED / EXECUTING / SUCCEEDED / FAILED / UNKNOWN` remain canonical future
+states but are **reserved and non-writable during G2**. G3 owns their interaction
+with Effect, runtime acknowledgement, external receipts, uncertainty and retry.
+
+### Durable intent
+
+The Command binds its target/action at creation. These facts do not change in place:
+
+```text
+target type/id/version
+action
+capability
+scope
+risk level
+requested_by
+expected_version
+parameters
+idempotency_key
+```
+
+The Control Plane reads `target_version` from current authoritative state when
+creating the Command; a caller does not get to claim an arbitrary current version.
+
+A materially different action is represented by a new Command.
+
+### Authorization
+
+Authorization operates on the stored Command, not on a new caller-presented copy
+of its intent:
+
+```text
+Command(CREATED)
+  ↓
+read current target
+  ↓
+target_version + expected_version still current?
+  ↓
+Approval gate for stored target/action/capability/scope
+  ↓
+AUTHORIZED
+```
+
+A missing/pending permission returns WAIT and leaves the Command `CREATED`.
+A definite fail-closed refusal may move the concrete Command to `REJECTED`
+according to the implementation's explicit reason table.
+
+`AUTHORIZED` means only:
+
+> this exact stored Command passed the control gate against the authoritative
+> state observed at authorization time.
+
+It does **not** mean dispatch, runtime receipt, external effect, success, Evidence,
+Verification, or Acceptance.
+
+The authorization transition may therefore be recorded durably without claiming
+Effect knowledge.
+
+### Existing replay rows are not Commands
+
+The current store-level replay registry:
+
+```text
+command_id → { operation, result_id }
+```
+
+is an idempotency mechanism for authoritative store mutations. It must not be
+reinterpreted as the Command domain.
+
+A durable Command uses a separate collection/storage shape.
+
+`CommandId`, Command `idempotency_key`, and the existing store-mutation
+`commandId` are separate identities with separate meanings.
+
+### COMMAND-target Approval
+
+Even after Command gains durable identity, G2 does not automatically enable
+`ApprovalTargetType.COMMAND`.
+
+Whether approval should target a Command or the underlying Project/Task action is
+a later Policy/Approval-composition question. The current COMMAND-target Approval
+boundary therefore remains fail closed in G2.
+
+See `docs/architecture/decisions/ADR-0001-durable-command-boundary.md`.
 
 ---
 
