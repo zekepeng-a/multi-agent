@@ -17,6 +17,8 @@ import {
   ApprovalStatus,
   ApprovalTargetType,
   COMMAND_APPROVAL_UNAVAILABLE,
+  CommandStatus,
+  CommandTargetType,
   EvidenceStatus,
   ConflictError,
   InvariantError,
@@ -27,6 +29,7 @@ import {
   RunStatus,
   AttemptStatus,
   createApproval,
+  createCommand,
   createEvidence,
   now,
 } from "./domain.mjs";
@@ -43,6 +46,7 @@ export const Collection = Object.freeze({
   EVIDENCE: "evidence",
   VERIFICATION: "verification",
   APPROVAL: "approval",
+  COMMAND: "control_command",
 });
 
 // A lifecycle transition that is a domain decision in its own right is recorded
@@ -131,6 +135,19 @@ const APPROVAL_TARGET_COLLECTION = Object.freeze({
   [ApprovalTargetType.GOAL]: Collection.GOAL,
   [ApprovalTargetType.TASK]: Collection.TASK,
 });
+
+const COMMAND_TARGET_COLLECTION = Object.freeze({
+  [CommandTargetType.PROJECT]: Collection.PROJECT,
+  [CommandTargetType.MILESTONE]: Collection.MILESTONE,
+  [CommandTargetType.GOAL]: Collection.GOAL,
+  [CommandTargetType.TASK]: Collection.TASK,
+});
+
+const G2_COMMAND_WRITABLE_STATUSES = Object.freeze([
+  CommandStatus.CREATED,
+  CommandStatus.AUTHORIZED,
+  CommandStatus.REJECTED,
+]);
 
 /**
  * What an approval request BINDS, and therefore what a later update may never
@@ -928,6 +945,181 @@ export class ProjectControlStore {
    * here too, so a seeded APPROVED approval cannot exist without an
    * `approval.approved` event explaining it.
    */
+  // ── Durable Command (G2) ───────────────────────────────────────────────────
+  //
+  // This domain is deliberately separate from the backend replay registry
+  // exposed by getCommand()/putCommand(). Those rows deduplicate store
+  // mutations; these records are authoritative requested actions.
+
+  createControlCommand(request, { mutationId = null } = {}) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(mutationId, "createControlCommand");
+      if (replay) return this.getControlCommand(replay);
+
+      const collection = COMMAND_TARGET_COLLECTION[request.targetType];
+      if (!collection) {
+        throw new InvariantError(`unknown command target type: ${request.targetType}`);
+      }
+      const target = this.getRecord(collection, request.targetId);
+      if (!target) {
+        throw new InvariantError(`command target not found: ${request.targetType} ${request.targetId}`);
+      }
+
+      const declaredTargetVersion = request.targetVersion ?? null;
+      if (declaredTargetVersion != null && declaredTargetVersion !== target.version) {
+        throw new InvariantError(
+          `command target ${request.targetId} is v${target.version}, not v${declaredTargetVersion}`,
+        );
+      }
+      if (request.expectedVersion != null && request.expectedVersion !== target.version) {
+        throw new ConflictError(
+          `command ${request.id} expected target v${request.expectedVersion}, current v${target.version}`,
+        );
+      }
+
+      const projectId = request.projectId ?? (
+        request.targetType === CommandTargetType.PROJECT ? target.id : target.projectId ?? null
+      );
+      const command = createCommand({
+        ...request,
+        projectId,
+        targetVersion: target.version,
+        status: CommandStatus.CREATED,
+        version: 1,
+        authorization: null,
+      });
+      this.#assertCommandCoherent(command);
+
+      if (!this.insertRecord(Collection.COMMAND, command.id, structuredClone(command))) {
+        throw new Error(`command already exists: ${command.id}`);
+      }
+      this.#event("command.created", command.id, this.#commandIntentPayload(command), {
+        commandId: mutationId,
+        aggregateVersion: command.version,
+      });
+      this.#rememberCommand(mutationId, "createControlCommand", command.id);
+      return structuredClone(command);
+    });
+  }
+
+  getControlCommand(id) {
+    return structuredClone(this.#required(Collection.COMMAND, id, "command"));
+  }
+
+  getControlCommandsForTarget(targetType, targetId) {
+    return structuredClone(this.allRecords(Collection.COMMAND).filter(
+      (command) => command.targetType === targetType && command.targetId === targetId,
+    ));
+  }
+
+  authorizeControlCommand(
+    commandId,
+    expectedCommandVersion,
+    { approvalId = null } = {},
+    { mutationId = null } = {},
+  ) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(mutationId, "authorizeControlCommand");
+      if (replay) {
+        const command = this.getControlCommand(replay);
+        return {
+          action: command.status === CommandStatus.AUTHORIZED ? "AUTHORIZE" : "REJECT",
+          reason: command.authorization?.reason ?? "command-replayed",
+          command,
+        };
+      }
+
+      const current = this.#required(Collection.COMMAND, commandId, "command");
+      this.#assertCommandCoherent(current);
+      if (current.version !== expectedCommandVersion) {
+        throw new ConflictError(
+          `command ${commandId} expected v${expectedCommandVersion}, current v${current.version}`,
+        );
+      }
+      if (current.status !== CommandStatus.CREATED) {
+        throw new InvariantError(
+          `command ${commandId} is already ${current.status}; authorization is a one-way transition`,
+        );
+      }
+
+      const targetCollection = COMMAND_TARGET_COLLECTION[current.targetType];
+      const target = targetCollection ? this.getRecord(targetCollection, current.targetId) : null;
+      if (!target) return this.#rejectControlCommand(current, "target-missing", null, mutationId);
+      if (target.version !== current.targetVersion) {
+        return this.#rejectControlCommand(current, "target-stale", null, mutationId);
+      }
+      if (current.expectedVersion != null && target.version !== current.expectedVersion) {
+        return this.#rejectControlCommand(current, "expected-version-conflict", null, mutationId);
+      }
+
+      if (!approvalId) {
+        return { action: "WAIT", reason: "approval-required", command: structuredClone(current) };
+      }
+
+      let approval;
+      try {
+        approval = this.assertApprovalUsable({
+          approvalId,
+          targetType: current.targetType,
+          targetId: current.targetId,
+          targetVersion: current.targetVersion,
+          action: current.action,
+          capability: current.capability,
+          scope: current.scope,
+          commandId: current.id,
+        });
+      } catch (error) {
+        if (!(error instanceof ApprovalError)) throw error;
+        const reason = `approval-${String(error.approvalReason).toLowerCase().replaceAll("_", "-")}`;
+        if (
+          error.approvalReason === ApprovalFailureReason.MISSING ||
+          error.approvalReason === ApprovalFailureReason.PENDING
+        ) {
+          return {
+            action: "WAIT",
+            reason,
+            approvalReason: error.approvalReason,
+            command: structuredClone(current),
+          };
+        }
+        return this.#rejectControlCommand(current, reason, error.approvalReason, mutationId, approvalId);
+      }
+
+      const next = {
+        ...current,
+        version: current.version + 1,
+        status: CommandStatus.AUTHORIZED,
+        authorization: {
+          approvalId: approval.id,
+          authorizedAt: now(),
+          rejectedAt: null,
+          reason: "command-authorized",
+          approvalReason: null,
+        },
+        updatedAt: now(),
+      };
+      this.#assertCommandCoherent(next);
+      if (!this.updateRecord(Collection.COMMAND, current.id, next, current.version)) {
+        throw new ConflictError(
+          `command ${current.id} expected v${current.version}, but it changed in another writer`,
+        );
+      }
+      this.#event("command.authorized", current.id, {
+        approvalId: approval.id,
+        targetType: current.targetType,
+        targetId: current.targetId,
+        targetVersion: current.targetVersion,
+      }, { commandId: mutationId, aggregateVersion: next.version });
+      this.#rememberCommand(mutationId, "authorizeControlCommand", current.id);
+      return {
+        action: "AUTHORIZE",
+        reason: "command-authorized",
+        command: structuredClone(next),
+        approval: structuredClone(approval),
+      };
+    });
+  }
+
   seedApproval(approval) {
     return this.runInTransaction(() => {
       const record = structuredClone(approval);
@@ -1373,6 +1565,98 @@ export class ProjectControlStore {
       this.#rememberCommand(commandId, operation, approvalId);
       return structuredClone(next);
     });
+  }
+
+  #rejectControlCommand(current, reason, approvalReason, mutationId, approvalId = null) {
+    const next = {
+      ...current,
+      version: current.version + 1,
+      status: CommandStatus.REJECTED,
+      authorization: {
+        approvalId,
+        authorizedAt: null,
+        rejectedAt: now(),
+        reason,
+        approvalReason,
+      },
+      updatedAt: now(),
+    };
+    this.#assertCommandCoherent(next);
+    if (!this.updateRecord(Collection.COMMAND, current.id, next, current.version)) {
+      throw new ConflictError(
+        `command ${current.id} expected v${current.version}, but it changed in another writer`,
+      );
+    }
+    this.#event("command.rejected", current.id, {
+      reason,
+      approvalReason,
+      approvalId,
+      targetType: current.targetType,
+      targetId: current.targetId,
+      targetVersion: current.targetVersion,
+    }, { commandId: mutationId, aggregateVersion: next.version });
+    this.#rememberCommand(mutationId, "authorizeControlCommand", current.id);
+    return { action: "REJECT", reason, approvalReason, command: structuredClone(next) };
+  }
+
+  #commandIntentPayload(command) {
+    return {
+      targetType: command.targetType,
+      targetId: command.targetId,
+      targetVersion: command.targetVersion,
+      action: command.action,
+      capability: command.capability,
+      scope: command.scope,
+      riskLevel: command.riskLevel,
+      requestedBy: command.requestedBy,
+      expectedVersion: command.expectedVersion,
+      idempotencyKey: command.idempotencyKey,
+    };
+  }
+
+  #assertCommandCoherent(command) {
+    if (!command?.id || !Number.isInteger(command.version) || command.version < 1) {
+      throw new InvariantError("command identity is incomplete");
+    }
+    if (!Object.values(CommandTargetType).includes(command.targetType)) {
+      throw new InvariantError(`command ${command.id} has unknown target type: ${command.targetType}`);
+    }
+    for (const field of ["targetId", "action", "capability", "scope", "requestedBy", "idempotencyKey"]) {
+      if (typeof command[field] !== "string" || command[field].trim() === "") {
+        throw new InvariantError(`command ${command.id} binds no ${field}`);
+      }
+    }
+    if (!Number.isInteger(command.targetVersion) || command.targetVersion < 1) {
+      throw new InvariantError(`command ${command.id} has invalid targetVersion`);
+    }
+    if (
+      command.expectedVersion != null &&
+      (!Number.isInteger(command.expectedVersion) || command.expectedVersion < 1)
+    ) {
+      throw new InvariantError(`command ${command.id} has invalid expectedVersion`);
+    }
+    if (!Object.values(CommandStatus).includes(command.status)) {
+      throw new InvariantError(`command ${command.id} has unknown status: ${command.status}`);
+    }
+    if (!G2_COMMAND_WRITABLE_STATUSES.includes(command.status)) {
+      throw new InvariantError(
+        `command ${command.id} status ${command.status} is reserved until the G3 Effect boundary`,
+      );
+    }
+    const authorization = command.authorization ?? {};
+    if (command.status === CommandStatus.CREATED) {
+      if (authorization.authorizedAt || authorization.rejectedAt) {
+        throw new InvariantError(`command ${command.id} is CREATED but carries an authorization decision`);
+      }
+    } else if (command.status === CommandStatus.AUTHORIZED) {
+      if (!authorization.authorizedAt || !authorization.approvalId || authorization.rejectedAt) {
+        throw new InvariantError(`command ${command.id} is AUTHORIZED without an attributable authorization`);
+      }
+    } else if (command.status === CommandStatus.REJECTED) {
+      if (!authorization.rejectedAt || authorization.authorizedAt || !authorization.reason) {
+        throw new InvariantError(`command ${command.id} is REJECTED without a rejection fact`);
+      }
+    }
   }
 
   /** Current authoritative version of an approval target, or null when there is none. */
