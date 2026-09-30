@@ -4,7 +4,9 @@ Date: 2026-09-30
 Architecture: ACCEPTED ADR-0008.
 Implementation baseline: `43af65b58717d127f8948906992916006feb8b5c` on
 `project-control/controller-v0.1`.
-Status: implemented and locally verified; Node 22 CI pending publication.
+Verified implementation commit: `9b3a0f6b5bd6161cc0f89198465412e8c9537146`.
+CI: [GitHub Actions run 36723895383](https://github.com/zekepeng-a/multi-agent/actions/runs/36723895383).
+Status: implemented; local regression and full Node 22 CI passed.
 Phase completion remains subject to independent review. ROADMAP is not advanced.
 
 ## Implemented boundary
@@ -105,8 +107,12 @@ Local runtime: Node `v24.19.0`, built-in SQLite available.
 - The full suite retains all 533 pre-existing tests, including Decision,
   Approval, Policy, Acceptance, Controller, persistence and legacy Runtime.
 - `git diff --check`: clean.
-- Required remote proof: existing CI Node 22 job must run all 592 tests with
-  SQLite available and zero skips. Actual run/commit will be recorded after CI.
+- Observed remote proof: CI run `36723895383`, Node 22 job `109915686554`,
+  **592 passed, 0 failed, 0 skipped**, built-in SQLite capability check passed.
+  Node 20 job `109915686486` also passed: 383 passed, 0 failed, 209 expected
+  SQLite-capability skips. Node 20 is not the complete persistence exit proof.
+  The subsequent Evidence-only commit preserves this tested implementation;
+  its own commit checks remain independently inspectable in GitHub Actions.
 
 ## ADR-0008 exit criteria coverage
 
@@ -138,7 +144,7 @@ uses independent Node processes and a real SQLite file; the helper is
 | 19 | intent-bound mutation replay; different intent rejected; restart replays promotion, replacement, withdrawal and reconciliation without resurrection/events |
 | 20 | same 27 behavioral cases on both backends |
 | 21 | real process restart; changed real artifact/Decision/target version; UNRESOLVED and recorded-ACTIVE separation |
-| 22 | all pre-existing tests retained; full local suite green; exact remote Node 22 CI required |
+| 22 | all pre-existing tests retained; full local suite green; observed Node 22 CI: 592 pass, zero failures/skips |
 | 23 | this Evidence records implemented boundary and observation limits; independent stage review pending |
 
 ## Scope and completion review
