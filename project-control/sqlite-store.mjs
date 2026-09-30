@@ -320,6 +320,7 @@ const SHAPES = {
     // (see ProjectControlStore#getApprovalsForTarget): a filter vocabulary that
     // only this backend could honour would make one call mean two things.
     filters: { id: "id" },
+  },
   [Collection.COMMAND]: {
     table: "control_commands",
     scope: "id",
@@ -332,7 +333,6 @@ const SHAPES = {
       status: r.status,
     }),
     filters: { id: "id", targetId: "target_id" },
-  },
   },
 };
 
