@@ -20,6 +20,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 
 ### Project Control prototype
 
+- **G2 Durable Command completed.** Added a separate durable Command domain with stored immutable intent, MemoryStore/SQLite persistence, optimistic command versioning, CREATED→AUTHORIZED/REJECTED transitions, event history and restart proof. Existing store-mutation command replay rows remain separate. Full CI at the verified G2 head: 450/450, 0 skipped on Node 22.23.3.
+
 The `project-control/` branch work introduced a separate control-plane prototype above runtimes:
 
 - Project / Milestone / Goal / Task hierarchy with child-side relationship authority.
