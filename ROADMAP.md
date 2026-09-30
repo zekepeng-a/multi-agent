@@ -229,7 +229,7 @@ Packaging identity may become E if it implies splitting/renaming the product.
 
 # G2 — Durable Command boundary
 
-**Status: ACTIVE / D-GATE RESOLVED — IMPLEMENTATION ALLOWED**
+**Status: COMPLETE**
 
 ## Why this comes before Effect
 
@@ -267,15 +267,17 @@ Implementation must remain inside ADR-0001's boundary.
 
 ## Exit gate
 
-A durable Command can exist without pretending that authorization means dispatch or success.
+**SATISFIED.** See `docs/architecture/COMMAND_G2_EVIDENCE.md`.
 
-COMMAND-target Approval may be enabled only when I-45 is genuinely satisfied.
+A durable Command now exists without pretending that authorization means dispatch or success.
+
+COMMAND-target Approval remains deliberately disabled; durable identity alone does not settle the later Policy/Approval target decision.
 
 ---
 
 # G3 — External Effect and reconciliation boundary
 
-**Status: QUEUED / depends on G2**
+**Status: ACTIVE / D-GATE REQUIRED**
 
 ## Goal
 
@@ -457,12 +459,12 @@ Current durable phase boundary:
 ```text
 COMPLETE: G0 Governance convergence
 COMPLETE: G1 Baseline hardening
-ACTIVE:   G2 Durable Command boundary — implementation allowed by ADR-0001
-NEXT:     G3 External Effect + reconciliation boundary
-AUTHORIZED TO CODE:
-          ADR-0001 bounded Command CREATED/AUTHORIZED/REJECTED lifecycle only
-BLOCKED:
-          dispatch / Effect / UNKNOWN / retry semantics until G3
+COMPLETE: G2 Durable Command boundary
+ACTIVE:   G3 External Effect + reconciliation boundary — D-GATE
+NEXT:     G4 Policy / authorization composition
+BLOCKED FROM CODING:
+          Effect / dispatch / UNKNOWN / retry-reconcile implementation
+          until the G3 architecture decision is accepted
 ```
 
 G0 exited after governance/read-order, legacy-runtime scoping, current-reality mapping, Roadmap authority, Changelog, and ADR convention were present in Git.
