@@ -27,6 +27,7 @@ import {
   EffectReconciliationStatus,
   EffectStatus,
   InvariantError,
+  PolicyEffect,
   RiskLevel,
   TaskStatus,
   VerificationVerdict,
@@ -101,7 +102,17 @@ function createAuthorizedCommand(store, id = "command-1") {
     decision: ApprovalDecision.APPROVE,
     decidedBy: "alice",
   });
-  return store.authorizeControlCommand(command.id, command.version, { approvalId: pending.id }).command;
+  const policy = store.recordPolicyDecision(command.id, command.version, {
+    id: `policy-${id}`,
+    effect: PolicyEffect.REQUIRE_APPROVAL,
+    policyVersion: "effect-test-v1",
+    reasons: ["effect test requires approval"],
+    matchedRuleIds: ["require-deploy"],
+  });
+  return store.authorizeControlCommand(command.id, command.version, {
+    policyDecisionId: policy.id,
+    approvalId: pending.id,
+  }).command;
 }
 
 function controllerFor(store, effectDriver) {
