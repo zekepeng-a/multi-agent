@@ -19,6 +19,9 @@ import {
   COMMAND_APPROVAL_UNAVAILABLE,
   CommandStatus,
   CommandTargetType,
+  EffectObservation,
+  EffectReconciliationStatus,
+  EffectStatus,
   EvidenceStatus,
   ConflictError,
   InvariantError,
@@ -30,6 +33,7 @@ import {
   AttemptStatus,
   createApproval,
   createCommand,
+  createEffect,
   createEvidence,
   now,
 } from "./domain.mjs";
@@ -47,6 +51,7 @@ export const Collection = Object.freeze({
   VERIFICATION: "verification",
   APPROVAL: "approval",
   COMMAND: "control_command",
+  EFFECT: "effect",
 });
 
 // A lifecycle transition that is a domain decision in its own right is recorded
@@ -1120,6 +1125,232 @@ export class ProjectControlStore {
     });
   }
 
+  // ── Durable Effect (G3) ─────────────────────────────────────────────────────
+  //
+  // Effect records external-world uncertainty. It is created only from a stored
+  // AUTHORIZED Command and is persisted before the external-call boundary.
+
+  createEffectFromCommand(
+    { id, commandId, destination, idempotencyKey = null, projectId = null } = {},
+    { mutationId = null } = {},
+  ) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(mutationId, "createEffectFromCommand");
+      if (replay) return this.getEffect(replay);
+
+      const command = this.#required(Collection.COMMAND, commandId, "command");
+      if (command.status !== CommandStatus.AUTHORIZED) {
+        throw new InvariantError(
+          `effect ${id ?? "(unnamed)"} requires an AUTHORIZED command; ${commandId} is ${command.status}`,
+        );
+      }
+
+      const effect = createEffect({
+        id,
+        projectId: projectId ?? command.projectId ?? null,
+        commandId: command.id,
+        action: command.action,
+        capability: command.capability,
+        destination,
+        idempotencyKey: idempotencyKey ?? command.idempotencyKey,
+      });
+      this.#assertEffectCoherent(effect);
+
+      if (!this.insertRecord(Collection.EFFECT, effect.id, structuredClone(effect))) {
+        throw new Error(`effect already exists: ${effect.id}`);
+      }
+      this.#event("effect.requested", effect.id, this.#effectPayload(effect), {
+        commandId: mutationId,
+        aggregateVersion: effect.version,
+      });
+      this.#rememberCommand(mutationId, "createEffectFromCommand", effect.id);
+      return structuredClone(effect);
+    });
+  }
+
+  getEffect(id) {
+    return structuredClone(this.#required(Collection.EFFECT, id, "effect"));
+  }
+
+  getEffectsForCommand(commandId) {
+    return this.recordsMatching(Collection.EFFECT, "commandId", commandId);
+  }
+
+  markEffectDispatched(effectId, expectedVersion, { mutationId = null } = {}) {
+    return this.#mutateEffect(effectId, expectedVersion, "markEffectDispatched", {
+      mutationId,
+      allowed: [EffectStatus.REQUESTED],
+      eventType: "effect.dispatched",
+      build: (current) => ({
+        ...current,
+        status: EffectStatus.DISPATCHED,
+        dispatchCount: current.dispatchCount + 1,
+        reconciliation: {
+          status: EffectReconciliationStatus.REQUIRED,
+          lastObservation: null,
+          observationRef: null,
+          reconciledAt: null,
+        },
+      }),
+    });
+  }
+
+  recordEffectOutcome(
+    effectId,
+    expectedVersion,
+    { outcome, receipt = null, observationRef = null } = {},
+    { mutationId = null } = {},
+  ) {
+    if (!Object.values(EffectObservation).includes(outcome)) {
+      throw new InvariantError(`unknown effect observation: ${outcome}`);
+    }
+    return this.#mutateEffect(effectId, expectedVersion, "recordEffectOutcome", {
+      mutationId,
+      allowed: [EffectStatus.DISPATCHED],
+      eventType: outcome === EffectObservation.CONFIRMED_SUCCEEDED
+        ? "effect.succeeded"
+        : outcome === EffectObservation.CONFIRMED_NO_EFFECT
+          ? "effect.failed_no_effect"
+          : "effect.unknown",
+      build: (current) => {
+        if (outcome === EffectObservation.CONFIRMED_SUCCEEDED && !this.#hasEffectReceipt(receipt, observationRef)) {
+          throw new InvariantError(`effect ${effectId} cannot be SUCCEEDED without a receipt/reference`);
+        }
+        if (
+          outcome === EffectObservation.CONFIRMED_NO_EFFECT &&
+          (typeof observationRef !== "string" || observationRef.trim() === "")
+        ) {
+          throw new InvariantError(`effect ${effectId} cannot prove no effect without an observation reference`);
+        }
+
+        const status = outcome === EffectObservation.CONFIRMED_SUCCEEDED
+          ? EffectStatus.SUCCEEDED
+          : outcome === EffectObservation.CONFIRMED_NO_EFFECT
+            ? EffectStatus.FAILED_NO_EFFECT
+            : EffectStatus.UNKNOWN;
+        return {
+          ...current,
+          status,
+          externalReceipt: receipt ? {
+            provider: receipt.provider ?? null,
+            receiptId: receipt.receiptId ?? null,
+            resultRef: receipt.resultRef ?? null,
+          } : current.externalReceipt,
+          reconciliation: {
+            status: status === EffectStatus.UNKNOWN
+              ? EffectReconciliationStatus.REQUIRED
+              : EffectReconciliationStatus.RESOLVED,
+            lastObservation: outcome,
+            observationRef,
+            reconciledAt: status === EffectStatus.UNKNOWN ? null : now(),
+          },
+        };
+      },
+      payload: (next) => this.#effectOutcomePayload(next),
+    });
+  }
+
+  beginEffectReconciliation(effectId, expectedVersion, { mutationId = null } = {}) {
+    return this.#mutateEffect(effectId, expectedVersion, "beginEffectReconciliation", {
+      mutationId,
+      allowed: [EffectStatus.DISPATCHED, EffectStatus.UNKNOWN],
+      eventType: "effect.reconciliation_started",
+      build: (current) => ({
+        ...current,
+        status: current.status === EffectStatus.DISPATCHED ? EffectStatus.UNKNOWN : current.status,
+        reconciliation: {
+          ...current.reconciliation,
+          status: EffectReconciliationStatus.IN_PROGRESS,
+        },
+      }),
+    });
+  }
+
+  applyEffectReconciliation(
+    effectId,
+    expectedVersion,
+    { outcome, observationRef, receipt = null } = {},
+    { mutationId = null } = {},
+  ) {
+    if (!Object.values(EffectObservation).includes(outcome)) {
+      throw new InvariantError(`unknown effect reconciliation outcome: ${outcome}`);
+    }
+    return this.#mutateEffect(effectId, expectedVersion, "applyEffectReconciliation", {
+      mutationId,
+      allowed: [EffectStatus.UNKNOWN, EffectStatus.DISPATCHED],
+      eventType: outcome === EffectObservation.CONFIRMED_SUCCEEDED
+        ? "effect.reconciled_succeeded"
+        : outcome === EffectObservation.CONFIRMED_NO_EFFECT
+          ? "effect.reconciled_no_effect"
+          : "effect.reconciliation_unknown",
+      precheck: (current) => {
+        if (
+          current.reconciliation?.status !== EffectReconciliationStatus.IN_PROGRESS &&
+          current.reconciliation?.status !== EffectReconciliationStatus.REQUIRED
+        ) {
+          throw new InvariantError(
+            `effect ${effectId} is not awaiting reconciliation (${current.reconciliation?.status})`,
+          );
+        }
+        if (
+          outcome !== EffectObservation.UNKNOWN &&
+          (typeof observationRef !== "string" || observationRef.trim() === "")
+        ) {
+          throw new InvariantError(
+            `effect ${effectId} reconciliation cannot resolve without an observation reference`,
+          );
+        }
+        if (outcome === EffectObservation.CONFIRMED_SUCCEEDED && !this.#hasEffectReceipt(receipt, observationRef)) {
+          throw new InvariantError(`effect ${effectId} cannot be reconciled SUCCEEDED without a receipt/reference`);
+        }
+      },
+      build: (current) => {
+        const status = outcome === EffectObservation.CONFIRMED_SUCCEEDED
+          ? EffectStatus.SUCCEEDED
+          : outcome === EffectObservation.CONFIRMED_NO_EFFECT
+            ? EffectStatus.FAILED_NO_EFFECT
+            : EffectStatus.UNKNOWN;
+        return {
+          ...current,
+          status,
+          externalReceipt: receipt ? {
+            provider: receipt.provider ?? null,
+            receiptId: receipt.receiptId ?? null,
+            resultRef: receipt.resultRef ?? null,
+          } : current.externalReceipt,
+          reconciliation: {
+            status: status === EffectStatus.UNKNOWN
+              ? EffectReconciliationStatus.REQUIRED
+              : EffectReconciliationStatus.RESOLVED,
+            lastObservation: outcome,
+            observationRef: observationRef ?? null,
+            reconciledAt: status === EffectStatus.UNKNOWN ? null : now(),
+          },
+        };
+      },
+      payload: (next) => this.#effectOutcomePayload(next),
+    });
+  }
+
+  rerequestEffect(effectId, expectedVersion, { mutationId = null } = {}) {
+    return this.#mutateEffect(effectId, expectedVersion, "rerequestEffect", {
+      mutationId,
+      allowed: [EffectStatus.FAILED_NO_EFFECT],
+      eventType: "effect.rerequested",
+      build: (current) => ({
+        ...current,
+        status: EffectStatus.REQUESTED,
+        externalReceipt: { provider: null, receiptId: null, resultRef: null },
+        reconciliation: {
+          status: EffectReconciliationStatus.NOT_REQUIRED,
+          lastObservation: null,
+          observationRef: null,
+          reconciledAt: null,
+        },
+      }),
+    });
+  }
+
   seedApproval(approval) {
     return this.runInTransaction(() => {
       const record = structuredClone(approval);
@@ -1565,6 +1796,114 @@ export class ProjectControlStore {
       this.#rememberCommand(commandId, operation, approvalId);
       return structuredClone(next);
     });
+  }
+
+  #mutateEffect(
+    effectId,
+    expectedVersion,
+    operation,
+    { mutationId = null, allowed, eventType, precheck = null, build, payload = null },
+  ) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(mutationId, operation);
+      if (replay) return this.getEffect(replay);
+
+      const current = this.#required(Collection.EFFECT, effectId, "effect");
+      this.#assertEffectCoherent(current);
+      if (current.version !== expectedVersion) {
+        throw new ConflictError(
+          `effect ${effectId} expected v${expectedVersion}, current v${current.version}`,
+        );
+      }
+      if (!allowed.includes(current.status)) {
+        throw new InvariantError(
+          `effect ${effectId} is ${current.status} and may not perform ${operation}`,
+        );
+      }
+      if (precheck) precheck(current);
+
+      const next = {
+        ...build(current),
+        version: current.version + 1,
+        updatedAt: now(),
+      };
+      this.#assertEffectCoherent(next);
+      if (!this.updateRecord(Collection.EFFECT, effectId, next, expectedVersion)) {
+        throw new ConflictError(
+          `effect ${effectId} expected v${expectedVersion}, but it changed in another writer`,
+        );
+      }
+      this.#event(eventType, effectId, payload ? payload(next) : this.#effectPayload(next), {
+        commandId: mutationId,
+        aggregateVersion: next.version,
+      });
+      this.#rememberCommand(mutationId, operation, effectId);
+      return structuredClone(next);
+    });
+  }
+
+  #hasEffectReceipt(receipt, observationRef = null) {
+    return Boolean(
+      (typeof observationRef === "string" && observationRef.trim() !== "") ||
+      (receipt && [receipt.provider, receipt.receiptId, receipt.resultRef]
+        .some((value) => typeof value === "string" && value.trim() !== "")),
+    );
+  }
+
+  #effectPayload(effect) {
+    return {
+      commandId: effect.commandId,
+      action: effect.action,
+      capability: effect.capability,
+      destination: effect.destination,
+      idempotencyKey: effect.idempotencyKey,
+      status: effect.status,
+      dispatchCount: effect.dispatchCount,
+    };
+  }
+
+  #effectOutcomePayload(effect) {
+    return {
+      ...this.#effectPayload(effect),
+      externalReceipt: structuredClone(effect.externalReceipt),
+      reconciliation: structuredClone(effect.reconciliation),
+    };
+  }
+
+  #assertEffectCoherent(effect) {
+    if (!effect?.id || !Number.isInteger(effect.version) || effect.version < 1) {
+      throw new InvariantError("effect identity is incomplete");
+    }
+    for (const field of ["commandId", "action", "capability", "destination", "idempotencyKey"]) {
+      if (typeof effect[field] !== "string" || effect[field].trim() === "") {
+        throw new InvariantError(`effect ${effect.id} binds no ${field}`);
+      }
+    }
+    if (!Object.values(EffectStatus).includes(effect.status)) {
+      throw new InvariantError(`effect ${effect.id} has unknown status: ${effect.status}`);
+    }
+    if (!Number.isInteger(effect.dispatchCount) || effect.dispatchCount < 0) {
+      throw new InvariantError(`effect ${effect.id} has invalid dispatchCount`);
+    }
+    const rs = effect.reconciliation?.status;
+    if (!Object.values(EffectReconciliationStatus).includes(rs)) {
+      throw new InvariantError(`effect ${effect.id} has invalid reconciliation status: ${rs}`);
+    }
+    if (effect.status === EffectStatus.REQUESTED && rs !== EffectReconciliationStatus.NOT_REQUIRED) {
+      throw new InvariantError(`effect ${effect.id} REQUESTED must not already require reconciliation`);
+    }
+    if (
+      (effect.status === EffectStatus.DISPATCHED || effect.status === EffectStatus.UNKNOWN) &&
+      ![EffectReconciliationStatus.REQUIRED, EffectReconciliationStatus.IN_PROGRESS].includes(rs)
+    ) {
+      throw new InvariantError(`effect ${effect.id} ${effect.status} must require reconciliation`);
+    }
+    if (
+      [EffectStatus.SUCCEEDED, EffectStatus.FAILED_NO_EFFECT].includes(effect.status) &&
+      rs !== EffectReconciliationStatus.RESOLVED
+    ) {
+      throw new InvariantError(`effect ${effect.id} terminal state must have resolved reconciliation`);
+    }
   }
 
   #rejectControlCommand(current, reason, approvalReason, mutationId, approvalId = null) {
