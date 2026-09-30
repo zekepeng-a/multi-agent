@@ -6,6 +6,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 
 ### Governance
 
+- **G0 Governance convergence completed.** The durable boundary moved to G1 Baseline hardening only after governance/read-order, legacy-runtime scoping, reality map, Roadmap, Changelog and ADR convention existed in Git.
+
 - Added `PROJECT_BLUEPRINT.md` as the project constitution and long-term authority boundary.
 - Added `PROJECT_ARCHITECTURE.md` as the current-reality map, explicitly separating implemented, partial, reserved, documented-only, missing and conflicting concepts.
 - Added `ROADMAP.md` as the durable development boundary. Phase changes require evidence + review + a Roadmap commit; DSH/GPT reports do not advance phases by themselves.
