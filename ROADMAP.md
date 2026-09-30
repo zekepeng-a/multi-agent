@@ -277,25 +277,28 @@ COMMAND-target Approval remains deliberately disabled; durable identity alone do
 
 # G3 — External Effect and reconciliation boundary
 
-**Status: ACTIVE / D-GATE REQUIRED**
+**Status: ACTIVE / D-GATE RESOLVED — IMPLEMENTATION ALLOWED**
 
 ## Goal
 
 Represent what may have happened in the external world without assuming exactly-once execution.
 
-## Required questions
+## Architecture gate
 
-- Effect identity and relationship to Command/Attempt/Run.
-- REQUESTED / AUTHORIZED / DISPATCHED / UNKNOWN / SUCCEEDED / FAILED semantics.
-- What observation can resolve UNKNOWN?
-- What counts as `confirmed_no_effect` vs `confirmed_completed`?
-- Idempotency and deduplication boundaries.
-- Recovery ownership.
-- When a new Attempt is legal.
-- How external receipts/evidence differ from Effect state.
-- When human approval must be repeated after recovery/retry.
+Resolved by `ADR-0002-effect-reconciliation-boundary.md`.
 
-This phase is D until those semantics are settled.
+The accepted G3 boundary now defines:
+
+- durable Effect identity tied to an AUTHORIZED Command;
+- persist-before-dispatch ordering;
+- REQUESTED / DISPATCHED / SUCCEEDED / FAILED_NO_EFFECT / UNKNOWN semantics;
+- typed reconciliation outcomes;
+- UNKNOWN/orphaned-DISPATCHED retry prohibition;
+- idempotency-key meaning without exactly-once claims;
+- Effect receipt/observation remaining distinct from Evidence;
+- a narrow abstract Effect driver seam.
+
+The bounded G3 implementation is now **B — Missing Implementation**.
 
 ## Exit gate
 
@@ -460,11 +463,12 @@ Current durable phase boundary:
 COMPLETE: G0 Governance convergence
 COMPLETE: G1 Baseline hardening
 COMPLETE: G2 Durable Command boundary
-ACTIVE:   G3 External Effect + reconciliation boundary — D-GATE
+ACTIVE:   G3 External Effect + reconciliation boundary — implementation allowed by ADR-0002
 NEXT:     G4 Policy / authorization composition
-BLOCKED FROM CODING:
-          Effect / dispatch / UNKNOWN / retry-reconcile implementation
-          until the G3 architecture decision is accepted
+AUTHORIZED TO CODE:
+          ADR-0002 bounded Effect ledger + fake driver + reconciliation semantics
+BLOCKED:
+          real runtime integration / Command completion aggregation / Policy
 ```
 
 G0 exited after governance/read-order, legacy-runtime scoping, current-reality mapping, Roadmap authority, Changelog, and ADR convention were present in Git.
