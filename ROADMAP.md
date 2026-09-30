@@ -400,7 +400,7 @@ A real LocalProcess adapter executes in CI, DSH Workflow has a production-facing
 
 # G6 — Workspace / Reality / concurrency boundary
 
-**Status: ACTIVE / D-GATE RESOLVED — IMPLEMENTATION ALLOWED**
+**Status: COMPLETE**
 
 ## Goal
 
@@ -426,13 +426,15 @@ The bounded G6 implementation is now **B — Missing Implementation**.
 
 ## Exit gate
 
-Parallel execution requires either real isolation or proved non-overlap; `Promise.all()` alone is never accepted as the concurrency model.
+**SATISFIED for the bounded local provider.** See `docs/architecture/WORKSPACE_G6_EVIDENCE.md`.
+
+Parallel execution now has real isolated writable roots, enforced scopes, conflict-safe integration and deterministic ready-set ordering. `Promise.all()` alone is still never accepted as the concurrency model.
 
 ---
 
 # G7 — Long-horizon Project Control objects
 
-**Status: QUEUED**
+**Status: ACTIVE / DECOMPOSITION GATE**
 
 This phase is intentionally after the execution/reality boundary because these objects should reflect proven project-control needs, not abstract completeness.
 
@@ -489,23 +491,26 @@ COMPLETE: G0 Governance convergence
 COMPLETE: G1 Baseline hardening
 COMPLETE: G2 Durable Command boundary
 COMPLETE: G3 External Effect + reconciliation boundary
-ACTIVE:   G4 Policy / authorization composition — implementation allowed by ADR-0003
-NEXT:     G5 Real Runtime Adapter boundary
-AUTHORIZED TO CODE:
-          ADR-0003 bounded PolicyDecision + static engine + Command gate composition
-BLOCKED:
-          external enterprise policy integration / real runtime adapter
+COMPLETE: G4 Policy / authorization composition
+COMPLETE: G5 Real Runtime Adapter boundary
+COMPLETE: G6 Workspace / Reality / concurrency boundary
+ACTIVE:   G7 Long-horizon Project Control objects — decomposition gate
+NEXT:     G8 End-to-end dogfood + release convergence
+BLOCKED FROM BUNDLE CODING:
+          Roadmap / Decision / Memory / Context Capsule / Project Acceptance /
+          Observability / leases-fencing may not be implemented as one
+          "complete the architecture" package.
 ```
 
-G0 exited after governance/read-order, legacy-runtime scoping, current-reality mapping, Roadmap authority, Changelog, and ADR convention were present in Git.
+G0–G6 each exited only after their documented exit gate was evidenced and the Roadmap boundary changed in Git.
 
-G1 exited after GitHub Actions established the reproducible baseline recorded in `docs/architecture/BASELINE_EVIDENCE.md`: Node 22.23.3 runs 435/435 with zero skips and asserted SQLite availability; Node 20 separately verifies the advertised package floor with SQLite capability-gated.
+G7 is intentionally different: each candidate object must be classified separately A/B/C/D/E and may proceed only with its own authority role and concrete control-loop need. A D-class candidate requires focused research + ADR first; an E-class change returns to the human.
 
-No DSH output can move the active boundary from G0 to G1/G2.
+No DSH/GPT report advances this boundary by itself.
 
-A phase transition requires:
+A phase or candidate transition requires:
 
-1. its exit gate to be evidenced;
+1. its exit/entry condition to be evidenced;
 2. independent review against Git current reality;
 3. the ROADMAP status to be changed in a commit.
 
