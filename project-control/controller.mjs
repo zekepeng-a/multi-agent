@@ -543,6 +543,9 @@ export class Controller {
       { id, commandId, destination, idempotencyKey, projectId },
       { mutationId: mutationId ? `${mutationId}:request` : null },
     );
+    // A replay of the whole controller operation may return the already-final
+    // Effect from the request mutation. Never cross the external boundary again.
+    if (effect.status !== EffectStatus.REQUESTED) return effect;
     return this.#dispatchRequestedEffect(effect, mutationId);
   }
 
@@ -551,6 +554,7 @@ export class Controller {
     const requested = this.store.rerequestEffect(effectId, expectedVersion, {
       mutationId: mutationId ? `${mutationId}:rerequest` : null,
     });
+    if (requested.status !== EffectStatus.REQUESTED) return requested;
     return this.#dispatchRequestedEffect(requested, mutationId);
   }
 
@@ -566,6 +570,9 @@ export class Controller {
     const reconciling = this.store.beginEffectReconciliation(effectId, expectedVersion, {
       mutationId: mutationId ? `${mutationId}:begin` : null,
     });
+    if ([EffectStatus.SUCCEEDED, EffectStatus.FAILED_NO_EFFECT].includes(reconciling.status)) {
+      return reconciling;
+    }
 
     let observation;
     try {
