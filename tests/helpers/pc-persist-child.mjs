@@ -117,6 +117,7 @@ try {
   } else if (mode === "read") {
     const ids = JSON.parse(idsJson ?? "{}");
     const evidence = store.getEvidence(ids.evidenceId);
+    const persistedAttempt = store.getAttempt(ids.attemptId);
     payload = {
       taskStatus: store.getTask("task-1").status,
       acceptanceVersion: store.getTask("task-1").acceptanceVersion,
@@ -124,7 +125,9 @@ try {
       acceptanceV2: store.getAcceptance("acceptance-1", 2).status,
       task2AcceptanceVersion: store.getTask("task-2").acceptanceVersion,
       runStatus: store.getRun(ids.runId).status,
-      attemptStatus: store.getAttempt(ids.attemptId).status,
+      attemptStatus: persistedAttempt.status,
+      attemptRuntimeKind: persistedAttempt.runtimeRef?.runtimeKind ?? null,
+      attemptRuntimeExternalId: persistedAttempt.runtimeRef?.externalId ?? null,
       evidenceRunId: evidence.runId,
       evidenceAttemptId: evidence.attemptId,
       verificationTaskId: store.getVerification(ids.verificationId).taskId,
