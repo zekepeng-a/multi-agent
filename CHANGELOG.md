@@ -6,6 +6,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 
 ### Governance
 
+- **G7.2 Decision architecture gate resolved:** focused Agent Harness + ADR Tools evidence established proposal≠Decision, human direction precedence, mandatory provenance and append/supersede history. Accepted `ADR-0007-decision-authority-lifecycle.md`; bounded implementation is now allowed.
+
 - **G6 architecture gate resolved:** targeted Agent Harness, DSH Agent Team, ExcelManus and Earthwalker Agent OS review established a conservative Workspace rule: parallel writers require distinct isolated roots, write scopes must be enforced, and only the control plane integrates patches into shared reality. Accepted `ADR-0005-workspace-isolation-boundary.md`.
 
 - **G5 architecture gate resolved:** targeted DSH Workflow/Subagent/Agent Team and Codingns4DSH review established a capability-shaped Runtime Adapter. Accepted `ADR-0004-runtime-adapter-boundary.md`; implementation may now add normalized runtime contracts, a real LocalProcess adapter, and a DSH Workflow adapter without promoting runtime identities into Project State.
