@@ -19,12 +19,20 @@ import {
 import { Collection } from "./store.mjs";
 
 export class Controller {
-  constructor({ store, runtime, verifier, effectDriver = null, idFactory = defaultIdFactory } = {}) {
+  constructor({
+    store,
+    runtime,
+    verifier,
+    effectDriver = null,
+    policyEngine = null,
+    idFactory = defaultIdFactory,
+  } = {}) {
     if (!store || !runtime || !verifier) throw new Error("store, runtime and verifier are required");
     this.store = store;
     this.runtime = runtime;
     this.verifier = verifier;
     this.effectDriver = effectDriver;
+    this.policyEngine = policyEngine;
     this.idFactory = idFactory;
   }
 
@@ -511,7 +519,11 @@ export class Controller {
     return this.store.createControlCommand(request, { mutationId });
   }
 
-  authorizeCommand(commandId, expectedCommandVersion, { approvalId = null, mutationId = null } = {}) {
+  authorizeCommand(
+    commandId,
+    expectedCommandVersion,
+    { approvalId = null, policyContext = {}, mutationId = null } = {},
+  ) {
     if (typeof commandId !== "string" || commandId.trim() === "") {
       throw new InvariantError("command authorization requires a durable command id");
     }
@@ -519,15 +531,55 @@ export class Controller {
       throw new InvariantError("command authorization requires a positive expected command version");
     }
 
-    // Store owns the semantic transition and re-reads the durable Command and
-    // target. Controller starts no runtime and writes no Effect in G2.
+    const command = this.store.getControlCommand(commandId);
+    const target = this.store.getControlCommandTarget(commandId);
+
+    // Missing target is a pre-policy control failure. The store owns the
+    // rejection transition and checks it before requiring a PolicyDecision.
+    if (!target) {
+      return this.store.authorizeControlCommand(
+        commandId,
+        expectedCommandVersion,
+        { policyDecisionId: null, approvalId },
+        { mutationId: mutationId ? `${mutationId}:authorize` : null },
+      );
+    }
+
+    this.#requirePolicyEngine();
+    const evaluation = this.policyEngine.evaluate({
+      command,
+      target,
+      context: policyContext,
+    });
+    const decision = this.store.recordPolicyDecision(
+      commandId,
+      expectedCommandVersion,
+      {
+        id: this.idFactory("policy"),
+        effect: evaluation.effect,
+        policyVersion: evaluation.policyVersion,
+        reasons: evaluation.reasons ?? [],
+        matchedRuleIds: evaluation.matchedRuleIds ?? [],
+        context: policyContext,
+        request: evaluation.request,
+      },
+      { mutationId: mutationId ? `${mutationId}:policy` : null },
+    );
+
     return this.store.authorizeControlCommand(
       commandId,
       expectedCommandVersion,
-      { approvalId },
-      { mutationId },
+      { policyDecisionId: decision.id, approvalId },
+      { mutationId: mutationId ? `${mutationId}:authorize` : null },
     );
   }
+
+  #requirePolicyEngine() {
+    if (!this.policyEngine || typeof this.policyEngine.evaluate !== "function") {
+      throw new InvariantError("G4 command authorization requires a policy engine");
+    }
+  }
+
 
   // ── External Effect boundary (G3) ───────────────────────────────────────────
   //
