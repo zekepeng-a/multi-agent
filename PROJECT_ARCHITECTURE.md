@@ -85,7 +85,7 @@ These labels describe the baseline commit above only.
 | Decision | MISSING | No dedicated Project Control Decision object/store/lifecycle exists. |
 | Project-control Memory | MISSING | The legacy runtime has derived memory machinery, but the Blueprint's source-referenced Project Control memory model is not implemented. |
 | Context Capsule | DOCUMENTED_ONLY | Defined conceptually; no Project Control implementation assembles or persists bounded capsules. |
-| Runtime Adapter | PARTIAL | Controller depends on a runtime boundary and tests use `FakeRuntime`; no production replaceable adapter contract/real DSH adapter is implemented in Project Control. |
+| Runtime Adapter | DOCUMENTED_ONLY / G5 READY | ADR-0004 now settles a capability-shaped runtime boundary, keeps Run/Attempt ids separate from runtime ids, and defines LocalProcess + DSH Workflow proof targets. Current code still uses legacy FakeRuntime assumptions; normalized adapters are not implemented yet. |
 | Workspace | DOCUMENTED_ONLY | Workspace/isolation model is specified architecturally; no Project Control Workspace domain/store/controller implementation exists. |
 | Workspace isolation | DOCUMENTED_ONLY | No enforced worktree/container/non-overlap mechanism exists in the Project Control prototype. |
 | Optimistic concurrency | IMPLEMENTED | Version-aware updates reject stale expected versions; persistence tests cover rollback/conflict behavior. |
