@@ -389,6 +389,7 @@ try {
   } else if (mode === "command-read") {
     const ids = JSON.parse(idsJson ?? "{}");
     const command = store.getControlCommand(ids.commandId);
+    const policyDecision = store.getPolicyDecision(ids.policyDecisionId);
     const replay = store.authorizeControlCommand(
       ids.commandId,
       1,
@@ -407,6 +408,14 @@ try {
       replayVersion: replay.command.version,
       authorizedEvents: store.getEvents().filter((event) => event.type === "command.authorized").length,
       createdEvents: store.getEvents().filter((event) => event.type === "command.created").length,
+      policyDecisionId: policyDecision.id,
+      policyEffect: policyDecision.effect,
+      policyVersion: policyDecision.policyVersion,
+      policyCommandId: policyDecision.commandId,
+      policyCommandVersion: policyDecision.commandVersion,
+      policyTargetVersion: policyDecision.targetVersion,
+      policySubjectId: policyDecision.subjectId,
+      policyEvents: store.getEvents().filter((event) => event.type === "policy.decided").length,
       eventCount: store.getEvents().length,
       isAuthorized: command.status === CommandStatus.AUTHORIZED,
     };
