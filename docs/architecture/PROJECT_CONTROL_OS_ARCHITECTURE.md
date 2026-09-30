@@ -1097,40 +1097,101 @@ Events are history, not commands.
 
 ## 5.18 Policy
 
-Purpose: runtime-enforced authorization.
+Purpose: deterministic runtime-enforced authorization before Command execution.
 
-Conceptual authorization tuple:
+ADR-0003 freezes the Policy/Approval composition boundary.
 
-```text
-Actor
-+ Capability
-+ Resource
-+ Action
-+ Context
-```
-
-Schema:
+Normalized request:
 
 ```yaml
-id: PolicyId
-actor:
-  type: string
+subject:
   id: string
-capability: string
-resource:
-  type: string
-  id: string
-action: string
-context:
-  environment: string
+command:
+  id: CommandId
+  version: integer
+  target_type: string
+  target_id: string
+  target_version: integer
+  action: string
+  capability: string
+  scope: string
   risk_level: string
-  approval_state: string
-decision: ALLOW | DENY | REQUIRE_APPROVAL
-reason: string
+resource:
+  current_version: integer
+context: object
+policy_version: string
+```
+
+Decision effects are exactly:
+
+```text
+ALLOW
+DENY
+REQUIRE_APPROVAL
+```
+
+Composition precedence:
+
+```text
+DENY > REQUIRE_APPROVAL > ALLOW
+```
+
+Policy fields are read from the durable Command/current target at the enforcement
+point. A caller cannot restate action/capability/scope to change the decision.
+
+### PolicyDecision audit fact
+
+Each evaluation may be persisted as an immutable PolicyDecision:
+
+```yaml
+id: PolicyDecisionId
+command_id: CommandId
+command_version: integer
+target_version: integer
+effect: ALLOW | DENY | REQUIRE_APPROVAL
+policy_version: string
+subject_id: string
+context: object
+reasons: string[]
+matched_rule_ids: string[]
 created_at: timestamp
 ```
 
+Multiple PolicyDecisions for one still-CREATED Command are allowed because Policy
+is re-evaluated on each authorization attempt.
+
+### Composition with Approval
+
+```text
+Policy = DENY
+  → Command REJECTED
+  → Approval cannot override
+
+Policy = ALLOW
+  → Command may AUTHORIZED
+  → no Approval is manufactured
+
+Policy = REQUIRE_APPROVAL
+  → existing durable Approval gate
+  → WAIT | AUTHORIZED | REJECTED
+```
+
+An AUTHORIZED Command records the PolicyDecision that allowed it. An Approval id
+is required only when the decision effect was REQUIRE_APPROVAL.
+
+### G4 implementation strategy
+
+G4 uses a small deterministic versioned in-process policy engine and persists the
+evaluated PolicyDecision, not mutable Project-level policy documents.
+
+The reference engine is fail closed: no matching rule means DENY.
+
+A later OPA/Cedar/enterprise policy adapter may replace the evaluator without
+changing Command/Approval semantics.
+
 Policy is enforcement, not prompt text.
+
+See `docs/architecture/decisions/ADR-0003-policy-approval-composition.md`.
 
 ---
 
