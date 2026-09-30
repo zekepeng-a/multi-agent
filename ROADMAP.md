@@ -196,7 +196,7 @@ G0 is complete when a fresh agent entering the repository can determine, from Gi
 
 # G1 — Baseline hardening and reproducibility
 
-**Status: ACTIVE**
+**Status: COMPLETE**
 
 ## Goal
 
@@ -229,7 +229,7 @@ Packaging identity may become E if it implies splitting/renaming the product.
 
 # G2 — Durable Command boundary
 
-**Status: QUEUED / D-GATE REQUIRED**
+**Status: ACTIVE / D-GATE REQUIRED**
 
 ## Why this comes before Effect
 
@@ -452,13 +452,16 @@ Current durable phase boundary:
 
 ```text
 COMPLETE: G0 Governance convergence
-ACTIVE:   G1 Baseline hardening
-NEXT:     G2 Durable Command boundary
-BLOCKED FROM STARTING:
-          G2+ feature work until G1 exits
+COMPLETE: G1 Baseline hardening
+ACTIVE:   G2 Durable Command boundary — D-GATE
+NEXT:     G3 External Effect + reconciliation boundary
+BLOCKED FROM CODING:
+          durable Command implementation until G2 ADR is ACCEPTED
 ```
 
-G0 exited after repository guidance, legacy-runtime scoping, current-reality mapping, Roadmap authority, Changelog, and ADR convention were all present in Git.
+G0 exited after governance/read-order, legacy-runtime scoping, current-reality mapping, Roadmap authority, Changelog, and ADR convention were present in Git.
+
+G1 exited after GitHub Actions established the reproducible baseline recorded in `docs/architecture/BASELINE_EVIDENCE.md`: Node 22.23.3 runs 435/435 with zero skips and asserted SQLite availability; Node 20 separately verifies the advertised package floor with SQLite capability-gated.
 
 No DSH output can move the active boundary from G0 to G1/G2.
 
