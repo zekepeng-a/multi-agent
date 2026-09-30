@@ -28,6 +28,7 @@ export class MemoryStore extends ProjectControlStore {
     this.approvals = new Map();
     // Durable Command domain (G2) is separate from the mutation replay registry.
     this.controlCommands = new Map();
+    this.effects = new Map();
     this.commands = new Map();
     this.events = [];
   }
@@ -45,6 +46,7 @@ export class MemoryStore extends ProjectControlStore {
       case Collection.VERIFICATION: return this.verifications;
       case Collection.APPROVAL: return this.approvals;
       case Collection.COMMAND: return this.controlCommands;
+      case Collection.EFFECT: return this.effects;
       default: throw new Error(`unknown collection: ${collection}`);
     }
   }
