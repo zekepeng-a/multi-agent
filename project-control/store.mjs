@@ -81,32 +81,38 @@ const LIFECYCLE_EVENT_TYPES = Object.freeze({
 const ACCEPTANCE_TARGET_TYPE_BY_COLLECTION = Object.freeze({
   [Collection.GOAL]: AcceptanceTargetType.GOAL,
   [Collection.MILESTONE]: AcceptanceTargetType.MILESTONE,
+  [Collection.PROJECT]: AcceptanceTargetType.PROJECT,
 });
 
 const COLLECTION_BY_ACCEPTANCE_TARGET_TYPE = Object.freeze({
   [AcceptanceTargetType.GOAL]: Collection.GOAL,
   [AcceptanceTargetType.MILESTONE]: Collection.MILESTONE,
+  [AcceptanceTargetType.PROJECT]: Collection.PROJECT,
 });
 
 const ACCEPTED_CHILD_STATUS = Object.freeze({
   [Collection.GOAL]: TaskStatus.ACCEPTED,
   [Collection.MILESTONE]: GoalStatus.ACCEPTED,
+  [Collection.PROJECT]: MilestoneStatus.COMPLETED,
 });
 
 const ACCEPTED_TARGET_STATUS = Object.freeze({
   [Collection.GOAL]: GoalStatus.ACCEPTED,
   [Collection.MILESTONE]: MilestoneStatus.COMPLETED,
+  [Collection.PROJECT]: ProjectStatus.COMPLETED,
 });
 
 /** Parent acceptance may only be taken while the parent's outcome is open. */
 const ACCEPTABLE_SOURCE_AGGREGATE_STATES = Object.freeze({
   [Collection.GOAL]: Object.freeze([GoalStatus.READY, GoalStatus.IN_PROGRESS]),
   [Collection.MILESTONE]: Object.freeze([MilestoneStatus.READY, MilestoneStatus.IN_PROGRESS]),
+  [Collection.PROJECT]: Object.freeze([ProjectStatus.ACTIVE]),
 });
 
 const CHILD_REF_TYPE = Object.freeze({
   [Collection.GOAL]: "TASK_ACCEPTANCE",
   [Collection.MILESTONE]: "GOAL_ACCEPTANCE",
+  [Collection.PROJECT]: "MILESTONE_ACCEPTANCE",
 });
 
 // ── Durable Human Approval vocabulary ────────────────────────────────────────
@@ -381,6 +387,7 @@ export class ProjectControlStore {
 
   seedProject(project) {
     this.runInTransaction(() => {
+      this.#assertAcceptanceContract(Collection.PROJECT, project);
       if (!this.insertRecord(Collection.PROJECT, project.id, structuredClone(project))) {
         throw new Error(`project already exists: ${project.id}`);
       }
@@ -1002,6 +1009,14 @@ export class ProjectControlStore {
   /** Milestone counterpart of `acceptGoal`: the decision is `COMPLETED`. */
   completeMilestone(milestoneId, expectedVersion, { verificationId, commandId = null } = {}) {
     return this.#acceptAggregate(Collection.MILESTONE, milestoneId, expectedVersion, "completeMilestone", {
+      verificationId,
+      commandId,
+    });
+  }
+
+  /** Project counterpart: completed Milestones are evidence input, not the decision. */
+  acceptProject(projectId, expectedVersion, { verificationId, commandId = null } = {}) {
+    return this.#acceptAggregate(Collection.PROJECT, projectId, expectedVersion, "acceptProject", {
       verificationId,
       commandId,
     });
@@ -2504,8 +2519,16 @@ export class ProjectControlStore {
    * has no "finished" observation to record.
    */
   #childSnapshot(collection, target) {
-    const childCollection = collection === Collection.GOAL ? Collection.TASK : Collection.GOAL;
-    const linkField = collection === Collection.GOAL ? "goalId" : "milestoneId";
+    const childCollection = collection === Collection.GOAL
+      ? Collection.TASK
+      : collection === Collection.MILESTONE
+        ? Collection.GOAL
+        : Collection.MILESTONE;
+    const linkField = collection === Collection.GOAL
+      ? "goalId"
+      : collection === Collection.MILESTONE
+        ? "milestoneId"
+        : "projectId";
     const finishedStatus = ACCEPTED_CHILD_STATUS[collection];
     const children = this.recordsMatching(childCollection, linkField, target.id)
       .map((child) => ({
@@ -2772,10 +2795,9 @@ export class ProjectControlStore {
    * required together; a bare id is not a revision and a bare version names
    * nothing.
    *
-   * Only Goal and Milestone are checked here. A Task keeps its own rules (it is
-   * pinned at creation and re-proved through Run/Attempt lineage), and Project
-   * acceptance has no v0.1 lifecycle, so this guard deliberately stays silent
-   * about it instead of inventing a rule.
+   * Goal, Milestone and Project use the same pinned aggregate-contract rule.
+   * A Task keeps its own rules because it is pinned at creation and re-proved
+   * through Run/Attempt lineage.
    */
   #assertAcceptanceContract(collection, record) {
     const targetType = ACCEPTANCE_TARGET_TYPE_BY_COLLECTION[collection];
