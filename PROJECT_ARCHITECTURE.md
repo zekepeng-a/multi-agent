@@ -85,7 +85,7 @@ These labels describe the baseline commit above only.
 | Decision | MISSING | No dedicated Project Control Decision object/store/lifecycle exists. |
 | Project-control Memory | MISSING | The legacy runtime has derived memory machinery, but the Blueprint's source-referenced Project Control memory model is not implemented. |
 | Context Capsule | DOCUMENTED_ONLY | Defined conceptually; no Project Control implementation assembles or persists bounded capsules. |
-| Runtime Adapter | DOCUMENTED_ONLY / G5 READY | ADR-0004 now settles a capability-shaped runtime boundary, keeps Run/Attempt ids separate from runtime ids, and defines LocalProcess + DSH Workflow proof targets. Current code still uses legacy FakeRuntime assumptions; normalized adapters are not implemented yet. |
+| Runtime Adapter | IMPLEMENTED / PARTIAL | Normalized capability-shaped Runtime Adapter contract now exists. FakeRuntime migrated, LocalProcessRuntimeAdapter executes real child processes in CI, and DshWorkflowRuntimeAdapter binds the current DSH Workflow seam through injected workflowEngine. RuntimeRef persists on Attempt and survives restart while remaining distinct from Run/Attempt identity. Workspace/isolation semantics remain G6. |
 | Workspace | DOCUMENTED_ONLY | Workspace/isolation model is specified architecturally; no Project Control Workspace domain/store/controller implementation exists. |
 | Workspace isolation | DOCUMENTED_ONLY | No enforced worktree/container/non-overlap mechanism exists in the Project Control prototype. |
 | Optimistic concurrency | IMPLEMENTED | Version-aware updates reject stale expected versions; persistence tests cover rollback/conflict behavior. |
@@ -194,7 +194,24 @@ Current reality does **not** yet include:
 
 ### 7.3 Runtime replaceability
 
-The architecture requires replaceable runtimes behind adapters. The prototype proves the controller seam with fake runtime/verifier implementations, but it does not yet prove a real DSH/Claude/Codex/OpenCode runtime can be swapped behind one stable Project Control contract.
+A normalized Runtime Adapter boundary now exists.
+
+Current reality includes:
+
+- explicit capabilities and fail-loud unsupported operations;
+- RuntimeRef / RuntimeObservation / RuntimeResult normalization;
+- FakeRuntime migrated to the adapter contract;
+- LocalProcessRuntimeAdapter with real OS-process execution proof in CI;
+- DshWorkflowRuntimeAdapter over the current DSH Workflow start/result/cancel/dispose seam;
+- opaque RuntimeRef persisted on Attempt across restart;
+- Controller mapping COMPLETED runtime result into Candidate Evidence only.
+
+Current reality does **not** yet include:
+
+- a live-in-DSH smoke test in CI;
+- DSH Subagent/Agent Team adapters;
+- workspace isolation/write scopes;
+- automatic provider/model routing.
 
 ### 7.4 Reality/workspace control
 
