@@ -178,7 +178,7 @@ All of the following are covered by `tests/integration/persistence.test.mjs` and
 | Decision / property | v0.1 prototype |
 |---|---|
 | Storage | SQLite, one database file, through the built-in `node:sqlite` module — no dependency, no native build |
-| Objects persisted | Project, Task, Acceptance Contract revision, Run, Attempt, Evidence, Verification, Command, DomainEvent |
+| Objects persisted | Project, Task, Acceptance Contract revision, Run, Attempt, Evidence, Verification, Approval, Command, DomainEvent |
 | Write model | **Direct transactional state updates + an append-only domain event log.** Not event sourcing: the tables are authority, the log is history |
 | Transaction boundary | one transaction per authoritative mutation: the state row, its domain event and its command/idempotency row commit or fail **together** (`BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK`) |
 | Schema | primary keys on every identity; `PRIMARY KEY (id, version)` for contract revisions so they cannot overwrite each other; unique event ids; foreign keys wherever the rules already prove the reference (verification → task, verification and contract fingerprint → acceptance revision); indexes for the lookups the store performs |
@@ -188,6 +188,8 @@ All of the following are covered by `tests/integration/persistence.test.mjs` and
 | Contract revision pinning | `acceptance_revisions` is keyed by `(id, version)`, so both revisions coexist; a Task keeps the revision it was created with; content fingerprints live in a separate table, so contract content edited in place fails closed on read |
 | Evidence lineage | Run / Attempt / Evidence / Verification rows keep the identity the rules re-prove on every use, and the lineage is re-provable from durable rows alone |
 | Parent acceptance on disk | Evidence and Verification carry `target_type` / `target_id` beside nullable `task_id` / `run_id` / `attempt_id`, so an **aggregate observation** is a first-class durable row with no Runtime lineage. The child snapshot and its `sha256` revision live in the record, so the same observation is re-derived identically in a later process, and a parent acceptance replayed there performs no second mutation |
+| Approval durability | An Approval is its own table, not a flag on what it authorizes. The request, the decision and any revocation survive a restart, the decision command replays there without a second `approval.approved`, and the permission is re-proved against the target's **current** version in the new process — so a permission can never be carried forward onto state nobody approved |
+| Adding a table is not a migration | The approvals table was added by `CREATE TABLE IF NOT EXISTS` with no schema guard: a file written before it simply gains the table and keeps working. The guard exists only for an incompatible change to an EXISTING table (nullable `task_id` / new `target_id` on evidence and verifications), where SQLite cannot alter in place |
 | Reconciliation history | a blocked Run and its LOST Attempt remain as history after recovery, across restarts |
 | Restart proof | a test writes state in **process A**, lets it exit, and reads it back in **process B** — not a second store object inside one process |
 | Backend contract | one behaviour suite runs against MemoryStore and SqliteStore, so a future backend must satisfy the same contract without touching the Controller tests |

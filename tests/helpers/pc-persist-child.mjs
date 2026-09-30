@@ -9,6 +9,8 @@
 //        node pc-persist-child.mjs read  <dbfile> <json ids from the write phase>
 //        node pc-persist-child.mjs parent <dbfile>
 //        node pc-persist-child.mjs parent-read <dbfile> <json ids from the parent phase>
+//        node pc-persist-child.mjs approval <dbfile>
+//        node pc-persist-child.mjs approval-read <dbfile> <json ids from the approval phase>
 
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -24,7 +26,11 @@ const { FakeRuntime } = await load("fake-runtime.mjs");
 const { FakeVerifier } = await load("fake-verifier.mjs");
 const {
   AcceptanceTargetType,
+  ApprovalDecision,
+  ApprovalError,
+  ApprovalTargetType,
   GoalStatus,
+  RiskLevel,
   TaskStatus,
   VerificationVerdict,
   createAcceptance,
@@ -37,7 +43,7 @@ const {
 
 const [mode, file, idsJson] = process.argv.slice(2);
 if (!mode || !file) {
-  console.error("usage: node pc-persist-child.mjs <write|read|parent|parent-read> <dbfile> [idsJson]");
+  console.error("usage: node pc-persist-child.mjs <write|read|parent|parent-read|approval|approval-read> <dbfile> [idsJson]");
   process.exit(2);
 }
 
@@ -183,6 +189,96 @@ try {
       reobservedId: reobserved.id,
       replayedVersion: replayed.version,
       acceptedEvents: store.getEvents().filter((event) => event.type === "goal.accepted").length,
+      eventCount: store.getEvents().length,
+    };
+  } else if (mode === "approval") {
+    // A human decision written in THIS process, as a durable control fact.
+    store.seedProject(createProject({ id: "project-1", name: "Approval restart" }));
+    store.seedAcceptance(createAcceptance({
+      id: "acceptance-1",
+      targetId: "task-1",
+      criteria: [{ id: "build", type: "BUILD", required: true }],
+    }));
+    store.seedTask(createTask({
+      id: "task-1",
+      title: "approval-restart task",
+      acceptanceId: "acceptance-1",
+      acceptanceVersion: 1,
+    }));
+
+    const requested = store.requestApproval({
+      id: "approval-1",
+      targetType: ApprovalTargetType.TASK,
+      targetId: "task-1",
+      action: "deploy",
+      capability: "deploy.production",
+      scope: "production",
+      riskLevel: RiskLevel.HIGH,
+      requestedBy: "requester-1",
+      commandId: "C1",
+    }, { commandId: "child-request-approval" });
+    const approved = store.decideApproval("approval-1", requested.version, {
+      decision: ApprovalDecision.APPROVE,
+      decidedBy: "alice",
+      reason: "rollout window agreed",
+    }, { commandId: "child-approve" });
+
+    payload = {
+      status: approved.decision.status,
+      version: approved.version,
+      targetVersion: approved.request.targetVersion,
+      decidedBy: approved.decision.decidedBy,
+      boundCommandId: approved.commandId,
+      eventCount: store.getEvents().length,
+      ids: { approvalId: "approval-1" },
+    };
+  } else if (mode === "approval-read") {
+    const ids = JSON.parse(idsJson ?? "{}");
+    const approval = store.getApproval(ids.approvalId);
+    // the durable permission still authorizes in a process that never saw it
+    const usable = store.assertApprovalUsable({
+      approvalId: ids.approvalId,
+      targetType: ApprovalTargetType.TASK,
+      targetId: "task-1",
+      targetVersion: 1,
+      action: "deploy",
+      scope: "production",
+      commandId: "C1",
+    });
+    // the ORIGINAL approval command replays instead of deciding again
+    const replayed = store.decideApproval(ids.approvalId, 1, {
+      decision: ApprovalDecision.APPROVE,
+      decidedBy: "alice",
+    }, { commandId: "child-approve" });
+
+    // …and once the target moves, the same record stops applying
+    store.updateTask("task-1", 1, { status: TaskStatus.IN_PROGRESS }, { commandId: "child-move-task" });
+    let staleReason = null;
+    try {
+      store.assertApprovalUsable({
+        approvalId: ids.approvalId,
+        targetType: ApprovalTargetType.TASK,
+        targetId: "task-1",
+        targetVersion: 1,
+        action: "deploy",
+        scope: "production",
+        commandId: "C1",
+      });
+    } catch (error) {
+      staleReason = error instanceof ApprovalError ? error.approvalReason : error.name;
+    }
+
+    payload = {
+      status: approval.decision.status,
+      decidedBy: approval.decision.decidedBy,
+      version: approval.version,
+      targetVersion: approval.request.targetVersion,
+      usableId: usable.id,
+      replayedVersion: replayed.version,
+      replayedStatus: replayed.decision.status,
+      approvedEvents: store.getEvents().filter((event) => event.type === "approval.approved").length,
+      taskVersion: store.getTask("task-1").version,
+      staleReason,
       eventCount: store.getEvents().length,
     };
   } else {

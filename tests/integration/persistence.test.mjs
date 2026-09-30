@@ -480,6 +480,139 @@ test("schema: a database file written before parent acceptance is refused at ope
   assert.throws(() => db.open(), /older schema and cannot be opened by this version/);
 });
 
+test("restart: an approval granted in one process authorizes in another", { skip }, (t) => {
+  const db = projectFixture(t);
+
+  const written = runChild("approval", db.file);
+  assert.equal(written.code, 0, `child writer failed: ${written.stderr}`);
+  assert.ok(written.payload, "child writer produced no result");
+  assert.equal(written.payload.status, "APPROVED");
+  assert.equal(written.payload.version, 2);
+  assert.equal(written.payload.decidedBy, "alice");
+  assert.equal(written.payload.targetVersion, 1, "the request pinned the state it was made against");
+  assert.equal(written.payload.boundCommandId, "C1");
+
+  // a genuinely separate process, started after the first one exited
+  const readBack = runChild("approval-read", db.file, written.payload.ids);
+  assert.equal(readBack.code, 0, `child reader failed: ${readBack.stderr}`);
+  const seen = readBack.payload;
+
+  assert.equal(seen.status, "APPROVED");
+  assert.equal(seen.decidedBy, "alice", "the decision is still attributable after a restart");
+  assert.equal(seen.usableId, "approval-1", "the durable permission authorizes in the second process");
+  assert.equal(seen.targetVersion, 1);
+  assert.equal(seen.version, 2);
+
+  // the decision command replays across the process boundary: no second decision
+  assert.equal(seen.replayedVersion, 2);
+  assert.equal(seen.replayedStatus, "APPROVED");
+  assert.equal(seen.approvedEvents, 1);
+
+  // and the permission is bound to the version it was granted for
+  assert.equal(seen.taskVersion, 2);
+  assert.equal(seen.staleReason, "STALE", "v1 was approved; v2 is not covered");
+  assert.equal(
+    seen.eventCount,
+    written.payload.eventCount + 1,
+    "reading, authorizing and replaying wrote nothing; only the task move did",
+  );
+});
+
+test("schema: a file written before approvals existed gains the table and still opens", { skip }, (t) => {
+  const db = projectFixture(t);
+  const store = db.open();
+  seedBase(store);
+  store.close();
+
+  // A database from before this round: the approvals table simply did not exist.
+  const sqlite = createRequire(import.meta.url)("node:sqlite");
+  const raw = new sqlite.DatabaseSync(db.file);
+  raw.exec("DROP TABLE approvals");
+  raw.close();
+
+  // No schema guard is added for a NEW table: an old file opens, keeps its data,
+  // and gains the table. Only an incompatible change to an EXISTING table would
+  // justify refusing a file (see the evidence/verification guard).
+  const reopened = db.open();
+  assert.equal(reopened.getTask("task-1").title, "persisted task");
+  reopened.requestApproval({
+    id: "approval-1",
+    targetType: "TASK",
+    targetId: "task-1",
+    action: "deploy",
+    capability: "deploy.production",
+    scope: "production",
+    requestedBy: "requester-1",
+  });
+  reopened.decideApproval("approval-1", 1, { decision: "APPROVE", decidedBy: "alice" });
+  assert.equal(reopened.getApproval("approval-1").decision.status, "APPROVED");
+  assert.equal(reopened.assertApprovalUsable({
+    approvalId: "approval-1",
+    targetType: "TASK",
+    targetId: "task-1",
+    targetVersion: 1,
+    action: "deploy",
+    scope: "production",
+  }).id, "approval-1");
+});
+
+test("concurrency: two connections cannot both decide one approval", { skip }, (t) => {
+  const db = projectFixture(t);
+  const writerA = db.open();
+  const writerB = db.open();
+
+  writerA.seedProject(createProject({ id: "project-1", name: "Approval concurrency" }));
+  writerA.seedAcceptance(createAcceptance({ id: "acceptance-1", targetId: "task-1" }));
+  writerA.seedTask(createTask({
+    id: "task-1",
+    title: "T1",
+    acceptanceId: "acceptance-1",
+    acceptanceVersion: 1,
+  }));
+  writerA.requestApproval({
+    id: "approval-1",
+    targetType: "TASK",
+    targetId: "task-1",
+    action: "deploy",
+    capability: "deploy.production",
+    scope: "production",
+    requestedBy: "requester-1",
+  });
+
+  const readByB = writerB.getApproval("approval-1");
+  assert.equal(readByB.version, 1);
+
+  const approved = writerA.decideApproval("approval-1", 1, {
+    decision: "APPROVE",
+    decidedBy: "alice",
+  }, { commandId: "cmd-a" });
+  assert.equal(approved.version, 2);
+
+  // the second approver still holds v1: one decision happens, not two
+  assert.throws(
+    () => writerB.decideApproval("approval-1", readByB.version, {
+      decision: "REJECT",
+      decidedBy: "bob",
+    }, { commandId: "cmd-b" }),
+    (error) => error instanceof ConflictError,
+  );
+  assert.equal(writerA.getApproval("approval-1").decision.decidedBy, "alice");
+  assert.equal(writerA.getApproval("approval-1").version, 2);
+  const types = writerA.getEvents().map((event) => event.type);
+  assert.equal(types.filter((type) => type === "approval.approved").length, 1);
+  assert.equal(types.filter((type) => type === "approval.rejected").length, 0, "the loser wrote no fact");
+
+  // and the compare-and-set is enforced by SQL itself, not only in process
+  assert.equal(
+    writerB.updateRecord("approval", "approval-1", {
+      ...approved,
+      version: 9,
+      decision: { status: "APPROVED", decidedBy: "bob", decidedAt: new Date().toISOString(), reason: null },
+    }, 1),
+    false,
+  );
+});
+
 test("K: a PASS verification whose evidence goes STALE in the database cannot accept, after a restart", { skip }, (t) => {
   const db = projectFixture(t);
   const store = db.open();

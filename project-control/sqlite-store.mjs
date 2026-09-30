@@ -155,6 +155,34 @@ CREATE TABLE IF NOT EXISTS commands (
   result_id  TEXT NOT NULL
 );
 
+-- An Approval is a durable CONTROL FACT in its own right, so it gets its own
+-- table rather than a column somewhere else: a permission that exists only as a
+-- flag on the thing it authorizes cannot be reasoned about after that thing
+-- changes. The projected columns are the ones the rules look up — identity, the
+-- bound action/scope, and the CURRENT status — while the full record (including
+-- the decision and any revocation) stays in the body column.
+--
+-- Only id and version are constrained: identity and the compare-and-set that
+-- decides the lifecycle. Everything else is a loose projection, because the
+-- shared rules in ./store.mjs are the single owner of what an approval may be —
+-- a constraint that only one backend enforces would make the backends disagree
+-- about which facts exist.
+--
+-- No foreign key on target_id on purpose: an approval may legitimately outlive
+-- or precede its target, and its currency is proven by the shared rules against
+-- the target's CURRENT version, never by a database constraint.
+CREATE TABLE IF NOT EXISTS approvals (
+  id             TEXT PRIMARY KEY,
+  version        INTEGER NOT NULL,
+  target_type    TEXT,
+  target_id      TEXT,
+  target_version INTEGER,
+  action         TEXT,
+  scope          TEXT,
+  status         TEXT,
+  body           TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS events (
   seq               INTEGER PRIMARY KEY,
   event_id          TEXT NOT NULL UNIQUE,
@@ -172,6 +200,7 @@ CREATE INDEX IF NOT EXISTS tasks_by_goal ON tasks (goal_id);
 CREATE INDEX IF NOT EXISTS evidence_by_task ON evidence (task_id);
 CREATE INDEX IF NOT EXISTS evidence_by_target ON evidence (target_id);
 CREATE INDEX IF NOT EXISTS verifications_by_target ON verifications (target_id);
+CREATE INDEX IF NOT EXISTS approvals_by_target ON approvals (target_type, target_id);
 CREATE INDEX IF NOT EXISTS events_by_aggregate ON events (aggregate_id);
 `;
 
@@ -258,6 +287,26 @@ const SHAPES = {
       acceptance_version: r.acceptanceVersion,
     }),
     filters: { id: "id", taskId: "task_id", targetId: "target_id" },
+  },
+  [Collection.APPROVAL]: {
+    table: "approvals",
+    scope: "id",
+    columns: (r) => ({
+      id: r.id,
+      version: r.version,
+      target_type: r.request?.targetType ?? null,
+      target_id: r.request?.targetId ?? null,
+      // A COMMAND target has no version to pin; the column stays NULL there.
+      target_version: r.request?.targetVersion ?? null,
+      action: r.request?.action ?? null,
+      scope: r.request?.scope ?? null,
+      status: r.decision?.status ?? null,
+    }),
+    // The projected columns exist for indexing and inspection. The shared rules
+    // look approvals up by id and resolve target/status from the record itself
+    // (see ProjectControlStore#getApprovalsForTarget): a filter vocabulary that
+    // only this backend could honour would make one call mean two things.
+    filters: { id: "id" },
   },
 };
 

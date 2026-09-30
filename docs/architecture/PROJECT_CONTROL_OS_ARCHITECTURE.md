@@ -887,6 +887,28 @@ status:
 created_at: timestamp
 ```
 
+### Command authorization (v0.1)
+
+v0.1 implements the control gate a Command must pass, and not the Command
+lifecycle above:
+
+```text
+Command intent (target, target_version, action, scope, expected_version)
+  ↓
+Approval gate — a current, attributable, correctly scoped Approval must exist
+  ↓
+concurrency guard — the command's own expectedVersion must still hold
+  ↓
+AUTHORIZED  (or WAIT with a reason)
+```
+
+- **An Approval is not an authorization result.** The gate consumes the
+  permission; there is no `Command` record and no `SUCCEEDED` state in v0.1.
+- **An Approval is not a concurrency exemption.** Passing the gate does not waive
+  `expected_version`; a stale command is still refused.
+- Authorization is read-only: the gate writes no fact, because recording
+  consumption would be effect tracking (see §5.19, I-42, I-43).
+
 ---
 
 ## 5.17 DomainEvent
@@ -953,6 +975,111 @@ Policy is enforcement, not prompt text.
 
 ---
 
+## 5.19 Approval
+
+Purpose: a durable **permission** fact.
+
+An Approval records that a named subject decided, within a stated scope, that one
+specific action on one specific target version may proceed.
+
+```yaml
+id: ApprovalId
+version: integer
+request:
+  target_type: PROJECT | MILESTONE | GOAL | TASK | COMMAND
+  target_id: string
+  target_version: integer?      # null for a COMMAND target
+  action: string
+  capability: string
+  scope: string
+  risk_level: LOW | MODERATE | HIGH | CRITICAL
+requested_by: string
+decision:
+  status: PENDING | APPROVED | REJECTED | EXPIRED | REVOKED
+  decided_by: string?
+  decided_at: timestamp?
+  reason: string?
+revocation:                     # only ever set by a revocation
+  revoked_by: string
+  revoked_at: timestamp
+  reason: string
+command_id: string?             # the Command this permission is about
+expires_at: timestamp?
+created_at: timestamp
+updated_at: timestamp
+```
+
+### What an Approval is not
+
+| Neighbour | The distinction |
+|---|---|
+| Evidence | Evidence is what happened; an Approval is what is permitted to happen |
+| Verification | Verification judges evidence; an Approval is not a judgement about work |
+| **Acceptance** | **Approval = permission fact · Acceptance = correctness/completion fact.** Neither implies the other: an approved deploy does not accept a Task, and an accepted Task produces no Approval |
+| Policy | Policy decides whether approval is *required* (`ALLOW / DENY / REQUIRE_APPROVAL`); an Approval is the fact that satisfies `REQUIRE_APPROVAL` |
+| Command | A Command is a requested action and its result; an Approval only lets one pass a control gate |
+| Effect | Approving an effect is not performing it, and not knowing its outcome |
+
+### Binding: what was approved
+
+There is no shape of an Approval that means "the project is approved". Four
+things are bound at request time and can never be edited afterwards:
+
+```text
+target    (target_type, target_id)  →  WHICH thing
+version   (target_version)          →  WHICH state of it
+action    (action, capability)      →  WHICH operation
+scope     (scope)                   →  WHERE / HOW FAR
+```
+
+The target version is **read from the target**, not supplied by the requester: an
+approval that merely claims to be about v3 while the target is already at v4 would
+be a permission for a state that does not exist. `scope` is compared exactly in
+v0.1 — there is no wildcard, prefix, or hierarchy algebra, so an approval for
+`production` is not an approval for `production-eu`.
+
+A `COMMAND` target is identified by its command id and has no version; the
+approval binds that command and can be consumed by no other.
+
+### Lifecycle
+
+```text
+PENDING ──► APPROVED ──► REVOKED
+   │            │
+   ├──► REJECTED│
+   └──► EXPIRED ┘
+```
+
+- Every transition not drawn is refused: no re-decision (`APPROVED → APPROVED`),
+  no resurrection (`REJECTED / EXPIRED / REVOKED → APPROVED`).
+- A decision must be **attributable**: no named decider, no `APPROVED`.
+- `REVOKED` means the permission no longer stands — not that the operation failed.
+  It records who revoked it, when and why, and preserves the decision it
+  superseded.
+- `EXPIRED` is an observation about the clock, not a decision. Expiry is evaluated
+  on every read; recording it durably (with an `approval.expired` event) is a
+  separate explicit act. No scheduler exists anywhere in v0.1.
+- Re-requesting is a NEW Approval, never an edit of the old one.
+
+### Consumption
+
+An Approval is consumed through one read-only proof
+(`assertApprovalUsable`), which re-checks existence, effective status,
+attributability, target type, target id, action, scope, the bound command, the
+deadline, and — the check that matters most — the target's **current** version.
+Any failure is a refusal with a machine-readable reason
+(`MISSING`, `PENDING`, `REJECTED`, `REVOKED`, `EXPIRED`, `UNKNOWN`, `UNATTRIBUTED`,
+`TARGET_TYPE_MISMATCH`, `TARGET_ID_MISMATCH`, `TARGET_MISSING`, `STALE`,
+`ACTION_MISMATCH`, `SCOPE_MISMATCH`, `COMMAND_MISMATCH`), so a caller never has to
+parse a message to learn why. A status this version cannot reason about is
+`UNKNOWN`, not "probably fine".
+
+Consumption is deliberately **not recorded** in v0.1: there is no Effect ledger,
+and a "used" flag would claim knowledge about the external world that this layer
+does not have. Authorization is a decision, not a fact about what happened.
+
+---
+
 # 6. Authority Model
 
 ## Human — Intent Authority
@@ -1016,6 +1143,27 @@ Policy
 ```
 
 and causes the state transition through the Control Plane.
+
+## Approver — Permission Authority
+
+A human (or a named external authority) is the only subject that can grant,
+refuse, or withdraw an Approval.
+
+Can:
+
+- approve or reject a named action on a named target state
+- revoke a permission that still stands, with a reason
+- see exactly what was asked (`target`, `version`, `action`, `scope`, `risk`)
+
+Cannot:
+
+- approve without being named — an unattributed `APPROVED` is refused
+- approve an action, scope, or target version other than the one requested
+- extend a grant to a newer version of the target
+- make work correct: approving is not accepting, and not executing
+
+The Control Plane records and enforces the decision, but it never manufactures
+one: with no named approver there is no Approval, and the gate fails closed.
 
 ---
 
@@ -1114,6 +1262,45 @@ The parent's decision and its contract revision move in one transaction. Without
 a contract there is no acceptance decision at all: the parent's status is simply
 synchronised from its children.
 
+## Approval
+
+```text
+PENDING ──► APPROVED ──► REVOKED
+   │            │
+   │            └──► EXPIRED
+   ├──► REJECTED
+   └──► EXPIRED
+```
+
+- `REVOKED` withdraws a permission that still stood. It is not "the operation
+  failed", and it is not a re-decision: the decision it superseded stays in the
+  record and in the event history.
+- `EXPIRED` is reached by the clock, not by a person, and is the only transition
+  available from an already-granted approval.
+- Rejection, expiry and revocation are terminal. A new attempt is a new Approval.
+
+## Command authorization
+
+v0.1 implements the **gate**, not the Command lifecycle:
+
+```text
+Command intent
+  ↓
+Approval check (existence, effective status, attribution, target, version,
+                action, scope, bound command, deadline)
+  ↓                    ↘
+AUTHORIZED            WAIT (<reason>)
+  ↓
+(execution belongs to the Runtime / Effect layer — not implemented here)
+```
+
+- Passing the gate is not running the Command, and it is not recorded: there is
+  no Effect ledger in v0.1, so authorization leaves no "consumed" fact behind.
+- An Approval never waives the Command's own `expectedVersion`. A permission is
+  not an exemption from optimistic concurrency.
+- Nothing decides *when* approval is required yet. That is the Policy layer's
+  question, and no per-object flag stands in for it.
+
 ## Effect
 
 ```text
@@ -1184,6 +1371,10 @@ I-36 Child completion is not parent acceptance; a parent with its own contract i
 I-37 Aggregate Evidence is an observation with an identity: one snapshot, one record, and a superseded record is history, never garbage.
 I-38 Evidence that no longer describes current reality cannot carry an acceptance.
 I-39 A parent's contract pin is a fact about that parent: the revision must target its own type and id, and both halves of the pin are required.
+I-40 Approval authorizes a specific action on a specific target and scope; it is not a generic permission over an object.
+I-41 An Approval is bound to a concrete target version and cannot authorize a newer authoritative version.
+I-42 Approval does not imply execution success or Acceptance.
+I-43 A revoked, expired, rejected, or stale Approval cannot authorize a Command.
 ```
 
 ---
@@ -1675,6 +1866,27 @@ REQUIRE_APPROVAL
 
 Policy must be runtime-enforced rather than merely expressed in prompts.
 
+### Policy and Approval
+
+`REQUIRE_APPROVAL` is a Policy decision; an **Approval** (§5.19) is the durable
+fact that satisfies it. Keeping them apart is what makes each auditable:
+
+```text
+Policy:    should this action be allowed, denied, or gated on a human decision?
+Approval:  a named human decided, for THIS action, on THIS target version,
+           within THIS scope — and the decision is still current.
+```
+
+`context.approval_state` in the policy schema is therefore backed by a real,
+queryable fact rather than a string nobody owns.
+
+v0.1 deliberately implements **neither** a Policy Engine nor the `REQUIRE_APPROVAL`
+decision: nothing in the prototype decides that an action must be approved. What
+exists is the other half — the gate that refuses to authorize a command without a
+current, attributable, correctly scoped Approval — plus the durable record of the
+decision itself. Wiring "which actions require approval" onto that gate is the
+next Policy problem, not a reason to guess per object today.
+
 ---
 
 # 21. Architectural Precedent / Reference Map
@@ -1843,6 +2055,8 @@ The following are currently CONFIRMED:
 - Command, Event, and State are separate.
 - External effects require UNKNOWN/reconciliation semantics.
 - Capability and Permission are separate.
+- Approval and Acceptance are separate: permission is not correctness.
+- A durable Approval binds one target version, one action and one scope, and must be attributable to a named decider.
 - Current Reality outranks Memory.
 - Parallel writes require isolation or proven non-overlap.
 - Runtime should be replaceable behind an adapter boundary.
@@ -1862,7 +2076,13 @@ The following are currently CONFIRMED:
 - Exact DSH integration mechanism.
 - Exact Team/Workflow mapping.
 - Exact Agent Bridge implementation.
-- Exact Policy Engine.
+- Exact Policy Engine (v0.1 has a durable Approval and a gate, but nothing decides
+  that an approval is required).
+- Command lifecycle states (v0.1 has the authorization gate, not a Command record
+  with its own status).
+- Approval scope algebra (v0.1 compares `scope` exactly; no wildcards, prefixes,
+  or containment).
+- Whether approval consumption is recorded (that is an Effect-ledger question).
 - Exact schema serialization format.
 - Exact Controller/Reconciler implementation.
 - Whether all mutable objects use identical version semantics.
@@ -1966,6 +2186,7 @@ This matrix defines who may create, modify, execute, verify, and accept the cano
 | Workspace | approve scope | lifecycle | use within permission | inspect | read |
 | Evidence | read/approve | record/retain | produce | inspect | consume |
 | Verification | read | record | produce proposal | authoritative verdict | consume |
+| Approval | **authoritative decision** | record/enforce, never manufacture | request only | read | read |
 | Acceptance | direct high-level override | authoritative transition | cannot accept | verify | evaluate |
 | Decision | authoritative direction | record | propose | advise | read |
 | Memory | curate | maintain | propose with provenance | validate | consume |
@@ -2025,6 +2246,24 @@ Evidence.source_refs (child snapshot)               →  the observed children
 - A parent contract revision must target that parent's own type and id.
 - A revised contract does not re-open an accepted decision, and a newer revision
   does not move an existing pin.
+
+### Approval relationship
+
+An Approval is about a target, not owned by it:
+
+```text
+Approval.request.target_type + target_id + target_version  →  what it authorizes
+Approval.action + scope + capability                       →  how far it reaches
+Approval.command_id                                        →  the command it is for
+Approval.decision.decided_by                               →  who decided (required)
+```
+
+- It does not become part of the target's state: a Task with an approved deploy is
+  still a READY Task, and no approval is created by accepting anything.
+- It does not follow the target: when the target's version moves, the approval is
+  STALE and authorizes nothing.
+- Project membership and approval scope are unrelated mechanisms: `scope` is an
+  opaque, exactly-compared label in v0.1, not a tree of project resources.
 
 ### Project State authority boundary
 

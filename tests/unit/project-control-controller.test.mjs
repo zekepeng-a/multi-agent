@@ -2,11 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  ApprovalDecision,
+  ApprovalTargetType,
   AttemptStatus,
   ConflictError,
   EvidenceStatus,
   InvariantError,
   ReconcileOutcome,
+  RiskLevel,
   RunStatus,
   TaskStatus,
   VerificationVerdict,
@@ -809,4 +812,148 @@ test("NEEDS_REVIEW recovery: cannot bypass the stale-evidence guard (I-10)", asy
   assert.equal(store.getTask("task-1").status, TaskStatus.NEEDS_REVIEW, "no fake success");
   assert.equal(store.getAcceptance("acceptance-1", 1).status, "PENDING");
   assert.equal(eventCount(store, "task.accepted"), 0);
+});
+
+// ── the approval gate ────────────────────────────────────────────────────────
+//
+// The Controller owns the GATE, not the policy: it is asked whether a concrete
+// command may pass, and it answers with durable facts. Passing the gate is not
+// running the command, and it is not accepting anything.
+
+function approvalFixture() {
+  const { store, runtime, controller } = fixture();
+  store.requestApproval({
+    id: "approval-1",
+    targetType: ApprovalTargetType.TASK,
+    targetId: "task-1",
+    action: "deploy",
+    capability: "deploy.production",
+    scope: "production",
+    riskLevel: RiskLevel.HIGH,
+    requestedBy: "requester-1",
+    commandId: "C1",
+  });
+  const intent = {
+    targetType: ApprovalTargetType.TASK,
+    targetId: "task-1",
+    targetVersion: 1,
+    action: "deploy",
+    scope: "production",
+    approvalId: "approval-1",
+    commandId: "C1",
+  };
+  return { store, runtime, controller, intent };
+}
+
+test("the gate fails closed while nothing has been approved", () => {
+  const { store, controller, intent } = approvalFixture();
+
+  const result = controller.authorizeCommand(intent);
+
+  assert.equal(result.action, "WAIT");
+  assert.equal(result.reason, "approval-pending");
+  assert.equal(result.approvalReason, "PENDING");
+  assert.equal(result.intent.action, "deploy", "the refused intent is reported back verbatim");
+  assert.equal(store.getTask("task-1").status, TaskStatus.READY);
+});
+
+test("the gate authorizes only the action, scope and version that were approved", () => {
+  const { store, controller, intent } = approvalFixture();
+  store.decideApproval("approval-1", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
+
+  const authorized = controller.authorizeCommand(intent);
+  assert.equal(authorized.action, "AUTHORIZE");
+  assert.equal(authorized.reason, "command-authorized");
+  assert.equal(authorized.approval.decision.decidedBy, "alice");
+
+  assert.equal(controller.authorizeCommand({ ...intent, action: "delete" }).reason, "approval-action-mismatch");
+  assert.equal(controller.authorizeCommand({ ...intent, scope: "staging" }).reason, "approval-scope-mismatch");
+  assert.equal(controller.authorizeCommand({ ...intent, commandId: "C2" }).reason, "approval-command-mismatch");
+});
+
+test("an authorized command is not an executed command, and not an accepted task", () => {
+  const { store, runtime, controller, intent } = approvalFixture();
+  store.decideApproval("approval-1", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
+  const eventsBefore = store.getEvents().length;
+
+  assert.equal(controller.authorizeCommand(intent).action, "AUTHORIZE");
+
+  assert.equal(runtime.started.length, 0, "the gate never starts anything");
+  assert.equal(store.getRunsForTask("task-1").length, 0);
+  assert.equal(store.getTask("task-1").status, TaskStatus.READY);
+  assert.equal(store.getTask("task-1").version, 1);
+  assert.equal(store.getEvents().length, eventsBefore, "authorization writes nothing: no effect ledger in v0.1");
+  assert.equal(store.getAcceptance("acceptance-1", 1).status, "PENDING", "permission is not correctness");
+});
+
+test("an approval does not waive the command's own expectedVersion", async () => {
+  const { store, controller, intent } = approvalFixture();
+  store.decideApproval("approval-1", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
+  // the task moves on while the approval is still current
+  store.updateTask("task-1", 1, { status: TaskStatus.IN_PROGRESS }, { commandId: "cmd-task" });
+  store.requestApproval({
+    id: "approval-2",
+    targetType: ApprovalTargetType.TASK,
+    targetId: "task-1",
+    action: "deploy",
+    capability: "deploy.production",
+    scope: "production",
+    requestedBy: "requester-1",
+  });
+  store.decideApproval("approval-2", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
+
+  const conflict = controller.authorizeCommand({
+    ...intent,
+    approvalId: "approval-2",
+    targetVersion: 2,
+    expectedVersion: 1,
+  });
+
+  assert.equal(conflict.action, "WAIT");
+  assert.equal(conflict.reason, "command-version-conflict");
+  assert.equal(conflict.expectedVersion, 1);
+  assert.equal(conflict.currentVersion, 2);
+  assert.equal(conflict.approval.request.targetVersion, 2, "the permission itself was current");
+  // the command that expects the current version passes
+  assert.equal(
+    controller.authorizeCommand({ ...intent, approvalId: "approval-2", targetVersion: 2, expectedVersion: 2 }).action,
+    "AUTHORIZE",
+  );
+});
+
+test("a command target is identified by its command id, never by a version", async () => {
+  const { store, controller } = fixture();
+  store.requestApproval({
+    id: "approval-cmd",
+    targetType: ApprovalTargetType.COMMAND,
+    targetId: "C9",
+    commandId: "C9",
+    action: "deploy",
+    capability: "deploy.production",
+    scope: "production",
+    requestedBy: "requester-1",
+  });
+  store.decideApproval("approval-cmd", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
+
+  assert.equal(controller.authorizeCommand({
+    targetType: ApprovalTargetType.COMMAND,
+    targetId: "C9",
+    action: "deploy",
+    scope: "production",
+    approvalId: "approval-cmd",
+    commandId: "C9",
+  }).action, "AUTHORIZE");
+
+  assert.throws(
+    () => controller.authorizeCommand({
+      targetType: ApprovalTargetType.COMMAND,
+      targetId: "C9",
+      action: "deploy",
+      scope: "production",
+      approvalId: "approval-cmd",
+      commandId: "C9",
+      expectedVersion: 1,
+    }),
+    (error) => error instanceof InvariantError && /no version/.test(error.message),
+  );
 });

@@ -11,13 +11,16 @@ import os from "node:os";
 import path from "node:path";
 
 import { MemoryStore } from "../../project-control/memory-store.mjs";
-import { ACCEPTABLE_SOURCE_TASK_STATES } from "../../project-control/store.mjs";
+import { ACCEPTABLE_SOURCE_TASK_STATES, Collection } from "../../project-control/store.mjs";
 import {
   SqliteStore,
   isSqliteAvailable,
   SQLITE_REQUIREMENT,
 } from "../../project-control/sqlite-store.mjs";
 import {
+  ApprovalDecision,
+  ApprovalStatus,
+  ApprovalTargetType,
   AttemptStatus,
   ConflictError,
   EvidenceStatus,
@@ -29,6 +32,7 @@ import {
   TaskStatus,
   VerificationVerdict,
   createAcceptance,
+  createApproval,
   createAttempt,
   createEvidence,
   createGoal,
@@ -836,4 +840,134 @@ test("both backends agree on every acceptance source state", { skip: sqliteSkip 
       `${startStatus}: both backends must apply the same rule`,
     );
   }
+});
+
+// ── the approval collection, as a backend contract ───────────────────────────
+
+/**
+ * An Approval is a first-class collection, so a future backend must persist it
+ * with the same primitives and the same compare-and-set as everything else. The
+ * projected columns are the backend's business; what a backend must NOT do is
+ * enforce approval rules of its own — the shared semantics own those.
+ */
+test("both backends persist the approval collection the same way", { skip: sqliteSkip }, (t) => {
+  const run = (store) => {
+    const inserted = store.insertRecord(Collection.APPROVAL, "approval-1", { id: "approval-1", version: 1 });
+    const duplicate = store.insertRecord(Collection.APPROVAL, "approval-1", { id: "approval-1", version: 9 });
+    const missing = store.getRecord(Collection.APPROVAL, "approval-404");
+    const staleCas = store.updateRecord(Collection.APPROVAL, "approval-1", { id: "approval-1", version: 2 }, 99);
+    const cas = store.updateRecord(Collection.APPROVAL, "approval-1", { id: "approval-1", version: 2 }, 1);
+    const byId = store.recordsMatching(Collection.APPROVAL, "id", "approval-1").map((record) => record.id);
+    const byUnknown = store.recordsMatching(Collection.APPROVAL, "id", "approval-9");
+    return {
+      inserted,
+      duplicate,
+      missing,
+      staleCas,
+      cas,
+      version: store.getRecord(Collection.APPROVAL, "approval-1").version,
+      all: store.allRecords(Collection.APPROVAL).map((record) => record.id),
+      byId,
+      byUnknown,
+    };
+  };
+
+  const memory = new MemoryStore();
+  const sqlite = new SqliteStore(":memory:");
+  let fromSqlite;
+  try {
+    fromSqlite = run(sqlite);
+  } finally {
+    sqlite.close();
+  }
+  const fromMemory = run(memory);
+
+  assert.deepEqual(fromSqlite, fromMemory);
+  assert.deepEqual(fromMemory, {
+    inserted: true,
+    duplicate: false,
+    missing: null,
+    staleCas: false,
+    cas: true,
+    version: 2,
+    all: ["approval-1"],
+    byId: ["approval-1"],
+    byUnknown: [],
+  });
+});
+
+test("approval lookups resolve from the record, identically on both backends", { skip: sqliteSkip }, () => {
+  const seed = (store) => {
+    store.seedProject(createProject({ id: "project-1", name: "Contract project" }));
+    seedAcceptance(store);
+    seedTask(store);
+    store.seedGoal(createGoal({ id: "goal-1", projectId: "project-1", title: "G1" }));
+    store.requestApproval({
+      id: "approval-live",
+      targetType: ApprovalTargetType.TASK,
+      targetId: "task-1",
+      action: "deploy",
+      capability: "deploy.production",
+      scope: "production",
+      requestedBy: "requester-1",
+    });
+    store.decideApproval("approval-live", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
+    // a HISTORICAL grant: it was approved once, and its deadline has since passed
+    store.seedApproval({
+      ...createApproval({
+        id: "approval-old",
+        targetType: ApprovalTargetType.TASK,
+        targetId: "task-1",
+        targetVersion: 1,
+        action: "deploy",
+        capability: "deploy.production",
+        scope: "production",
+        requestedBy: "requester-1",
+        expiresAt: "2020-01-01T00:00:00.000Z",
+      }),
+      decision: {
+        status: ApprovalStatus.APPROVED,
+        decidedBy: "alice",
+        decidedAt: "2019-12-31T00:00:00.000Z",
+        reason: null,
+      },
+    });
+    store.requestApproval({
+      id: "approval-goal",
+      targetType: ApprovalTargetType.GOAL,
+      targetId: "goal-1",
+      action: "archive",
+      capability: "goal.archive",
+      scope: "default",
+      requestedBy: "requester-1",
+    });
+    return {
+      aboutTask: store.getApprovalsForTarget(ApprovalTargetType.TASK, "task-1").map((record) => record.id),
+      aboutGoal: store.getApprovalsForTarget(ApprovalTargetType.GOAL, "goal-1").map((record) => record.id),
+      approvedNow: store.getApprovalsInStatus(ApprovalStatus.APPROVED).map((record) => record.id),
+      // the deadline already passed, so it is not APPROVED "now" even though that
+      // is the status stored in the record
+      storedStatus: store.getApproval("approval-old").decision.status,
+      requested: store.getApprovalsInStatus(ApprovalStatus.PENDING).map((record) => record.id),
+    };
+  };
+
+  const memory = new MemoryStore();
+  const sqlite = new SqliteStore(":memory:");
+  let fromSqlite;
+  try {
+    fromSqlite = seed(sqlite);
+  } finally {
+    sqlite.close();
+  }
+  const fromMemory = seed(memory);
+
+  assert.deepEqual(fromSqlite, fromMemory);
+  assert.deepEqual(fromMemory, {
+    aboutTask: ["approval-live", "approval-old"],
+    aboutGoal: ["approval-goal"],
+    approvedNow: ["approval-live"],
+    storedStatus: ApprovalStatus.APPROVED,
+    requested: ["approval-goal"],
+  });
 });

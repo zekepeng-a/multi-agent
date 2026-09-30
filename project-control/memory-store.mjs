@@ -22,6 +22,10 @@ export class MemoryStore extends ProjectControlStore {
     this.attempts = new Map();
     this.evidence = new Map();
     this.verifications = new Map();
+    // Approvals are keyed by their own id, exactly like every other aggregate:
+    // the decision lifecycle is enforced by Compare-And-Set on the record's
+    // `version` in the shared rules, not by anything here.
+    this.approvals = new Map();
     this.commands = new Map();
     this.events = [];
   }
@@ -37,6 +41,7 @@ export class MemoryStore extends ProjectControlStore {
       case Collection.ATTEMPT: return this.attempts;
       case Collection.EVIDENCE: return this.evidence;
       case Collection.VERIFICATION: return this.verifications;
+      case Collection.APPROVAL: return this.approvals;
       default: throw new Error(`unknown collection: ${collection}`);
     }
   }

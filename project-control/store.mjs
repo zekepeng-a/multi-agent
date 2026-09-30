@@ -11,6 +11,11 @@
 import { createHash } from "node:crypto";
 import {
   AcceptanceTargetType,
+  ApprovalDecision,
+  ApprovalError,
+  ApprovalFailureReason,
+  ApprovalStatus,
+  ApprovalTargetType,
   EvidenceStatus,
   ConflictError,
   InvariantError,
@@ -20,6 +25,7 @@ import {
   TaskStatus,
   RunStatus,
   AttemptStatus,
+  createApproval,
   createEvidence,
   now,
 } from "./domain.mjs";
@@ -35,6 +41,7 @@ export const Collection = Object.freeze({
   ATTEMPT: "attempt",
   EVIDENCE: "evidence",
   VERIFICATION: "verification",
+  APPROVAL: "approval",
 });
 
 // A lifecycle transition that is a domain decision in its own right is recorded
@@ -83,6 +90,87 @@ const CHILD_REF_TYPE = Object.freeze({
   [Collection.GOAL]: "TASK_ACCEPTANCE",
   [Collection.MILESTONE]: "GOAL_ACCEPTANCE",
 });
+
+// ── Durable Human Approval vocabulary ────────────────────────────────────────
+//
+// An Approval is a permission fact with a lifecycle of its own. The table below
+// is the WHOLE lifecycle: every transition that is not listed is refused, so a
+// re-decision (APPROVED → APPROVED), a resurrection (REJECTED → APPROVED) and a
+// post-revocation approval all fail closed without an explicit branch each.
+//
+// `from` is the EFFECTIVE status, not merely the stored one: a PENDING approval
+// whose deadline has passed is EXPIRED for every purpose, including whether it
+// may still be decided.
+const APPROVAL_TRANSITIONS = Object.freeze({
+  [ApprovalStatus.APPROVED]: Object.freeze({
+    from: Object.freeze([ApprovalStatus.PENDING]),
+    event: "approval.approved",
+  }),
+  [ApprovalStatus.REJECTED]: Object.freeze({
+    from: Object.freeze([ApprovalStatus.PENDING]),
+    event: "approval.rejected",
+  }),
+  // Expiry is the only transition that can be reached from an ALREADY GRANTED
+  // approval: the grant did not become wrong, it stopped being valid.
+  [ApprovalStatus.EXPIRED]: Object.freeze({
+    from: Object.freeze([ApprovalStatus.PENDING, ApprovalStatus.APPROVED]),
+    event: "approval.expired",
+  }),
+  // Revocation is a human act about a grant, so it requires a grant to revoke.
+  [ApprovalStatus.REVOKED]: Object.freeze({
+    from: Object.freeze([ApprovalStatus.APPROVED]),
+    event: "approval.revoked",
+  }),
+});
+
+/** Approval target types that name a real aggregate with a concurrency version. */
+const APPROVAL_TARGET_COLLECTION = Object.freeze({
+  [ApprovalTargetType.PROJECT]: Collection.PROJECT,
+  [ApprovalTargetType.MILESTONE]: Collection.MILESTONE,
+  [ApprovalTargetType.GOAL]: Collection.GOAL,
+  [ApprovalTargetType.TASK]: Collection.TASK,
+});
+
+/**
+ * What an approval request BINDS, and therefore what a later update may never
+ * touch. Everything here answers "which concrete action was approved?" — editing
+ * any of it would silently re-point an existing permission at different work.
+ */
+const APPROVAL_BOUND_FIELDS = Object.freeze([
+  "targetType",
+  "targetId",
+  "targetVersion",
+  "action",
+  "capability",
+  "scope",
+  "riskLevel",
+  "requestedBy",
+  "commandId",
+]);
+
+/** The only field an update may move: the request's own deadline. */
+const APPROVAL_UPDATABLE_FIELDS = Object.freeze(["expiresAt"]);
+
+const APPROVAL_LIFECYCLE_FIELDS = Object.freeze(["id", "version", "decision", "revocation", "createdAt"]);
+
+/**
+ * The status an Approval has RIGHT NOW.
+ *
+ * Expiry is not a background job in v0.1 (there is no scheduler, and a control
+ * plane that needs a timer to know whether a permission is valid is fragile).
+ * It is evaluated on every read: a PENDING or APPROVED approval whose `expiresAt`
+ * has passed is EXPIRED from that instant, whether or not anyone has recorded it
+ * yet. Recording it is a separate, explicit act (`expireApproval`) that leaves a
+ * durable `approval.expired` event behind.
+ */
+export function effectiveApprovalStatus(approval, at = new Date()) {
+  const stored = approval?.decision?.status ?? null;
+  if (stored === ApprovalStatus.REVOKED || stored === ApprovalStatus.EXPIRED) return stored;
+  if (approval?.expiresAt && at.getTime() > Date.parse(approval.expiresAt)) {
+    return ApprovalStatus.EXPIRED;
+  }
+  return stored;
+}
 
 /**
  * Deterministic JSON: object keys are sorted, so two structurally equal snapshots
@@ -806,6 +894,594 @@ export class ProjectControlStore {
   /** Verifications already recorded about one target; used to reuse a verdict. */
   getVerificationsForTarget(targetId) {
     return this.recordsMatching(Collection.VERIFICATION, "targetId", targetId);
+  }
+
+  // ── Durable Human Approval ────────────────────────────────────────────────
+  //
+  // An Approval is written and read as a durable CONTROL FACT, never as a flag
+  // on something else. The rules live here:
+  //
+  //   • the request binds target + version + action + scope, so "approved" always
+  //     answers "approved WHICH action, on WHICH state?";
+  //   • a decision is attributable: no approver, no APPROVED;
+  //   • the lifecycle is the transition table above — no re-decision, no
+  //     resurrection, no approval after revocation;
+  //   • expiry is evaluated on read, never by a background job;
+  //   • consumption is a READ-ONLY proof (`assertApprovalUsable`) that re-checks
+  //     the target's CURRENT version, so a permission cannot be carried forward
+  //     onto state nobody approved.
+  //
+  // What this deliberately is not: a Policy Engine (nothing decides here that an
+  // approval is REQUIRED), an Effect ledger (consumption is not recorded — v0.1
+  // has no effect tracking), and never an execution path. An approved approval
+  // authorizes a command to pass a gate; it runs nothing.
+
+  /**
+   * Inserts an already-formed Approval — the same escape hatch `seedTask` and
+   * `seedAcceptance` provide, used to start from a decided state (a historical
+   * approval, or a fixture).
+   *
+   * A seed is not a bypass: the record must be internally coherent, and the
+   * events it emits mirror the record exactly (`approval.requested`, then the
+   * decision events its status implies). History and state are written together
+   * here too, so a seeded APPROVED approval cannot exist without an
+   * `approval.approved` event explaining it.
+   */
+  seedApproval(approval) {
+    return this.runInTransaction(() => {
+      const record = structuredClone(approval);
+      this.#assertApprovalCoherent(record);
+      if (!this.insertRecord(Collection.APPROVAL, record.id, record)) {
+        throw new Error(`approval already exists: ${record.id}`);
+      }
+      this.#event("approval.requested", record.id, this.#approvalRequestPayload(record), {
+        aggregateVersion: record.version,
+      });
+      const stored = record.decision.status;
+      // REVOKED implies a grant happened first: a revoked approval without an
+      // `approval.approved` event would be a fact with no history.
+      if (stored === ApprovalStatus.REVOKED) {
+        this.#event("approval.approved", record.id, this.#approvalDecisionPayload(record), {
+          aggregateVersion: record.version,
+        });
+      }
+      if (stored !== ApprovalStatus.PENDING) {
+        this.#event(APPROVAL_TRANSITIONS[stored].event, record.id, {
+          ...this.#approvalDecisionPayload(record),
+          ...(record.revocation ?? {}),
+        }, { aggregateVersion: record.version });
+      }
+      return structuredClone(record);
+    });
+  }
+
+  getApproval(id) {
+    return structuredClone(this.#required(Collection.APPROVAL, id, "approval"));
+  }
+
+  /**
+   * Every approval about one target.
+   *
+   * Lookups by target/status are resolved HERE, from the authoritative records,
+   * rather than through a backend filter: an approval's target and status live
+   * inside the request/decision blocks, and a filter vocabulary that only one
+   * backend could honour would make the same call mean two different things.
+   */
+  getApprovalsForTarget(targetType, targetId) {
+    return structuredClone(this.allRecords(Collection.APPROVAL).filter(
+      (approval) => approval.request?.targetType === targetType && approval.request?.targetId === targetId,
+    ));
+  }
+
+  /**
+   * Every approval whose EFFECTIVE status is `status` right now — so a query for
+   * APPROVED can never return a permission whose deadline has already passed.
+   */
+  getApprovalsInStatus(status, at = new Date()) {
+    return structuredClone(this.allRecords(Collection.APPROVAL).filter(
+      (approval) => effectiveApprovalStatus(approval, at) === status,
+    ));
+  }
+
+  /**
+   * Creates a PENDING request and pins the target state it is about.
+   *
+   * The version is READ FROM THE TARGET, never taken from the caller: an
+   * approval that merely claims to be about v3 while the target is already at v4
+   * would be a permission for a state that does not exist. A COMMAND target has
+   * no version; it is bound by command identity instead.
+   */
+  requestApproval(request, { commandId = null } = {}) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(commandId, "requestApproval");
+      if (replay) return this.getApproval(replay);
+
+      const targetVersion = this.#approvalTargetVersion(request.targetType, request.targetId);
+      const declared = request.targetVersion ?? null;
+      if (targetVersion != null && declared != null && declared !== targetVersion) {
+        throw new InvariantError(
+          `approval target ${request.targetId} is v${targetVersion}, not v${declared}: ` +
+            "a request pins the state it was actually made against",
+        );
+      }
+      const approval = createApproval({ ...request, targetVersion });
+      this.#assertApprovalCoherent(approval);
+      if (!this.insertRecord(Collection.APPROVAL, approval.id, structuredClone(approval))) {
+        throw new Error(`approval already exists: ${approval.id}`);
+      }
+      this.#event("approval.requested", approval.id, this.#approvalRequestPayload(approval), {
+        commandId,
+        aggregateVersion: approval.version,
+      });
+      this.#rememberCommand(commandId, "requestApproval", approval.id);
+      return structuredClone(approval);
+    });
+  }
+
+  /**
+   * Applies a human decision: APPROVE or REJECT.
+   *
+   * A decision must name who made it — an unattributed APPROVED is exactly the
+   * fact this round exists to prevent — and it may only be taken while the
+   * request is still open. Re-deciding is refused rather than treated as a no-op,
+   * because "approve it again" and "it is already approved" are different
+   * statements, and a second `approval.approved` event would be a second claim
+   * about the same permission.
+   */
+  decideApproval(approvalId, expectedVersion, { decision, decidedBy, reason = null } = {}, { commandId = null } = {}) {
+    const targetStatus = decision === ApprovalDecision.APPROVE
+      ? ApprovalStatus.APPROVED
+      : decision === ApprovalDecision.REJECT
+        ? ApprovalStatus.REJECTED
+        : null;
+    if (!targetStatus) throw new InvariantError(`unknown approval decision: ${decision}`);
+    if (typeof decidedBy !== "string" || decidedBy.trim() === "") {
+      throw new InvariantError(`approval ${approvalId} cannot be ${targetStatus} without a deciding subject`);
+    }
+    return this.#mutateApproval(approvalId, expectedVersion, targetStatus, "decideApproval", {
+      commandId,
+      build: (current) => ({
+        ...current,
+        decision: {
+          status: targetStatus,
+          decidedBy,
+          decidedAt: now(),
+          reason,
+        },
+      }),
+    });
+  }
+
+  /**
+   * Withdraws a grant. REVOKED does not mean "the operation failed" — it means
+   * the permission that existed no longer does. Who revoked it, when, and why are
+   * recorded, and the original decision is preserved beside them: a revocation is
+   * history over a decision, not an edit of it.
+   */
+  revokeApproval(approvalId, expectedVersion, { revokedBy, reason } = {}, { commandId = null } = {}) {
+    if (typeof revokedBy !== "string" || revokedBy.trim() === "") {
+      throw new InvariantError(`approval ${approvalId} cannot be REVOKED without a revoking subject`);
+    }
+    if (typeof reason !== "string" || reason.trim() === "") {
+      throw new InvariantError(`approval ${approvalId} cannot be REVOKED without a reason`);
+    }
+    return this.#mutateApproval(approvalId, expectedVersion, ApprovalStatus.REVOKED, "revokeApproval", {
+      commandId,
+      build: (current) => ({
+        ...current,
+        decision: { ...current.decision, status: ApprovalStatus.REVOKED },
+        revocation: { revokedBy, revokedAt: now(), reason },
+      }),
+      // The event states the revocation, not the decision it superseded: who
+      // withdrew the permission, when, and why.
+      payload: (next) => ({ ...next.revocation }),
+    });
+  }
+
+  /**
+   * Records an expiry that has ALREADY happened, and is the only thing that ever
+   * persists APPROVED → EXPIRED. Read paths treat the approval as expired the
+   * moment its deadline passes (`effectiveApprovalStatus`); this operation is for
+   * making that visible in the durable record and the event log, on first
+   * detection, with no scheduler anywhere in the system.
+   *
+   * Claiming an expiry that has not happened is refused: EXPIRED is an
+   * observation about the clock, not a decision someone may take.
+   */
+  expireApproval(approvalId, expectedVersion, { commandId = null, at = new Date() } = {}) {
+    const current = this.#required(Collection.APPROVAL, approvalId, "approval");
+    if (!current.expiresAt) {
+      throw new InvariantError(`approval ${approvalId} has no deadline and cannot expire`);
+    }
+    if (at.getTime() <= Date.parse(current.expiresAt)) {
+      throw new InvariantError(
+        `approval ${approvalId} has not passed its deadline (${current.expiresAt}) and cannot be recorded as EXPIRED`,
+      );
+    }
+    const from = current.decision.status;
+    return this.#mutateApproval(approvalId, expectedVersion, ApprovalStatus.EXPIRED, "expireApproval", {
+      commandId,
+      build: (record) => ({
+        ...record,
+        decision: { ...record.decision, status: ApprovalStatus.EXPIRED },
+      }),
+      payload: () => ({ expiresAt: current.expiresAt, from }),
+    });
+  }
+
+  /**
+   * The only field an existing request may move is its deadline, and only while
+   * nobody has decided it. Everything that defines WHAT was approved (target,
+   * version, action, capability, scope, risk, requester, bound command) is bound
+   * for the life of the approval, and the decision block is never edited: a
+   * decision is superseded by revocation, or replaced by a NEW request.
+   */
+  updateApproval(id, expectedVersion, patch, { commandId = null } = {}) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(commandId, "updateApproval");
+      if (replay) return this.getApproval(replay);
+      const current = this.#required(Collection.APPROVAL, id, "approval");
+      if (current.version !== expectedVersion) {
+        throw new ConflictError(`approval ${id} expected v${expectedVersion}, current v${current.version}`);
+      }
+      const status = effectiveApprovalStatus(current);
+      if (status !== ApprovalStatus.PENDING) {
+        throw new InvariantError(
+          `approval ${id} is ${status}: a decided request is not edited, it is revoked or replaced`,
+        );
+      }
+      for (const field of Object.keys(patch ?? {})) {
+        if (APPROVAL_UPDATABLE_FIELDS.includes(field)) continue;
+        throw new InvariantError(
+          APPROVAL_BOUND_FIELDS.includes(field)
+            ? `approval ${id} binds ${field}: it defines what was approved and cannot be changed`
+            : `approval ${id} cannot be updated in ${field}`,
+        );
+      }
+      const next = {
+        ...current,
+        ...structuredClone(patch ?? {}),
+        version: current.version + 1,
+        updatedAt: now(),
+      };
+      this.#assertApprovalCoherent(next);
+      if (!this.updateRecord(Collection.APPROVAL, id, next, expectedVersion)) {
+        throw new ConflictError(`approval ${id} expected v${expectedVersion}, but it changed in another writer`);
+      }
+      this.#event("approval.updated", id, { patch: structuredClone(patch ?? {}) }, {
+        commandId,
+        aggregateVersion: next.version,
+      });
+      this.#rememberCommand(commandId, "updateApproval", id);
+      return structuredClone(next);
+    });
+  }
+
+  /**
+   * Proves that an Approval authorizes a concrete action, right now, on the
+   * target state as it is NOW. Pure read: nothing is written, nothing is
+   * consumed, and no "used" flag exists in v0.1 — recording consumption would be
+   * effect tracking, which is a later problem (and a read-only check stays
+   * honest: it cannot half-succeed).
+   *
+   * Every check fails closed, and the failure carries a machine-readable reason:
+   * existence, effective status, attribution, target type, target id, action,
+   * scope, the bound command, expiry, and — the one that matters most — the
+   * target's CURRENT version. An approval pinned to v3 authorizes v3 and nothing
+   * else; when the target moves to v4 the permission is STALE, not extended.
+   */
+  assertApprovalUsable({
+    approvalId,
+    targetType,
+    targetId,
+    targetVersion = null,
+    action,
+    scope,
+    commandId = null,
+    at = new Date(),
+  } = {}) {
+    const approval = this.getRecord(Collection.APPROVAL, approvalId);
+    if (!approval) {
+      throw new ApprovalError(
+        ApprovalFailureReason.MISSING,
+        `approval not found: ${approvalId}`,
+      );
+    }
+
+    const status = effectiveApprovalStatus(approval, at);
+    if (status !== ApprovalStatus.APPROVED) {
+      // The reason IS the status, so "still pending", "rejected", "revoked" and
+      // "expired" stay distinguishable. A status this version cannot reason about
+      // is reported as UNKNOWN rather than quietly treated as usable.
+      const reason = typeof status === "string" && ApprovalFailureReason[status]
+        ? ApprovalFailureReason[status]
+        : ApprovalFailureReason.UNKNOWN;
+      const explanation = status === ApprovalStatus.PENDING
+        ? "is still PENDING and authorizes nothing"
+        : status === ApprovalStatus.EXPIRED
+          ? `EXPIRED at ${approval.expiresAt} and no longer authorizes anything`
+          : `is ${status ?? "(no status)"} and authorizes nothing`;
+      throw new ApprovalError(reason, `approval ${approval.id} ${explanation}`);
+    }
+
+    // An APPROVED approval with no named approver cannot exist through the rules;
+    // if it exists anyway (hand-edited durable state, an older writer) it must not
+    // authorize anything either.
+    if (
+      typeof approval.decision.decidedBy !== "string" ||
+      approval.decision.decidedBy.trim() === "" ||
+      !approval.decision.decidedAt
+    ) {
+      throw new ApprovalError(
+        ApprovalFailureReason.UNATTRIBUTED,
+        `approval ${approval.id} is APPROVED without an attributable decision`,
+      );
+    }
+
+    const request = approval.request;
+    const mismatch = (reason, detail) => new ApprovalError(
+      reason,
+      `approval ${approval.id} ${detail}`,
+    );
+
+    if (request.targetType !== targetType) {
+      throw mismatch(
+        ApprovalFailureReason.TARGET_TYPE_MISMATCH,
+        `authorizes ${request.targetType} ${request.targetId}, not ${targetType} ${targetId}`,
+      );
+    }
+    if (request.targetId !== targetId) {
+      throw mismatch(
+        ApprovalFailureReason.TARGET_ID_MISMATCH,
+        `authorizes ${request.targetType} ${request.targetId}, not ${targetId}`,
+      );
+    }
+    if (request.action !== action) {
+      throw mismatch(ApprovalFailureReason.ACTION_MISMATCH, `authorizes action "${request.action}", not "${action}"`);
+    }
+    if (request.scope !== scope) {
+      throw mismatch(ApprovalFailureReason.SCOPE_MISMATCH, `authorizes scope "${request.scope}", not "${scope}"`);
+    }
+
+    // A command-bound approval is consumed by that command and no other.
+    if (approval.commandId != null && approval.commandId !== commandId) {
+      throw mismatch(
+        ApprovalFailureReason.COMMAND_MISMATCH,
+        `is bound to command ${approval.commandId}, not ${commandId ?? "(none)"}`,
+      );
+    }
+
+    if (request.targetType === ApprovalTargetType.COMMAND) {
+      // A command is identified by its id; it has no concurrency version, and the
+      // consumer must be that same command.
+      if (commandId !== request.targetId) {
+        throw mismatch(
+          ApprovalFailureReason.COMMAND_MISMATCH,
+          `authorizes command ${request.targetId}, not ${commandId ?? "(none)"}`,
+        );
+      }
+      if (targetVersion != null) {
+        throw mismatch(
+          ApprovalFailureReason.COMMAND_MISMATCH,
+          "is about a command, which is identified by its command id and has no target version",
+        );
+      }
+      return structuredClone(approval);
+    }
+
+    // Current Reality outranks a recorded permission: the version that was
+    // approved must still be the version that exists.
+    const currentVersion = this.#findApprovalTargetVersion(request.targetType, request.targetId);
+    if (currentVersion == null) {
+      throw mismatch(
+        ApprovalFailureReason.TARGET_MISSING,
+        `authorizes ${request.targetType} ${request.targetId}, which does not exist`,
+      );
+    }
+    if (currentVersion !== request.targetVersion) {
+      throw mismatch(
+        ApprovalFailureReason.STALE,
+        `authorizes ${request.targetType} ${request.targetId} v${request.targetVersion}, ` +
+          `which is now v${currentVersion}`,
+      );
+    }
+    if (targetVersion != null && targetVersion !== request.targetVersion) {
+      throw mismatch(
+        ApprovalFailureReason.STALE,
+        `authorizes ${request.targetType} ${request.targetId} v${request.targetVersion}, not v${targetVersion}`,
+      );
+    }
+
+    return structuredClone(approval);
+  }
+
+  // ── Approval internals ────────────────────────────────────────────────────
+
+  /**
+   * The single writer for every approval lifecycle transition.
+   *
+   * State, event and command row commit together, and the compare-and-set write
+   * is what makes two approvers racing on the same version produce ONE decision:
+   * the loser gets a conflict, never a second `approval.approved` event.
+   */
+  #mutateApproval(approvalId, expectedVersion, targetStatus, operation, { commandId = null, build, payload = null } = {}) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(commandId, operation);
+      if (replay) return this.getApproval(replay);
+
+      const current = this.#required(Collection.APPROVAL, approvalId, "approval");
+      if (current.version !== expectedVersion) {
+        throw new ConflictError(`approval ${approvalId} expected v${expectedVersion}, current v${current.version}`);
+      }
+      const transition = APPROVAL_TRANSITIONS[targetStatus];
+      const stored = current.decision.status;
+      if (!transition.from.includes(stored)) {
+        throw new InvariantError(
+          stored === targetStatus
+            ? `approval ${approvalId} is already ${targetStatus}: a decision is taken once, and a repeat is not a no-op`
+            : `approval ${approvalId} is ${stored} and may not become ${targetStatus}`,
+        );
+      }
+      // A deadline that has passed closes the request. Every transition except
+      // recording the expiry itself is refused once the approval is effectively
+      // EXPIRED — including a revocation, which needs a grant that is still valid
+      // to withdraw.
+      const effective = effectiveApprovalStatus(current);
+      if (targetStatus !== ApprovalStatus.EXPIRED && effective !== stored) {
+        throw new InvariantError(
+          `approval ${approvalId} is ${effective} (deadline ${current.expiresAt}) and may not become ${targetStatus}`,
+        );
+      }
+
+      const next = {
+        ...build(current),
+        version: current.version + 1,
+        updatedAt: now(),
+      };
+      this.#assertApprovalCoherent(next);
+      if (!this.updateRecord(Collection.APPROVAL, approvalId, next, expectedVersion)) {
+        throw new ConflictError(`approval ${approvalId} expected v${expectedVersion}, but it changed in another writer`);
+      }
+      this.#event(transition.event, approvalId, payload ? payload(next) : this.#approvalDecisionPayload(next), {
+        commandId,
+        aggregateVersion: next.version,
+      });
+      this.#rememberCommand(commandId, operation, approvalId);
+      return structuredClone(next);
+    });
+  }
+
+  /** Current authoritative version of an approval target, or null when there is none. */
+  #findApprovalTargetVersion(targetType, targetId) {
+    const collection = APPROVAL_TARGET_COLLECTION[targetType];
+    if (!collection) return null;
+    const record = this.getRecord(collection, targetId);
+    return record ? record.version : null;
+  }
+
+  /** Same, but a missing target is a refusal: an approval about nothing is not a fact. */
+  #approvalTargetVersion(targetType, targetId) {
+    const collection = APPROVAL_TARGET_COLLECTION[targetType];
+    if (!collection) {
+      // A COMMAND target is identified by its command id and has no version.
+      return null;
+    }
+    const record = this.getRecord(collection, targetId);
+    if (!record) {
+      throw new InvariantError(`approval target not found: ${targetType} ${targetId}`);
+    }
+    return record.version;
+  }
+
+  /**
+   * Proves that a stored Approval record is internally coherent.
+   *
+   * It runs on every seed and every transition, including the transition that is
+   * about to be written, so an incoherent approval cannot enter the store through
+   * any door. What it protects is exactly the pair this round is about: a
+   * permission must be ATTRIBUTABLE (who decided), BOUND (what/where/which
+   * version), and its status must agree with the facts stored beside it.
+   */
+  #assertApprovalCoherent(approval) {
+    const id = approval?.id;
+    if (!id || !Number.isInteger(approval.version) || approval.version < 1) {
+      throw new InvariantError("approval identity is incomplete");
+    }
+    const request = approval.request ?? {};
+    if (!Object.values(ApprovalTargetType).includes(request.targetType)) {
+      throw new InvariantError(`approval ${id} has an unknown target type: ${request.targetType}`);
+    }
+    if (typeof request.targetId !== "string" || request.targetId.trim() === "") {
+      throw new InvariantError(`approval ${id} names no target`);
+    }
+    for (const field of ["action", "capability", "scope"]) {
+      if (typeof request[field] !== "string" || request[field].trim() === "") {
+        throw new InvariantError(`approval ${id} binds no ${field}`);
+      }
+    }
+    if (typeof approval.requestedBy !== "string" || approval.requestedBy.trim() === "") {
+      throw new InvariantError(`approval ${id} names no requester`);
+    }
+    if (request.targetType === ApprovalTargetType.COMMAND) {
+      if (approval.commandId !== request.targetId) {
+        throw new InvariantError(
+          `approval ${id} is about a command and must bind it (commandId === targetId)`,
+        );
+      }
+      if (request.targetVersion != null) {
+        throw new InvariantError(`approval ${id} is about a command, which has no target version`);
+      }
+    } else if (!Number.isInteger(request.targetVersion) || request.targetVersion < 1) {
+      throw new InvariantError(
+        `approval ${id} must pin the target version it authorizes, got ${request.targetVersion}`,
+      );
+    }
+
+    const status = approval.decision?.status;
+    if (!Object.values(ApprovalStatus).includes(status)) {
+      throw new InvariantError(`approval ${id} has an unknown status: ${status}`);
+    }
+    const attributed = typeof approval.decision.decidedBy === "string"
+      && approval.decision.decidedBy.trim() !== ""
+      && Boolean(approval.decision.decidedAt);
+
+    if (status === ApprovalStatus.APPROVED && !attributed) {
+      // The headline rule of this round, enforced at the boundary: no approver,
+      // no approval.
+      throw new InvariantError(`approval ${id} is APPROVED without an attributable decision`);
+    }
+    if (status === ApprovalStatus.REJECTED && !attributed) {
+      throw new InvariantError(`approval ${id} is REJECTED without an attributable decision`);
+    }
+    if (status === ApprovalStatus.PENDING && (approval.decision.decidedBy != null || approval.decision.decidedAt != null)) {
+      throw new InvariantError(`approval ${id} is PENDING but already carries a decision`);
+    }
+    if (status === ApprovalStatus.EXPIRED && !approval.expiresAt) {
+      throw new InvariantError(`approval ${id} is EXPIRED without a deadline`);
+    }
+    if (status === ApprovalStatus.REVOKED) {
+      if (!attributed) {
+        throw new InvariantError(`approval ${id} is REVOKED without the decision it revoked`);
+      }
+      const revocation = approval.revocation ?? {};
+      if (
+        typeof revocation.revokedBy !== "string" || revocation.revokedBy.trim() === "" ||
+        !revocation.revokedAt ||
+        typeof revocation.reason !== "string" || revocation.reason.trim() === ""
+      ) {
+        throw new InvariantError(`approval ${id} is REVOKED without recording who revoked it, when, and why`);
+      }
+    } else if (approval.revocation != null) {
+      throw new InvariantError(`approval ${id} is ${status} but carries a revocation`);
+    }
+    if (approval.expiresAt != null && Number.isNaN(Date.parse(approval.expiresAt))) {
+      throw new InvariantError(`approval ${id} has an unreadable deadline: ${approval.expiresAt}`);
+    }
+  }
+
+  #approvalRequestPayload(approval) {
+    const { targetType, targetId, targetVersion, action, capability, scope, riskLevel } = approval.request;
+    return {
+      targetType,
+      targetId,
+      targetVersion,
+      action,
+      capability,
+      scope,
+      riskLevel,
+      requestedBy: approval.requestedBy,
+      expiresAt: approval.expiresAt,
+      commandId: approval.commandId,
+    };
+  }
+
+  #approvalDecisionPayload(approval) {
+    return {
+      status: approval.decision.status,
+      decidedBy: approval.decision.decidedBy,
+      decidedAt: approval.decision.decidedAt,
+      reason: approval.decision.reason,
+    };
   }
 
   /**

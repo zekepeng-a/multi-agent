@@ -103,6 +103,24 @@ export class InvariantError extends Error {
   }
 }
 
+/**
+ * An Approval that may not authorize anything, with the reason as data.
+ *
+ * It extends InvariantError because it IS a rule violation — the caller asked
+ * for authorization and the control plane refused, fail closed. It carries the
+ * machine-readable `approvalReason` so a caller never has to parse a message to
+ * learn WHY: an approval that was never decided, one whose target moved, one
+ * that was revoked, and one that expired are four different operational facts.
+ */
+export class ApprovalError extends InvariantError {
+  constructor(reason, message) {
+    super(message);
+    this.name = "ApprovalError";
+    this.code = "APPROVAL_NOT_USABLE";
+    this.approvalReason = reason;
+  }
+}
+
 export function now() {
   return new Date().toISOString();
 }
@@ -392,5 +410,171 @@ export function createVerification({
     verdict,
     revision,
     createdAt: now(),
+  };
+}
+
+// ── Durable Human Approval ───────────────────────────────────────────────────
+//
+// An Approval is a PERMISSION fact: a named subject decided, within a stated
+// scope, that one specific action on one specific target may proceed. It is
+// deliberately not any of the neighbouring facts:
+//
+//   Evidence    — what happened
+//   Verification— a judgement about evidence
+//   Acceptance  — whether work is correct/complete (a CORRECTNESS fact)
+//   Policy      — a rule deciding whether approval is required at all
+//   Command     — a requested action, and its result
+//
+// The two that are easiest to confuse are the load-bearing pair: Approval is a
+// PERMISSION fact and Acceptance is a CORRECTNESS fact. Neither implies the
+// other, and neither implies that anything ran.
+
+export const ApprovalStatus = Object.freeze({
+  PENDING: "PENDING",
+  APPROVED: "APPROVED",
+  REJECTED: "REJECTED",
+  EXPIRED: "EXPIRED",
+  REVOKED: "REVOKED",
+});
+
+/** The verbs a human decision can use. The lifecycle status is not duplicated here. */
+export const ApprovalDecision = Object.freeze({
+  APPROVE: "APPROVE",
+  REJECT: "REJECT",
+});
+
+/**
+ * What an Approval can be about.
+ *
+ * This is NOT `AcceptanceTargetType` plus a member: acceptance contracts are
+ * about the correctness of project-control aggregates, while an approval
+ * authorizes an ACTION, which may be a COMMAND — something that has no
+ * correctness of its own and no concurrency version. The two vocabularies stay
+ * separate on purpose, so "GOAL" in one can never be read as "GOAL" in the other.
+ */
+export const ApprovalTargetType = Object.freeze({
+  PROJECT: "PROJECT",
+  MILESTONE: "MILESTONE",
+  GOAL: "GOAL",
+  TASK: "TASK",
+  COMMAND: "COMMAND",
+});
+
+/**
+ * v0.1 risk vocabulary. A Policy Engine would compute this; until then it is
+ * recorded on the request and validated against this set, so an approval cannot
+ * silently carry a risk level nobody understands.
+ */
+export const RiskLevel = Object.freeze({
+  LOW: "LOW",
+  MODERATE: "MODERATE",
+  HIGH: "HIGH",
+  CRITICAL: "CRITICAL",
+});
+
+/** Why an Approval could not authorize. Never a message string to be parsed. */
+export const ApprovalFailureReason = Object.freeze({
+  MISSING: "MISSING",
+  PENDING: "PENDING",
+  REJECTED: "REJECTED",
+  REVOKED: "REVOKED",
+  EXPIRED: "EXPIRED",
+  // The status is not one this version can reason about (durable state written by
+  // something other than these rules). Unknown is not "probably fine".
+  UNKNOWN: "UNKNOWN",
+  UNATTRIBUTED: "UNATTRIBUTED",
+  TARGET_MISSING: "TARGET_MISSING",
+  TARGET_TYPE_MISMATCH: "TARGET_TYPE_MISMATCH",
+  TARGET_ID_MISMATCH: "TARGET_ID_MISMATCH",
+  STALE: "STALE",
+  ACTION_MISMATCH: "ACTION_MISMATCH",
+  SCOPE_MISMATCH: "SCOPE_MISMATCH",
+  COMMAND_MISMATCH: "COMMAND_MISMATCH",
+});
+
+const REQUIRED_APPROVAL_FIELDS = Object.freeze(["targetId", "action", "capability", "scope", "requestedBy"]);
+
+/**
+ * Creates a PENDING Approval request.
+ *
+ * `targetVersion` is the version of the target state this approval is requested
+ * against, and `action` + `scope` + `targetId` are what it will authorize —
+ * together they are the answer to "which concrete action was approved?". A bare
+ * "the project is approved" is not representable here: there is no shape of an
+ * Approval that does not name a target, a version, an action and a scope.
+ *
+ * A COMMAND target is identified by its command id rather than a version, so
+ * `commandId` is required, must equal `targetId`, and `targetVersion` stays null.
+ */
+export function createApproval({
+  id,
+  targetType,
+  targetId,
+  targetVersion = null,
+  action,
+  capability,
+  scope,
+  riskLevel = RiskLevel.MODERATE,
+  requestedBy,
+  expiresAt = null,
+  commandId = null,
+  version = 1,
+} = {}) {
+  if (!id) throw new Error("id is required");
+  if (!Object.values(ApprovalTargetType).includes(targetType)) {
+    throw new Error(`unknown approval target type: ${targetType}`);
+  }
+  const identity = { targetId, action, capability, scope, requestedBy };
+  for (const field of REQUIRED_APPROVAL_FIELDS) {
+    if (typeof identity[field] !== "string" || identity[field].trim() === "") {
+      throw new Error(`approval request requires a non-empty ${field}`);
+    }
+  }
+  if (!Object.values(RiskLevel).includes(riskLevel)) {
+    throw new Error(`unknown risk level: ${riskLevel}`);
+  }
+  if (expiresAt != null && Number.isNaN(Date.parse(expiresAt))) {
+    throw new Error(`expiresAt is not a timestamp: ${expiresAt}`);
+  }
+  if (targetType === ApprovalTargetType.COMMAND) {
+    if (!commandId || commandId !== targetId) {
+      throw new Error("a COMMAND approval must bind the command it is about (commandId === targetId)");
+    }
+    if (targetVersion != null) {
+      throw new Error("a COMMAND approval has no target version to pin");
+    }
+  } else if (typeof targetVersion !== "number" || !Number.isInteger(targetVersion) || targetVersion < 1) {
+    throw new Error("an approval of a lifecycle aggregate must pin the target version it was requested against");
+  }
+
+  return {
+    id,
+    version,
+    request: {
+      targetType,
+      targetId,
+      targetVersion,
+      action,
+      capability,
+      scope,
+      riskLevel,
+    },
+    requestedBy,
+    // The decision block holds the decision that stands. `decidedBy`/`decidedAt`
+    // are what make an approval ATTRIBUTABLE, and they survive a revocation: the
+    // decision is not erased, it is superseded.
+    decision: {
+      status: ApprovalStatus.PENDING,
+      decidedBy: null,
+      decidedAt: null,
+      reason: null,
+    },
+    // Only ever set by a revocation, and never cleared: "who withdrew this, when
+    // and why" is part of the fact, not an update to it.
+    revocation: null,
+    commandId,
+    expiresAt,
+    createdAt: now(),
+    updatedAt: now(),
   };
 }
