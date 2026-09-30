@@ -1,3 +1,22 @@
+// ADR-0008 vocabulary. These labels confer no Acceptance or permission authority.
+export const MemoryType = Object.freeze({ FACT: "FACT", DECISION: "DECISION", CONSTRAINT: "CONSTRAINT", LESSON: "LESSON" });
+export const MemoryConfidence = Object.freeze({ VERIFIED: "VERIFIED", ACCEPTED: "ACCEPTED", INFERRED: "INFERRED" });
+export const MemoryStatus = Object.freeze({ ACTIVE: "ACTIVE", STALE: "STALE", SUPERSEDED: "SUPERSEDED" });
+export const MemorySourceType = Object.freeze({ DECISION: "DECISION", EVIDENCE: "EVIDENCE", VERIFICATION: "VERIFICATION", PROJECT_STATE: "PROJECT_STATE" });
+export const MemorySourceValidity = Object.freeze({ CURRENT: "CURRENT", INVALID: "INVALID", UNRESOLVED: "UNRESOLVED" });
+export const MemoryStalenessKind = Object.freeze({ SOURCE_INVALIDATION: "SOURCE_INVALIDATION", HUMAN_WITHDRAWAL: "HUMAN_WITHDRAWAL" });
+
+// Called only after the trusted control boundary has proved the candidate.
+export function createMemory({ id, candidate, validation, promotedBy, observations, supersedesMemoryId = null }) {
+  if (typeof id !== "string" || !id.trim()) throw new InvariantError("Memory requires a new MemoryId");
+  if (!candidate?.projectId || !Object.values(MemoryType).includes(candidate.type) || !Object.values(MemoryConfidence).includes(candidate.confidence)) throw new InvariantError("Memory requires valid domain meaning");
+  if (promotedBy?.type !== "CONTROL_PLANE" || !promotedBy.actorId || validation?.result !== "VALIDATED") throw new InvariantError("Memory requires Control Plane promotion and validation provenance");
+  const timestamp = now();
+  return structuredClone({ ...candidate, id, version: 1, status: MemoryStatus.ACTIVE,
+    validation, promotedBy, promotionObservations: observations, supersedesMemoryId,
+    supersededByMemoryId: null, staleness: null, createdAt: timestamp, updatedAt: timestamp });
+}
+
 export const ProjectStatus = Object.freeze({
   ACTIVE: "ACTIVE",
   PAUSED: "PAUSED",

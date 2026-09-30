@@ -18,6 +18,7 @@ import {
 } from "./domain.mjs";
 import { Collection } from "./store.mjs";
 import { RuntimeOutcome } from "./runtime-adapter.mjs";
+import { ProjectMemoryControl } from "./project-memory.mjs";
 
 export class Controller {
   constructor({
@@ -27,6 +28,7 @@ export class Controller {
     effectDriver = null,
     policyEngine = null,
     runtimeContextFactory = null,
+    memoryBoundary = null,
     idFactory = defaultIdFactory,
   } = {}) {
     if (!store || !runtime || !verifier) throw new Error("store, runtime and verifier are required");
@@ -37,6 +39,9 @@ export class Controller {
     this.policyEngine = policyEngine;
     this.runtimeContextFactory = runtimeContextFactory;
     this.idFactory = idFactory;
+    // Trusted composition input, never copied from Runtime output. G7.3 adds
+    // no role/identity service and does not inject Memory into runtime context.
+    this.memory = memoryBoundary == null ? null : new ProjectMemoryControl({ ...memoryBoundary, store });
   }
 
   async reconcileTask(taskId) {

@@ -192,6 +192,15 @@ CREATE TABLE IF NOT EXISTS decisions (
   body       TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS memories (
+  id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL,
+  project_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS memories_by_project ON memories (project_id);
+
 CREATE TABLE IF NOT EXISTS workspaces (
   id                  TEXT PRIMARY KEY,
   version             INTEGER NOT NULL,
@@ -424,6 +433,11 @@ const SHAPES = {
     }),
     filters: { id: "id", projectId: "project_id", parentWorkspaceId: "parent_workspace_id" },
   },
+  [Collection.MEMORY]: {
+    table: "memories", scope: "id",
+    columns: (r) => ({ id: r.id, version: r.version, project_id: r.projectId, status: r.status }),
+    filters: { id: "id", projectId: "project_id" },
+  },
 };
 
 function shapeFor(collection) {
@@ -637,8 +651,8 @@ export class SqliteStore extends ProjectControlStore {
    */
   runInTransaction(fn) {
     if (this.#depth > 0) return fn();
-    this.#depth += 1;
     this.#db.exec("BEGIN IMMEDIATE");
+    this.#depth += 1;
     try {
       const result = fn();
       this.#db.exec("COMMIT");
@@ -653,6 +667,21 @@ export class SqliteStore extends ProjectControlStore {
     } finally {
       this.#depth -= 1;
     }
+  }
+
+  // A store snapshot is distinct from each external reality observation.
+  runInReadSnapshot(fn) {
+    if (this.#depth) return fn();
+    this.#db.exec("BEGIN");
+    this.#depth++;
+    try {
+      const result = fn();
+      this.#db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    } finally { this.#depth--; }
   }
 
   close() {

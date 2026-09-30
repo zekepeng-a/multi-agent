@@ -2,7 +2,7 @@
 //
 // It implements only the storage primitives from ProjectControlStore; every
 // control rule (validation, lineage, pinning, idempotency, events) lives in
-// ./store.mjs. The Maps stay public because the reference implementation is also
+// ./store.mjs and ./project-memory.mjs. The Maps stay public because this backend is also
 // used as a white-box target by a few tests.
 
 import { ProjectControlStore, Collection } from "./store.mjs";
@@ -31,6 +31,7 @@ export class MemoryStore extends ProjectControlStore {
     this.effects = new Map();
     this.policyDecisions = new Map();
     this.decisions = new Map();
+    this.memories = new Map();
     this.workspaces = new Map();
     this.commands = new Map();
     this.events = [];
@@ -52,6 +53,7 @@ export class MemoryStore extends ProjectControlStore {
       case Collection.EFFECT: return this.effects;
       case Collection.POLICY_DECISION: return this.policyDecisions;
       case Collection.DECISION: return this.decisions;
+      case Collection.MEMORY: return this.memories;
       case Collection.WORKSPACE: return this.workspaces;
       default: throw new Error(`unknown collection: ${collection}`);
     }
@@ -117,13 +119,24 @@ export class MemoryStore extends ProjectControlStore {
     return structuredClone(this.events);
   }
 
-  /**
-   * No-op transaction boundary. The in-process backend is synchronous and every
-   * mutation validates before it writes, so there is nothing to roll back; real
-   * atomicity and rollback are the durable backend's responsibility
-   * (see ./sqlite-store.mjs). Nested calls simply join the caller.
-   */
+  #depth = 0;
+
+  // Synchronous reads cannot interleave in this backend.
+  runInReadSnapshot(fn) { return fn(); }
+
+  // Preserve Map identities for existing white-box users, including rollback
+  // after a failed multi-row Memory replacement/event/replay write.
   runInTransaction(fn) {
-    return fn();
+    if (this.#depth) return fn();
+    const maps = Object.values(this).filter((value) => value instanceof Map);
+    const snapshots = maps.map((map) => structuredClone([...map]));
+    const events = structuredClone(this.events);
+    this.#depth++;
+    try { return fn(); }
+    catch (error) {
+      maps.forEach((map, index) => { map.clear(); for (const [key, value] of snapshots[index]) map.set(key, value); });
+      this.events.splice(0, this.events.length, ...events);
+      throw error;
+    } finally { this.#depth--; }
   }
 }

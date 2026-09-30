@@ -64,6 +64,7 @@ export const Collection = Object.freeze({
   EFFECT: "effect",
   POLICY_DECISION: "policy_decision",
   DECISION: "decision",
+  MEMORY: "memory",
   WORKSPACE: "workspace",
 });
 
@@ -383,6 +384,10 @@ export class ProjectControlStore {
    */
   runInTransaction(fn) {
     throw new Error("runInTransaction is not implemented");
+  }
+
+  runInReadSnapshot(fn) {
+    throw new Error("runInReadSnapshot is not implemented");
   }
 
   /** Releases backend resources. Safe to call more than once. */
@@ -2765,7 +2770,7 @@ export class ProjectControlStore {
    * the child state as it is now. The same routine guards both doors, exactly as
    * its Task counterpart does.
    */
-  #proveAggregateVerification({ collection, target, verification }) {
+  #proveAggregateVerification({ collection, target, verification, allowAcceptedEvidence = false }) {
     const targetType = ACCEPTANCE_TARGET_TYPE_BY_COLLECTION[collection];
     if (verification.targetType !== targetType || verification.targetId !== target.id) {
       throw new InvariantError(
@@ -2809,7 +2814,8 @@ export class ProjectControlStore {
       if (
         verification.verdict === "PASS" &&
         evidence.status !== EvidenceStatus.CANDIDATE &&
-        evidence.status !== EvidenceStatus.VERIFIED
+        evidence.status !== EvidenceStatus.VERIFIED &&
+        !(allowAcceptedEvidence && evidence.status === EvidenceStatus.ACCEPTED)
       ) {
         throw new InvariantError(`evidence ${evidenceId} is ${evidence.status} and cannot support a PASS verification`);
       }
@@ -2837,7 +2843,7 @@ export class ProjectControlStore {
    * task actually being accepted), so neither a forged nor a stale Verification
    * can slip through.
    */
-  #proveVerification({ task, verification }) {
+  #proveVerification({ task, verification, allowAcceptedEvidence = false }) {
     if (verification.taskId !== task.id) {
       throw new InvariantError(`verification ${verification.id} does not belong to task ${task.id}`);
     }
@@ -2888,7 +2894,8 @@ export class ProjectControlStore {
       if (
         verification.verdict === "PASS" &&
         evidence.status !== EvidenceStatus.CANDIDATE &&
-        evidence.status !== EvidenceStatus.VERIFIED
+        evidence.status !== EvidenceStatus.VERIFIED &&
+        !(allowAcceptedEvidence && evidence.status === EvidenceStatus.ACCEPTED)
       ) {
         throw new InvariantError(`evidence ${evidenceId} is ${evidence.status} and cannot support a PASS verification`);
       }
@@ -2902,6 +2909,22 @@ export class ProjectControlStore {
     }
 
     return { acceptance, evidence: chain };
+  }
+
+  // Read-only reuse of existing contract, snapshot and execution-lineage proofs.
+  // ACCEPTED Evidence is allowed only at this Memory read boundary; existing
+  // recording/Acceptance calls retain their original status whitelist.
+  proveMemoryVerification(verification) {
+    const targetType = verification.targetType ?? AcceptanceTargetType.TASK;
+    const collection = targetType.toLowerCase();
+    const target = this.#required(collection, verification.targetId ?? verification.taskId, "Memory source target");
+    const acceptance = this.#acceptanceRevision(target.acceptanceId, target.acceptanceVersion);
+    if (acceptance.targetType !== targetType || acceptance.targetId !== target.id) {
+      throw new InvariantError("Memory proof requires the target's own Acceptance contract");
+    }
+    return targetType === AcceptanceTargetType.TASK
+      ? this.#proveVerification({ task: target, verification, allowAcceptedEvidence: true })
+      : this.#proveAggregateVerification({ collection, target, verification, allowAcceptedEvidence: true });
   }
 
   #assertDecisionActor(actor, label) {
