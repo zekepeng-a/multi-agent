@@ -436,7 +436,7 @@ Parallel execution now has real isolated writable roots, enforced scopes, confli
 
 # G7 — Long-horizon Project Control objects
 
-**Status: ACTIVE — G7.3 MEMORY B — MISSING IMPLEMENTATION**
+**Status: ACTIVE — G7.1–G7.3 COMPLETE; NEXT CANDIDATE G7.4 D-GATE**
 
 This phase is intentionally decomposed. See `docs/architecture/G7_DECOMPOSITION.md`.
 
@@ -444,15 +444,15 @@ Current candidate sequence:
 
 1. G7.1 Project-level Acceptance — COMPLETE.
 2. G7.2 Decision — COMPLETE.
-3. G7.3 Project-control Memory — D → B, active; architecture accepted, implementation missing.
-4. G7.4 Context Capsule — D, queued after Decision/Memory.
+3. G7.3 Project-control Memory — D → B → COMPLETE.
+4. G7.4 Context Capsule — D, next candidate; independent architecture gate, coding blocked.
 5. G7.5 Roadmap domain — D, queued; distinct from repository `ROADMAP.md`.
 6. G7.6 Observability hardening — only to demonstrated G8 need.
 7. leases/fencing — not currently required; do not implement without a concrete ownership problem.
 
 ## Current gate
 
-G7.1 Project Acceptance and G7.2 Decision are complete.
+G7.1 Project Acceptance, G7.2 Decision and G7.3 Project-control Memory are complete.
 
 G7.2 evidence: `docs/architecture/DECISION_G7_2_EVIDENCE.md`.
 
@@ -461,7 +461,9 @@ G7.3's architecture gate is resolved by accepted
 after bounded source review, two human review rounds and explicit human acceptance
 of the current boundary and conservative tradeoffs on 2026-09-30.
 
-The active gap is now **B — Missing Implementation**. The accepted boundary covers:
+G7.3's bounded implementation is now **COMPLETE** after independent implementation
+review and explicit human authorization of this governance closeout on 2026-09-30.
+The implemented ADR-0008 boundary covers:
 
 - trusted-boundary proposal/validation/promotion authority, without a new Reviewer authentication system;
 - closed FACT / DECISION / CONSTRAINT / LESSON × confidence × source admission;
@@ -476,15 +478,23 @@ The active gap is now **B — Missing Implementation**. The accepted boundary co
 - store consistency and independent reality observation pins/times, without cross-boundary atomicity;
 - transactional state/events/replay, optimistic concurrency, backend parity and restart proof.
 
-Architecture-level implementation permission is now open only inside ADR-0008.
-The current human instruction authorizes architecture acceptance and governance
-migration only; do not start Memory code in this task. A subsequent implementation
-task may execute this B-class boundary without reopening the settled D questions.
+Completion proof:
 
-G7.3 is not COMPLETE. Its implementation exit requires ADR-0008's verification
-criteria, current code/tests/Git evidence, full Node 22 CI with zero skips,
-independent review and a subsequent evidenced ROADMAP update.
-G7.4 Context Capsule and G7.5 Roadmap domain remain queued D-class work.
+- implementation Evidence: `docs/architecture/MEMORY_G7_3_EVIDENCE.md`;
+- independently reviewed HEAD: `973f77e2d231ee6eaa4e9b348ebf2424da41f674`;
+- CI run [36724720686](https://github.com/zekepeng-a/multi-agent/actions/runs/36724720686):
+  success; Node 22 has 592 passed, 0 failed, 0 skipped;
+- independent review found no new D/E issue, authority leak or lifecycle defect;
+- this authorized governance update records satisfaction of G7.3's exit gate.
+
+The next candidate is **G7.4 Context Capsule — D / Architectural Gap**.
+Decision and Memory prerequisites are complete, but Capsule generation, reference
+authority, freshness/expiry and its precise query/assembly boundary remain a
+separate D-GATE. Focused architecture work and an accepted ADR are required before
+any bounded implementation can become B-class work.
+This closeout authorizes neither G7.4 research nor implementation; a separate task
+must authorize its architecture work. No G7.4 coding permission is granted.
+G7.5 Roadmap domain remains queued D-class work.
 No bundle implementation, runtime-memory migration or broader research is authorized.
 
 ## Exit gate
@@ -533,8 +543,12 @@ COMPLETE: G3 External Effect + reconciliation boundary
 COMPLETE: G4 Policy / authorization composition
 COMPLETE: G5 Real Runtime Adapter boundary
 COMPLETE: G6 Workspace / Reality / concurrency boundary
-ACTIVE:   G7.3 Project-control Memory — B / Missing Implementation
-          ADR-0008 ACCEPTED; architecture permission open, no implementation yet
+COMPLETE: G7.1 Project-level Acceptance
+COMPLETE: G7.2 Project Decision
+COMPLETE: G7.3 Project-control Memory — ADR-0008 implementation reviewed
+ACTIVE:   G7 convergence; not all candidates are complete
+NEXT:     G7.4 Context Capsule — D / independent architecture gate
+          research requires a separate task; coding remains blocked
 AFTER G7 CONVERGENCE:
           G8 End-to-end dogfood + release convergence
 BLOCKED FROM BUNDLE CODING:

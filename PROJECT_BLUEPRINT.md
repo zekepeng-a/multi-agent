@@ -498,7 +498,7 @@ If code or another document contradicts these invariants, that contradiction mus
 
 This blueprint defines direction, not a rolling implementation inventory.
 
-For current bounded implementations and remaining gaps, read `PROJECT_ARCHITECTURE.md` and its referenced Evidence. For authorized work, read `ROADMAP.md`. G0–G6, G7.1 Project Acceptance and G7.2 Decision have recorded completion evidence; G7.3 Project-control Memory has an accepted architecture boundary (ADR-0008) and is B — Missing Implementation; no Memory implementation or phase exit is claimed.
+For current bounded implementations and remaining gaps, read `PROJECT_ARCHITECTURE.md` and its referenced Evidence. For authorized work, read `ROADMAP.md`. G0–G6 and G7.1–G7.3 have recorded completion evidence. G7.3 Project-control Memory is COMPLETE within accepted ADR-0008 after independent implementation review; see `docs/architecture/MEMORY_G7_3_EVIDENCE.md`. G7.4 Context Capsule is the next candidate, remains a separate D-class architecture gate and is not authorized for coding.
 
 COMMAND-target Approval remains intentionally unsupported despite durable Command now existing: the accepted Policy boundary binds Approval to the underlying Project/Task action. Durable identity alone does not authorize this target.
 

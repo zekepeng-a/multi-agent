@@ -844,7 +844,10 @@ See `docs/architecture/decisions/ADR-0007-decision-authority-lifecycle.md`.
 ## 5.13 Memory
 
 **Architecture boundary: ACCEPTED — ADR-0008.**
-**Implementation: MISSING (G7.3 B); this acceptance does not claim executable support.**
+**Implementation: COMPLETE (G7.3), independently reviewed within ADR-0008.**
+Evidence: `docs/architecture/MEMORY_G7_3_EVIDENCE.md`; reviewed HEAD
+`973f77e2d231ee6eaa4e9b348ebf2424da41f674`, CI `36724720686` success
+(Node 22: 592 passed, zero failures/skips).
 
 Purpose: promoted, project-scoped knowledge, not chat history, accepted state or
 permission authority. The truth hierarchy and I-20/I-21 remain unchanged.
@@ -939,12 +942,19 @@ No new durable Command execution lifecycle, event sourcing or distributed lock
 is introduced.
 
 ADR-0008 is the precise accepted contract and implementation exit checklist.
-ROADMAP governs execution: this acceptance task is governance-only; G7.3 remains
-unimplemented B work. G7.4 Context Capsule is separately gated.
+ROADMAP records G7.3 COMPLETE after implementation evidence, independent review
+and explicit human closeout authorization. This changes implementation/completion
+status only; ADR-0008's authority and semantics remain unchanged.
+G7.4 Context Capsule is the next candidate and remains an independent D-GATE;
+this governance closeout does not authorize its research or implementation.
 
 ---
 
 ## 5.14 ContextCapsule
+
+**Status: D — next candidate G7.4; independent architecture gate, coding blocked.**
+The conceptual shape below is not an accepted generation/freshness/expiry contract.
+Completed G7.2/G7.3 prerequisites do not resolve this gate or authorize coding.
 
 Purpose: minimal task-relevant context supplied to a runtime.
 
@@ -2538,9 +2548,9 @@ Never silently reinterpret a confirmed concept.
 # 26. Initial architecture next-step plan — historical
 
 The sequence below records the early design plan, not the current work boundary.
-Current authorized work is defined by `ROADMAP.md`: ADR-0008 has resolved G7.3's
-architecture D-GATE; Memory is B — Missing Implementation. This acceptance task
-is governance-only and does not begin Memory implementation.
+Current work is defined by `ROADMAP.md`: G7.3 Memory is COMPLETE after independent
+implementation review; G7.4 Context Capsule is the next candidate, with a separate
+D-GATE. This governance closeout starts neither Capsule research nor implementation.
 
 At that design stage, the next architecture artifact was:
 

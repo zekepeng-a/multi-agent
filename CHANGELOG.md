@@ -6,6 +6,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 
 ### Governance
 
+- **G7.3 Memory governance closeout:** independent implementation review accepted HEAD `973f77e2d231ee6eaa4e9b348ebf2424da41f674`, found no new D/E issue or ADR-0008 authority/lifecycle violation, and confirmed CI run `36724720686` success. With explicit human authorization, ROADMAP now records G7.3 COMPLETE. G7 remains active; G7.4 Context Capsule is the next candidate with its own unresolved D-GATE. This closeout authorizes no Capsule research or coding.
+
 - **G7.3 Memory architecture gate resolved:** human accepted `ADR-0008-project-control-memory-boundary.md`, including all-required current sources, no STALE resurrection, INFERRED opt-in and PROJECT_STATE exact-version invalidation. The bounded gap is now B — Missing Implementation. This governance-only acceptance does not implement Memory or complete G7.3; implementation execution is reserved for a subsequent task.
 
 - **G7.2 Decision architecture gate resolved:** focused Agent Harness + ADR Tools evidence established proposal≠Decision, human direction precedence, mandatory provenance and append/supersede history. Accepted `ADR-0007-decision-authority-lifecycle.md`; bounded implementation is now allowed.
@@ -31,6 +33,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 - Established `docs/architecture/decisions/` as the location for durable ADRs resolving D-class architectural gaps.
 
 ### Project Control prototype
+
+- **G7.3 Project-control Memory completed within ADR-0008.** Added trusted validation/Control Plane promotion, closed type/confidence/source admission, pinned source resolution and CURRENT/INVALID/UNRESOLVED validity, attributable staling, no STALE resurrection, atomic new-id supersession, eligibility-before-ranking queries, INFERRED opt-in and separate history. MemoryStore/SQLite parity, optimistic concurrency, events, intent-bound replay and real process restart/concurrent-writer proof are recorded in `docs/architecture/MEMORY_G7_3_EVIDENCE.md`. Verified final implementation CI: 592 passed, 0 failed, 0 skipped on Node 22. Legacy runtime and Decision/Approval/Policy/Acceptance authority remain unchanged; G7.4 is not implemented.
 
 - **G7.2 Project Decision completed.** Added durable Decision authority (HUMAN/CONTROL_PLANE only), mandatory provenance, immutable decision meaning, ACTIVE→SUPERSEDED/REVOKED lifecycle, supersession lineage, attributable revocation and SQLite restart proof. Verified CI: 533/533, 0 skipped on Node 22.23.3.
 
@@ -71,7 +75,7 @@ Commit `e7a0a7d07356980d5ba9c49be5ebfa06a1bebad8`:
 
 ### Known current gaps
 
-Current architecture/reality gaps are tracked in `PROJECT_ARCHITECTURE.md` and ordered in `ROADMAP.md`. G0–G6, G7.1 Project Acceptance and G7.2 Decision have completed their bounded gates. G7.3 Project-control Memory is the active B — Missing Implementation boundary under accepted ADR-0008; no Memory implementation is claimed. Context Capsule and the Roadmap domain remain queued D-class work. Broader production/provider/distributed capabilities are not implied by those completions.
+Current architecture/reality gaps are tracked in `PROJECT_ARCHITECTURE.md` and ordered in `ROADMAP.md`. G0–G6 and G7.1–G7.3 have completed their bounded gates. Project-control Memory is implemented within ADR-0008 and independently reviewed. G7 remains active; G7.4 Context Capsule is the next D-class candidate, with research requiring a separate task and coding blocked by its independent D-GATE. The Roadmap domain remains queued D-class work. Broader production/provider/distributed capabilities are not implied by those completions.
 
 ## V0.5 — Legacy DSH Multi-Agent Runtime
 

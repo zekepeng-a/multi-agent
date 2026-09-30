@@ -3,7 +3,7 @@
 **Status:** CURRENT REALITY MAP  
 **Baseline branch:** `project-control/controller-v0.1`  
 **Initial baseline commit when written:** `c9d365a0d66100327951602dcdfe4d4f6a676731`
-**Latest implementation evidence:** G7.2 at `ca665f1fe2ff162efb9d6eaba398c204459bd8e9`; see `docs/architecture/DECISION_G7_2_EVIDENCE.md`.
+**Latest implementation evidence:** G7.3 at reviewed HEAD `973f77e2d231ee6eaa4e9b348ebf2424da41f674`; see `docs/architecture/MEMORY_G7_3_EVIDENCE.md`. Independent review accepted the bounded implementation; CI `36724720686` succeeded (Node 22: 592 passed, zero failures/skips).
 **Purpose:** describe what this repository actually implements now. This file is not a target design and must not promote documented intentions into implemented reality.
 
 ## 1. Authority and read order
@@ -84,8 +84,8 @@ These labels describe the initial baseline plus the evidenced updates recorded b
 | Effect | IMPLEMENTED / PARTIAL | Durable Effect ledger now exists with REQUESTED/DISPATCHED/SUCCEEDED/FAILED_NO_EFFECT/UNKNOWN semantics, MemoryStore/SQLite persistence, fake driver seam, idempotency/replay handling, typed reconciliation, and real restart proof for orphaned DISPATCHED state. Real provider/runtime integrations remain future work. |
 | Event | IMPLEMENTED | Append-oriented events are persisted with authoritative mutations and survive SQLite restart. Event is kept distinct from State. |
 | Decision | IMPLEMENTED | Durable Project Decision exists with HUMAN/CONTROL_PLANE authority, mandatory provenance, immutable meaning, ACTIVE→SUPERSEDED/REVOKED lifecycle, atomic supersession lineage, attributable revocation, optimistic concurrency, MemoryStore/SQLite persistence and restart proof. Runtime/model proposals are not Decision authority. |
-| Project-control Memory | MISSING / B — Missing Implementation | ADR-0008 is ACCEPTED and settles promotion, provenance, type/confidence/source admission, invalidation, new-id supersession and current/history queries. Architecture gate is resolved; Project-control Memory code and exit evidence are still absent. Legacy derived memory is a separate runtime subsystem. |
-| Context Capsule | DOCUMENTED_ONLY | Defined conceptually; no Project Control implementation assembles or persists bounded capsules. |
+| Project-control Memory | IMPLEMENTED (G7.3 COMPLETE) | ADR-0008 is implemented: trusted validation and Control Plane promotion, closed type/confidence/source admission, four pinned same-project source families, CURRENT/INVALID/UNRESOLVED validity, STALE/no-resurrection, atomic new-id supersession, read-only eligibility-before-ranking queries, INFERRED opt-in and separate history. MemoryStore/SQLite parity, CAS, events, intent-bound replay, restart and independent-writer concurrency are evidenced. Legacy derived memory remains separate; no Capsule assembly or authority upgrade is included. |
+| Context Capsule | DOCUMENTED_ONLY / D — next candidate G7.4 | Defined conceptually; no Project Control implementation assembles or persists bounded capsules. Its architecture remains a separate D-GATE; completed Decision/Memory do not authorize Capsule coding. |
 | Runtime Adapter | IMPLEMENTED / PARTIAL | Normalized capability-shaped Runtime Adapter contract now exists. FakeRuntime migrated, LocalProcessRuntimeAdapter executes real child processes in CI, and DshWorkflowRuntimeAdapter binds the current DSH Workflow seam through injected workflowEngine. RuntimeRef persists on Attempt and survives restart while remaining distinct from Run/Attempt identity. G6 separately implements bounded local Workspace/isolation semantics; runtime-adapter capability alone does not establish write isolation. |
 | Workspace | IMPLEMENTED / PARTIAL | Durable Workspace identity now exists with SHARED/ISOLATED kind, READ_ONLY/WRITE access, MemoryStore/SQLite persistence, optimistic versioning, deterministic revision digests, enforced write scopes, conflict-safe local overlay integration, deterministic integration order and restart proof. Git-worktree/container providers and distributed coordination remain outside current scope. |
 | Workspace isolation | IMPLEMENTED / PARTIAL | Local WorkspaceManager gives parallel writers distinct roots, overlays reads over SHARED reality, records touched-path base digests, rejects out-of-scope/read-only/path-traversal writes, and detects integration conflicts before patch application. DSH Team writeScopes remain non-authoritative unless projected through this boundary. |
@@ -219,7 +219,17 @@ G6 now implements a bounded local WorkspaceManager: durable Workspace identity, 
 
 ### 7.5 Long-horizon project semantics
 
-Roadmap, Project-control Memory and Context Capsule remain absent or design-only. Project-control Memory's architecture is now accepted under ADR-0008 (B — Missing Implementation); Context Capsule remains a separately queued D-class gap. Project-level Acceptance (G7.1) and durable Decision (G7.2) are implemented within their accepted ADR boundaries.
+Project-level Acceptance (G7.1), durable Decision (G7.2) and Project-control Memory
+(G7.3) are implemented and complete within their accepted ADR boundaries.
+Memory control rules live in `project-control/project-memory.mjs`, use the existing
+backend primitives, and are optionally exposed through trusted `Controller.memory`
+composition. The retained `MEMORY_G7_3_EVIDENCE.md` maps all 23 ADR-0008 exit criteria
+to tests, including real restart and independent SQLite writer competition.
+
+Roadmap domain and Context Capsule remain absent or design-only. G7.4 Context
+Capsule is the next candidate but remains D-class: no generation, freshness/expiry,
+runtime injection or coding permission follows from Memory completion. G7 as a
+whole remains active, with G8 still future.
 
 ## 8. Current conflicts and documentation drift
 
@@ -281,7 +291,7 @@ This file does not claim:
 - that the current persistence schema is production-migration-ready;
 - that fake runtime tests prove real external-runtime behavior;
 - that a live DSH Workflow smoke test or DSH Agent Team integration has been proven; the bounded Workflow adapter itself exists;
-- that Roadmap, Project-control Memory or Context Capsule are implemented because they appear in architecture documents; Decision implementation is separately evidenced by G7.2;
+- that Roadmap or Context Capsule are implemented because they appear in architecture documents; Decision and Project-control Memory are separately evidenced by G7.2/G7.3;
 - that current local Workspace isolation proves distributed multi-coordinator safety.
 
 ## 11. Change rule
