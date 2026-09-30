@@ -896,3 +896,91 @@ Only three questions remain worth targeted archaeology:
    - How approval, rejection, cancellation, and manual override are represented without allowing UI/runtime code to mutate authoritative state directly.
 
 If these three passes do not reveal a new authority boundary, invariant, failure mode, or materially different recovery model, archaeology stops and architecture convergence begins.
+
+---
+
+## 22. G4 focused policy pass — enforcement before execution
+
+This pass was opened by the G4 D-class gap only. It is not a new broad archaeology pass.
+
+### Agent Execution Harness — command-policy.ts
+
+Source:
+- Repository: `lordaeternus/agent-execution-harness`
+- `src/core/command-policy.ts`
+- `src/core/command-execution.ts`
+
+Observed implementation:
+
+- dangerous-command classification is evaluated before normal allow/deny configuration;
+- explicit deny rules fail closed;
+- when an allow list exists, commands outside it are refused;
+- strict task mode can require a command to match a task-level allowed-command list;
+- execution is a separate module called only after policy checks;
+- strict execution can refuse shell mode and require direct executable + arguments.
+
+Transferable boundary:
+
+> Policy evaluation is a deterministic gate before execution, and execution does not get to reinterpret the policy result.
+
+Limitation:
+
+- this implementation returns only allowed/denied; it is not evidence for our durable Approval semantics or Project Control target/version model.
+
+### AgentLedger — normalized policy request and composed decision
+
+Source:
+- Repository: `yaogdu/AgentLedger`
+- `src/agentledger/policy.py`
+- `src/agentledger/tools.py`
+- `src/agentledger/approval.py`
+
+Observed implementation:
+
+- `PolicyRequest` normalizes subject, action, resource, context, signals, runtime state, and policy version;
+- `PolicyDecision` is separate from the request and has an explicit effect;
+- supported decision effects are `allow`, `deny`, and `require_approval`;
+- multiple evaluators produce findings which are composed deterministically;
+- deny takes precedence over require-approval, which takes precedence over allow;
+- the decision carries policy version, reasons, findings and required controls;
+- the ToolGateway evaluates policy before the managed side-effect ledger/external call;
+- a deny stops execution;
+- require-approval creates/returns an Approval requirement and stops execution;
+- only allow proceeds to budget/sandbox/side-effect execution;
+- Approval is represented separately from policy and is read back into runtime state for a later policy evaluation.
+
+Transferable boundaries:
+
+1. Policy request/decision should be normalized and deterministic, not prompt text.
+2. Policy decision is not Approval.
+3. A human Approval satisfies only a `REQUIRE_APPROVAL` path; it must not override `DENY`.
+4. The gate is re-evaluated at the enforcement point with current runtime/control facts.
+5. Policy/version/reasons are useful audit facts even when no execution occurs.
+
+Limitation:
+
+- AgentLedger's policy subject is runtime/tool oriented and its Approval lifecycle is simpler than this repository's durable target-version-bound Approval.
+- We should borrow the request/decision/enforcement boundary, not its exact policy schema.
+
+### G4 research consequence
+
+The Project Control G4 gate has enough implementation-backed precedent to settle a bounded design:
+
+```text
+stored Command + current target + actor/context
+        ↓
+PolicyRequest
+        ↓
+PolicyEngine
+        ↓
+ALLOW | DENY | REQUIRE_APPROVAL
+        ↓
+DENY             → reject Command
+REQUIRE_APPROVAL → existing durable Approval gate
+ALLOW            → authorize without manufacturing Approval
+```
+
+A Policy decision must be bound to the durable Command/current target snapshot and recorded separately from Approval.
+
+No new top-level layer or invariant was discovered. Broad archaeology remains closed.
+
