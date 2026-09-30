@@ -19,6 +19,9 @@ import {
   COMMAND_APPROVAL_UNAVAILABLE,
   CommandStatus,
   CommandTargetType,
+  DecisionAuthorityType,
+  DecisionSourceType,
+  DecisionStatus,
   EffectObservation,
   EffectReconciliationStatus,
   EffectStatus,
@@ -37,6 +40,7 @@ import {
   WorkspaceStatus,
   createApproval,
   createCommand,
+  createDecision,
   createWorkspace,
   createEffect,
   createEvidence,
@@ -59,6 +63,7 @@ export const Collection = Object.freeze({
   COMMAND: "control_command",
   EFFECT: "effect",
   POLICY_DECISION: "policy_decision",
+  DECISION: "decision",
   WORKSPACE: "workspace",
 });
 
@@ -409,6 +414,186 @@ export class ProjectControlStore {
       "updateProject",
       commandId,
     );
+  }
+
+  // ── Durable Project Decision (G7.2) ─────────────────────────────────────────
+  //
+  // Decision meaning is immutable. Lifecycle changes only through explicit
+  // supersede/revoke operations; a replacement choice receives a new id.
+
+  createProjectDecision(input, { commandId = null } = {}) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(commandId, "createProjectDecision");
+      if (replay) return this.getDecision(replay);
+
+      if (input?.supersedesDecisionId != null) {
+        throw new InvariantError("initial Decision creation cannot claim supersession; use supersedeDecision");
+      }
+      if (!this.getRecord(Collection.PROJECT, input?.projectId)) {
+        throw new InvariantError(`decision project not found: ${input?.projectId}`);
+      }
+
+      const decision = createDecision({ ...input, supersedesDecisionId: null });
+      this.#assertDecisionCoherent(decision);
+      if (!this.insertRecord(Collection.DECISION, decision.id, structuredClone(decision))) {
+        throw new Error(`decision already exists: ${decision.id}`);
+      }
+      this.#event("decision.created", decision.id, this.#decisionPayload(decision), {
+        commandId,
+        aggregateVersion: decision.version,
+      });
+      this.#rememberCommand(commandId, "createProjectDecision", decision.id);
+      return structuredClone(decision);
+    });
+  }
+
+  getDecision(id) {
+    return structuredClone(this.#required(Collection.DECISION, id, "decision"));
+  }
+
+  getActiveDecisionsForProject(projectId) {
+    return structuredClone(
+      this.recordsMatching(Collection.DECISION, "projectId", projectId)
+        .filter((decision) => decision.status === DecisionStatus.ACTIVE),
+    );
+  }
+
+  supersedeDecision(
+    decisionId,
+    expectedVersion,
+    replacementInput,
+    { commandId = null } = {},
+  ) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(commandId, "supersedeDecision");
+      if (replay) return this.getDecision(replay);
+
+      const current = this.#required(Collection.DECISION, decisionId, "decision");
+      this.#assertDecisionCoherent(current);
+      if (current.version !== expectedVersion) {
+        throw new ConflictError(
+          `decision ${decisionId} expected v${expectedVersion}, current v${current.version}`,
+        );
+      }
+      if (current.status !== DecisionStatus.ACTIVE) {
+        throw new InvariantError(
+          `decision ${decisionId} is ${current.status} and cannot be superseded`,
+        );
+      }
+      if (
+        replacementInput?.projectId != null &&
+        replacementInput.projectId !== current.projectId
+      ) {
+        throw new InvariantError("a replacement Decision must stay in the same Project");
+      }
+      if (
+        current.decidedBy.type === DecisionAuthorityType.HUMAN &&
+        replacementInput?.decidedBy?.type !== DecisionAuthorityType.HUMAN
+      ) {
+        throw new InvariantError("CONTROL_PLANE cannot supersede a HUMAN Decision");
+      }
+
+      const replacement = createDecision({
+        ...replacementInput,
+        projectId: current.projectId,
+        supersedesDecisionId: current.id,
+      });
+      this.#assertDecisionCoherent(replacement);
+      if (replacement.id === current.id) {
+        throw new InvariantError("supersession requires a new DecisionId");
+      }
+      if (this.getRecord(Collection.DECISION, replacement.id)) {
+        throw new Error(`decision already exists: ${replacement.id}`);
+      }
+
+      const superseded = {
+        ...current,
+        version: current.version + 1,
+        status: DecisionStatus.SUPERSEDED,
+        supersededByDecisionId: replacement.id,
+        updatedAt: now(),
+      };
+      this.#assertDecisionCoherent(superseded);
+
+      if (!this.insertRecord(Collection.DECISION, replacement.id, structuredClone(replacement))) {
+        throw new Error(`decision already exists: ${replacement.id}`);
+      }
+      if (!this.updateRecord(Collection.DECISION, current.id, superseded, expectedVersion)) {
+        throw new ConflictError(
+          `decision ${current.id} expected v${expectedVersion}, but it changed in another writer`,
+        );
+      }
+
+      this.#event("decision.created", replacement.id, this.#decisionPayload(replacement), {
+        commandId,
+        aggregateVersion: replacement.version,
+      });
+      this.#event("decision.superseded", current.id, {
+        supersededByDecisionId: replacement.id,
+        previousVersion: current.version,
+      }, { commandId, aggregateVersion: superseded.version });
+      this.#rememberCommand(commandId, "supersedeDecision", replacement.id);
+      return structuredClone(replacement);
+    });
+  }
+
+  revokeDecision(
+    decisionId,
+    expectedVersion,
+    { revokedBy, reason } = {},
+    { commandId = null } = {},
+  ) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(commandId, "revokeDecision");
+      if (replay) return this.getDecision(replay);
+
+      const current = this.#required(Collection.DECISION, decisionId, "decision");
+      this.#assertDecisionCoherent(current);
+      if (current.version !== expectedVersion) {
+        throw new ConflictError(
+          `decision ${decisionId} expected v${expectedVersion}, current v${current.version}`,
+        );
+      }
+      if (current.status !== DecisionStatus.ACTIVE) {
+        throw new InvariantError(
+          `decision ${decisionId} is ${current.status} and cannot be revoked`,
+        );
+      }
+      this.#assertDecisionActor(revokedBy, "revokedBy");
+      if (
+        current.decidedBy.type === DecisionAuthorityType.HUMAN &&
+        revokedBy.type !== DecisionAuthorityType.HUMAN
+      ) {
+        throw new InvariantError("CONTROL_PLANE cannot revoke a HUMAN Decision");
+      }
+      if (typeof reason !== "string" || reason.trim() === "") {
+        throw new InvariantError("Decision revocation requires a non-empty reason");
+      }
+
+      const next = {
+        ...current,
+        version: current.version + 1,
+        status: DecisionStatus.REVOKED,
+        revocation: {
+          revokedBy: structuredClone(revokedBy),
+          revokedAt: now(),
+          reason,
+        },
+        updatedAt: now(),
+      };
+      this.#assertDecisionCoherent(next);
+      if (!this.updateRecord(Collection.DECISION, current.id, next, expectedVersion)) {
+        throw new ConflictError(
+          `decision ${current.id} expected v${expectedVersion}, but it changed in another writer`,
+        );
+      }
+      this.#event("decision.revoked", current.id, {
+        revokedBy: structuredClone(revokedBy),
+        reason,
+      }, { commandId, aggregateVersion: next.version });
+      this.#rememberCommand(commandId, "revokeDecision", current.id);
+      return structuredClone(next);
+    });
   }
 
   seedMilestone(milestone) {
@@ -2717,6 +2902,91 @@ export class ProjectControlStore {
     }
 
     return { acceptance, evidence: chain };
+  }
+
+  #assertDecisionActor(actor, label) {
+    if (!actor || !Object.values(DecisionAuthorityType).includes(actor.type)) {
+      throw new InvariantError(`${label} must be HUMAN or CONTROL_PLANE`);
+    }
+    if (typeof actor.actorId !== "string" || actor.actorId.trim() === "") {
+      throw new InvariantError(`${label} requires a non-empty actorId`);
+    }
+  }
+
+  #assertDecisionCoherent(decision) {
+    if (!decision?.id || !Number.isInteger(decision.version) || decision.version < 1) {
+      throw new InvariantError("decision identity is incomplete");
+    }
+    if (!this.getRecord(Collection.PROJECT, decision.projectId)) {
+      throw new InvariantError(`decision ${decision.id} references missing project ${decision.projectId}`);
+    }
+    this.#assertDecisionActor(decision.decidedBy, "decidedBy");
+    if (!Object.values(DecisionStatus).includes(decision.status)) {
+      throw new InvariantError(`decision ${decision.id} has unknown status: ${decision.status}`);
+    }
+    if (!Array.isArray(decision.sourceRefs) || decision.sourceRefs.length === 0) {
+      throw new InvariantError(`decision ${decision.id} requires sourceRefs`);
+    }
+    for (const ref of decision.sourceRefs) {
+      if (!ref || !Object.values(DecisionSourceType).includes(ref.type)) {
+        throw new InvariantError(`decision ${decision.id} has unknown source type: ${ref?.type}`);
+      }
+      if (typeof ref.id !== "string" || ref.id.trim() === "") {
+        throw new InvariantError(`decision ${decision.id} has a source without id`);
+      }
+    }
+    if (
+      decision.decidedBy.type === DecisionAuthorityType.HUMAN &&
+      !decision.sourceRefs.some((ref) => ref.type === DecisionSourceType.HUMAN_INSTRUCTION)
+    ) {
+      throw new InvariantError(`HUMAN decision ${decision.id} lacks HUMAN_INSTRUCTION provenance`);
+    }
+    if (
+      decision.decidedBy.type === DecisionAuthorityType.CONTROL_PLANE &&
+      !decision.sourceRefs.some((ref) => [
+        DecisionSourceType.PROJECT_STATE,
+        DecisionSourceType.EVIDENCE,
+        DecisionSourceType.VERIFICATION,
+        DecisionSourceType.POLICY_DECISION,
+        DecisionSourceType.DECISION,
+      ].includes(ref.type))
+    ) {
+      throw new InvariantError(`CONTROL_PLANE decision ${decision.id} lacks authoritative provenance`);
+    }
+
+    if (decision.status === DecisionStatus.ACTIVE) {
+      if (decision.supersededByDecisionId != null || decision.revocation != null) {
+        throw new InvariantError(`ACTIVE decision ${decision.id} carries terminal lifecycle metadata`);
+      }
+    } else if (decision.status === DecisionStatus.SUPERSEDED) {
+      if (
+        typeof decision.supersededByDecisionId !== "string" ||
+        decision.supersededByDecisionId.trim() === "" ||
+        decision.revocation != null
+      ) {
+        throw new InvariantError(`SUPERSEDED decision ${decision.id} lacks clean replacement lineage`);
+      }
+    } else if (decision.status === DecisionStatus.REVOKED) {
+      const revocation = decision.revocation ?? {};
+      this.#assertDecisionActor(revocation.revokedBy, "revokedBy");
+      if (!revocation.revokedAt || typeof revocation.reason !== "string" || revocation.reason.trim() === "") {
+        throw new InvariantError(`REVOKED decision ${decision.id} lacks attributable revocation`);
+      }
+      if (decision.supersededByDecisionId != null) {
+        throw new InvariantError(`REVOKED decision ${decision.id} cannot also be superseded`);
+      }
+    }
+  }
+
+  #decisionPayload(decision) {
+    return {
+      projectId: decision.projectId,
+      status: decision.status,
+      decidedBy: structuredClone(decision.decidedBy),
+      sourceRefs: structuredClone(decision.sourceRefs),
+      supersedesDecisionId: decision.supersedesDecisionId,
+      supersededByDecisionId: decision.supersededByDecisionId,
+    };
   }
 
   #assertWorkspaceCoherent(workspace) {
