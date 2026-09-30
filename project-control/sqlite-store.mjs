@@ -155,6 +155,18 @@ CREATE TABLE IF NOT EXISTS commands (
   result_id  TEXT NOT NULL
 );
 
+-- Durable Command domain (G2). This table is intentionally separate from the
+-- legacy/store-mutation replay registry above.
+CREATE TABLE IF NOT EXISTS control_commands (
+  id             TEXT PRIMARY KEY,
+  version        INTEGER NOT NULL,
+  target_type    TEXT NOT NULL,
+  target_id      TEXT NOT NULL,
+  target_version INTEGER NOT NULL,
+  status         TEXT NOT NULL,
+  body           TEXT NOT NULL
+);
+
 -- An Approval is a durable CONTROL FACT in its own right, so it gets its own
 -- table rather than a column somewhere else: a permission that exists only as a
 -- flag on the thing it authorizes cannot be reasoned about after that thing
@@ -201,6 +213,7 @@ CREATE INDEX IF NOT EXISTS evidence_by_task ON evidence (task_id);
 CREATE INDEX IF NOT EXISTS evidence_by_target ON evidence (target_id);
 CREATE INDEX IF NOT EXISTS verifications_by_target ON verifications (target_id);
 CREATE INDEX IF NOT EXISTS approvals_by_target ON approvals (target_type, target_id);
+CREATE INDEX IF NOT EXISTS control_commands_by_target ON control_commands (target_type, target_id);
 CREATE INDEX IF NOT EXISTS events_by_aggregate ON events (aggregate_id);
 `;
 
@@ -307,6 +320,19 @@ const SHAPES = {
     // (see ProjectControlStore#getApprovalsForTarget): a filter vocabulary that
     // only this backend could honour would make one call mean two things.
     filters: { id: "id" },
+  [Collection.COMMAND]: {
+    table: "control_commands",
+    scope: "id",
+    columns: (r) => ({
+      id: r.id,
+      version: r.version,
+      target_type: r.targetType,
+      target_id: r.targetId,
+      target_version: r.targetVersion,
+      status: r.status,
+    }),
+    filters: { id: "id", targetId: "target_id" },
+  },
   },
 };
 
