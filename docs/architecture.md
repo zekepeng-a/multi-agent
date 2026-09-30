@@ -1,6 +1,10 @@
-# Architecture
+# Legacy V0.5 Runtime Architecture
 
-This document explains the frozen V0.5 architecture to a developer seeing the code for the first time.
+> **Scope:** legacy DSH Multi-Agent Runtime only.  
+> **Status:** frozen runtime architecture / historical implementation documentation.  
+> This file does **not** define the current top-level product architecture. For Project Control OS work, read `PROJECT_BLUEPRINT.md`, `docs/architecture/PROJECT_CONTROL_OS_ARCHITECTURE.md`, `PROJECT_ARCHITECTURE.md`, and `ROADMAP.md` first.
+
+This document explains the frozen V0.5 runtime architecture to a developer seeing that code for the first time.
 **Conceptual model**: *Agents are team members; Models are their brains; Executor adapts Agents to runtimes; Manager is the scheduling/decision hub; Planner is a process inside the Manager — not a second orchestrator.*
 
 ## Overall
