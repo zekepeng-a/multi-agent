@@ -277,7 +277,7 @@ COMMAND-target Approval remains deliberately disabled; durable identity alone do
 
 # G3 — External Effect and reconciliation boundary
 
-**Status: ACTIVE / D-GATE RESOLVED — IMPLEMENTATION ALLOWED**
+**Status: COMPLETE**
 
 ## Goal
 
@@ -302,13 +302,15 @@ The bounded G3 implementation is now **B — Missing Implementation**.
 
 ## Exit gate
 
-The system can survive an ambiguous external outcome without blind retry and without confusing Effect with Evidence.
+**SATISFIED.** See `docs/architecture/EFFECT_G3_EVIDENCE.md`.
+
+The system now survives an ambiguous external outcome without blind retry and without confusing Effect with Evidence.
 
 ---
 
 # G4 — Policy and authorization composition
 
-**Status: QUEUED / depends on G2, likely G3**
+**Status: ACTIVE / D-GATE REQUIRED**
 
 ## Goal
 
@@ -463,12 +465,11 @@ Current durable phase boundary:
 COMPLETE: G0 Governance convergence
 COMPLETE: G1 Baseline hardening
 COMPLETE: G2 Durable Command boundary
-ACTIVE:   G3 External Effect + reconciliation boundary — implementation allowed by ADR-0002
-NEXT:     G4 Policy / authorization composition
-AUTHORIZED TO CODE:
-          ADR-0002 bounded Effect ledger + fake driver + reconciliation semantics
-BLOCKED:
-          real runtime integration / Command completion aggregation / Policy
+COMPLETE: G3 External Effect + reconciliation boundary
+ACTIVE:   G4 Policy / authorization composition — D-GATE
+NEXT:     G5 Real Runtime Adapter boundary
+BLOCKED FROM CODING:
+          Policy Engine implementation until the G4 architecture decision is accepted
 ```
 
 G0 exited after governance/read-order, legacy-runtime scoping, current-reality mapping, Roadmap authority, Changelog, and ADR convention were present in Git.
