@@ -6,6 +6,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 
 ### Governance
 
+- **G5 architecture gate resolved:** targeted DSH Workflow/Subagent/Agent Team and Codingns4DSH review established a capability-shaped Runtime Adapter. Accepted `ADR-0004-runtime-adapter-boundary.md`; implementation may now add normalized runtime contracts, a real LocalProcess adapter, and a DSH Workflow adapter without promoting runtime identities into Project State.
+
 - **G4 architecture gate resolved:** targeted source review traced command policy and normalized policy-decision patterns from Agent Execution Harness and AgentLedger; accepted `ADR-0003-policy-approval-composition.md`. Policy may now be implemented as a deterministic gate with immutable PolicyDecision audit facts; Approval only satisfies REQUIRE_APPROVAL and never overrides DENY.
 
 - **G3 architecture gate resolved:** accepted `ADR-0002-effect-reconciliation-boundary.md`. External effects must be persisted before dispatch, ambiguous outcomes become UNKNOWN, and retry is blocked until reconciliation. The bounded Effect implementation is now allowed; real runtime integration remains outside G3.
