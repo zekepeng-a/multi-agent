@@ -489,6 +489,9 @@ export function createCommand({
   if (!Object.values(CommandStatus).includes(status)) {
     throw new Error(`unknown command status: ${status}`);
   }
+  if (!Object.values(RiskLevel).includes(riskLevel)) {
+    throw new Error(`unknown risk level: ${riskLevel}`);
+  }
   if (!Number.isInteger(version) || version < 1) {
     throw new Error("command version must be a positive integer");
   }
@@ -606,14 +609,14 @@ export const ApprovalFailureReason = Object.freeze({
 /**
  * Refusal for a declared-but-unsupported target type.
  *
- * `ApprovalTargetType.COMMAND` stays in the vocabulary because the canonical
- * model has Commands and the next round will give them durable identity — but
- * v0.1 has no durable Command control object, so nothing may create or consume a
- * COMMAND approval. The message is a shared constant so every door (domain
- * factory, store seed/request, controller gate) refuses with the same words.
+ * `ApprovalTargetType.COMMAND` stays in the vocabulary, but G2 deliberately
+ * does not enable it. Durable Command identity now exists; whether approval
+ * should target the Command or the underlying Project/Task action belongs to
+ * later Policy/Approval composition. Until that decision is made, every door
+ * fails closed with one shared message.
  */
 export const COMMAND_APPROVAL_UNAVAILABLE =
-  "COMMAND approvals are unavailable in v0.1 because Command is not yet a durable control object";
+  "COMMAND-target approvals are reserved but unsupported until Policy/Approval composition is defined";
 
 const REQUIRED_APPROVAL_FIELDS = Object.freeze(["targetId", "action", "capability", "scope", "requestedBy"]);
 
@@ -627,9 +630,9 @@ const REQUIRED_APPROVAL_FIELDS = Object.freeze(["targetId", "action", "capabilit
  * is no shape of an Approval that does not name a target, a version, an action,
  * the capability it exercises, and a scope.
  *
- * `ApprovalTargetType.COMMAND` is RESERVED BUT UNSUPPORTED in v0.1: there is no
- * durable Command object to be the subject of such a permission, so constructing
- * one fails closed rather than producing a permission about nothing.
+ * `ApprovalTargetType.COMMAND` is RESERVED BUT UNSUPPORTED in G2. Command now
+ * has durable identity, but approval-target semantics are intentionally deferred
+ * to Policy/Approval composition; constructing one therefore still fails closed.
  */
 export function createApproval({
   id,
