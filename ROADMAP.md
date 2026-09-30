@@ -400,23 +400,29 @@ A real LocalProcess adapter executes in CI, DSH Workflow has a production-facing
 
 # G6 — Workspace / Reality / concurrency boundary
 
-**Status: ACTIVE / D-GATE REQUIRED**
+**Status: ACTIVE / D-GATE RESOLVED — IMPLEMENTATION ALLOWED**
 
 ## Goal
 
 Make external code/file reality explicit enough for safe parallel execution and evidence lineage.
 
-## Required questions
+## Architecture gate
 
-- Workspace durable identity.
-- Base/current revision.
-- Shared vs worktree/temp/container isolation.
-- Write-scope representation.
-- Non-overlap proof.
-- Integration/merge ownership.
-- Dirty/clean/merged/discarded lifecycle.
-- relationship between Workspace revision and Evidence revision.
-- parallel writer conflict/fencing.
+Resolved by `ADR-0005-workspace-isolation-boundary.md`.
+
+The accepted G6 boundary defines:
+
+- durable Workspace identity separate from Run/Attempt/runtime identities;
+- one authoritative SHARED workspace plus isolated overlays for concurrent writers;
+- enforced write scopes rather than advisory metadata;
+- deterministic workspace revision digests;
+- per-path base observations and fail-closed integration conflicts;
+- control-plane-owned deterministic integration;
+- isolated patch revision ≠ authoritative shared revision;
+- optional Workspace lineage on Evidence;
+- no distributed leases/fencing until a concrete multi-coordinator need appears.
+
+The bounded G6 implementation is now **B — Missing Implementation**.
 
 ## Exit gate
 
