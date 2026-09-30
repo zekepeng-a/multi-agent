@@ -352,28 +352,35 @@ No code path equates “Approval exists” with “Policy allows this action”.
 
 # G5 — Real Runtime Adapter boundary
 
-**Status: ACTIVE / D-GATE REQUIRED**
+**Status: ACTIVE / D-GATE RESOLVED — IMPLEMENTATION ALLOWED**
 
 ## Goal
 
 Prove that Project Control is above replaceable runtimes rather than only above `FakeRuntime`.
 
-## Target boundary
+## Architecture gate
 
-Conceptually:
+Resolved by `ADR-0004-runtime-adapter-boundary.md`.
+
+The old maximal interface was replaced with a capability-shaped adapter:
 
 ```text
-createRun()
-start()
-pause()
-resume()
-cancel()
-getStatus()
-getEvents()
-collectResult()
+mandatory:
+  capabilities()
+  start()
+  observe()
+  collectResult()
+  cancel()
+
+optional/capability-gated:
+  resume()
+  sendMessage()
+  subscribeEvents()
+  reconcile()
+  pause()
 ```
 
-The exact interface may change through focused design.
+Project Control Run/Attempt identities stay separate from runtime Session/Workflow/Team/process identities. Runtime observations/results are normalized and non-authoritative. The bounded G5 implementation is now **B — Missing Implementation**.
 
 ## Candidate first adapter
 
