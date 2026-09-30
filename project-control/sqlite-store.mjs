@@ -176,6 +176,14 @@ CREATE TABLE IF NOT EXISTS effects (
   body            TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS policy_decisions (
+  id             TEXT PRIMARY KEY,
+  command_id     TEXT NOT NULL,
+  effect         TEXT NOT NULL,
+  policy_version TEXT NOT NULL,
+  body           TEXT NOT NULL
+);
+
 -- An Approval is a durable CONTROL FACT in its own right, so it gets its own
 -- table rather than a column somewhere else: a permission that exists only as a
 -- flag on the thing it authorizes cannot be reasoned about after that thing
@@ -224,6 +232,7 @@ CREATE INDEX IF NOT EXISTS verifications_by_target ON verifications (target_id);
 CREATE INDEX IF NOT EXISTS approvals_by_target ON approvals (target_type, target_id);
 CREATE INDEX IF NOT EXISTS control_commands_by_target ON control_commands (target_type, target_id);
 CREATE INDEX IF NOT EXISTS effects_by_command ON effects (command_id);
+CREATE INDEX IF NOT EXISTS policy_decisions_by_command ON policy_decisions (command_id);
 CREATE INDEX IF NOT EXISTS events_by_aggregate ON events (aggregate_id);
 `;
 
@@ -353,6 +362,17 @@ const SHAPES = {
       command_id: r.commandId,
       status: r.status,
       dispatch_count: r.dispatchCount,
+    }),
+    filters: { id: "id", commandId: "command_id" },
+  },
+  [Collection.POLICY_DECISION]: {
+    table: "policy_decisions",
+    scope: "id",
+    columns: (r) => ({
+      id: r.id,
+      command_id: r.commandId,
+      effect: r.effect,
+      policy_version: r.policyVersion,
     }),
     filters: { id: "id", commandId: "command_id" },
   },
