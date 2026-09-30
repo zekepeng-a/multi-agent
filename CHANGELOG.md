@@ -28,6 +28,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 
 ### Project Control prototype
 
+- **G7.1 Project-level Acceptance completed.** Project now supports optional pinned PROJECT Acceptance revisions, deterministic Milestone aggregate Evidence, stale-evidence re-proof, PASS Verification gating and atomic Project COMPLETED + contract PASSED. Contract-free aggregate completion remains compatible. Verified CI: 518/518, 0 skipped on Node 22.23.2.
+
 - **G6 Workspace / Reality / concurrency completed for the bounded local provider.** Added durable Workspace identity, SHARED/ISOLATED local roots, enforced write scopes, deterministic revision digests, touched-path conflict detection, deterministic integration order, optional Evidence workspace lineage and SQLite restart proof. Verified CI at the G6 test head: 501/501, 0 skipped on Node 22.23.2. See `docs/architecture/WORKSPACE_G6_EVIDENCE.md`.
 
 - **G5 Runtime Adapter completed.** Added normalized capability-shaped runtime contracts, migrated FakeRuntime, added a real LocalProcessRuntimeAdapter and a DshWorkflowRuntimeAdapter over the public workflow seam, persisted opaque runtime refs on Attempts, and proved real-process execution plus restart identity separation. Full verified CI: 492/492, 0 skipped on Node 22.23.2.
