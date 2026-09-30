@@ -32,8 +32,12 @@ import {
   TaskStatus,
   RunStatus,
   AttemptStatus,
+  WorkspaceAccess,
+  WorkspaceKind,
+  WorkspaceStatus,
   createApproval,
   createCommand,
+  createWorkspace,
   createEffect,
   createEvidence,
   createPolicyDecision,
@@ -55,6 +59,7 @@ export const Collection = Object.freeze({
   COMMAND: "control_command",
   EFFECT: "effect",
   POLICY_DECISION: "policy_decision",
+  WORKSPACE: "workspace",
 });
 
 // A lifecycle transition that is a domain decision in its own right is recorded
@@ -593,6 +598,90 @@ export class ProjectControlStore {
     );
   }
 
+  // ── Durable Workspace (G6) ─────────────────────────────────────────────────
+  //
+  // Filesystem mechanics live in WorkspaceManager. The Store owns durable
+  // Workspace identity, optimistic versioning and the control-history events.
+
+  createWorkspace(workspace, { commandId = null } = {}) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(commandId, "createWorkspace");
+      if (replay) return this.getWorkspace(replay);
+
+      const record = structuredClone(workspace);
+      this.#assertWorkspaceCoherent(record);
+      if (!this.getRecord(Collection.PROJECT, record.projectId)) {
+        throw new InvariantError(`workspace ${record.id} references missing project ${record.projectId}`);
+      }
+      if (record.parentWorkspaceId != null) {
+        const parent = this.#required(Collection.WORKSPACE, record.parentWorkspaceId, "workspace");
+        if (parent.projectId !== record.projectId) {
+          throw new InvariantError(
+            `workspace ${record.id} project ${record.projectId} differs from parent ${parent.id} project ${parent.projectId}`,
+          );
+        }
+        if (parent.kind !== WorkspaceKind.SHARED) {
+          throw new InvariantError(`isolated workspace ${record.id} parent must be SHARED`);
+        }
+      }
+
+      if (!this.insertRecord(Collection.WORKSPACE, record.id, record)) {
+        throw new Error(`workspace already exists: ${record.id}`);
+      }
+      this.#event("workspace.created", record.id, {
+        projectId: record.projectId,
+        kind: record.kind,
+        access: record.access,
+        parentWorkspaceId: record.parentWorkspaceId,
+        currentRevision: record.currentRevision,
+      }, { commandId, aggregateVersion: record.version });
+      this.#rememberCommand(commandId, "createWorkspace", record.id);
+      return structuredClone(record);
+    });
+  }
+
+  getWorkspace(id) {
+    return structuredClone(this.#required(Collection.WORKSPACE, id, "workspace"));
+  }
+
+  getWorkspacesForProject(projectId) {
+    return this.recordsMatching(Collection.WORKSPACE, "projectId", projectId);
+  }
+
+  updateWorkspace(id, expectedVersion, patch, { commandId = null, eventType = "workspace.updated" } = {}) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(commandId, "updateWorkspace");
+      if (replay) return this.getWorkspace(replay);
+      const current = this.#required(Collection.WORKSPACE, id, "workspace");
+      if (current.version !== expectedVersion) {
+        throw new ConflictError(`workspace ${id} expected v${expectedVersion}, current v${current.version}`);
+      }
+      const immutable = ["id", "projectId", "kind", "parentWorkspaceId", "rootRef", "baseRevision"];
+      for (const field of immutable) {
+        if (field in patch && JSON.stringify(patch[field]) !== JSON.stringify(current[field])) {
+          throw new InvariantError(`workspace ${id} immutable field may not change: ${field}`);
+        }
+      }
+      const next = {
+        ...current,
+        ...structuredClone(patch),
+        version: current.version + 1,
+        updatedAt: now(),
+      };
+      this.#assertWorkspaceCoherent(next);
+      if (!this.updateRecord(Collection.WORKSPACE, id, next, expectedVersion)) {
+        throw new ConflictError(`workspace ${id} expected v${expectedVersion}, but it changed in another writer`);
+      }
+      this.#event(eventType, id, {
+        status: next.status,
+        currentRevision: next.currentRevision,
+        integration: structuredClone(next.integration),
+      }, { commandId, aggregateVersion: next.version });
+      this.#rememberCommand(commandId, "updateWorkspace", id);
+      return structuredClone(next);
+    });
+  }
+
   createRun(run, { commandId = null } = {}) {
     return this.runInTransaction(() => {
       const replay = this.#replayCommand(commandId, "createRun");
@@ -654,6 +743,7 @@ export class ProjectControlStore {
     return this.runInTransaction(() => {
       const replay = this.#replayCommand(commandId, "recordEvidence");
       if (replay) return this.getEvidence(replay);
+      this.#assertEvidenceWorkspaceCurrent(evidence);
       if (!this.insertRecord(Collection.EVIDENCE, evidence.id, structuredClone(evidence))) {
         throw new Error(`evidence already exists: ${evidence.id}`);
       }
@@ -2493,6 +2583,7 @@ export class ProjectControlStore {
     const chain = [];
     for (const evidenceId of verification.evidenceIds) {
       const evidence = this.#required(Collection.EVIDENCE, evidenceId, "evidence");
+      this.#assertEvidenceWorkspaceCurrent(evidence);
       if (evidence.targetType !== targetType || evidence.targetId !== target.id) {
         throw new InvariantError(`evidence ${evidenceId} does not belong to ${targetType} ${target.id}`);
       }
@@ -2562,6 +2653,7 @@ export class ProjectControlStore {
     const chain = [];
     for (const evidenceId of verification.evidenceIds) {
       const evidence = this.#required(Collection.EVIDENCE, evidenceId, "evidence");
+      this.#assertEvidenceWorkspaceCurrent(evidence);
       if (evidence.taskId !== task.id) {
         throw new InvariantError(`evidence ${evidenceId} does not belong to task ${task.id}`);
       }
@@ -2602,6 +2694,69 @@ export class ProjectControlStore {
     }
 
     return { acceptance, evidence: chain };
+  }
+
+  #assertWorkspaceCoherent(workspace) {
+    if (!workspace?.id || !Number.isInteger(workspace.version) || workspace.version < 1) {
+      throw new InvariantError("workspace identity is incomplete");
+    }
+    if (!Object.values(WorkspaceKind).includes(workspace.kind)) {
+      throw new InvariantError(`workspace ${workspace.id} has unknown kind: ${workspace.kind}`);
+    }
+    if (!Object.values(WorkspaceAccess).includes(workspace.access)) {
+      throw new InvariantError(`workspace ${workspace.id} has unknown access: ${workspace.access}`);
+    }
+    if (!Object.values(WorkspaceStatus).includes(workspace.status)) {
+      throw new InvariantError(`workspace ${workspace.id} has unknown status: ${workspace.status}`);
+    }
+    for (const field of ["projectId", "rootRef", "baseRevision", "currentRevision"]) {
+      if (typeof workspace[field] !== "string" || workspace[field].trim() === "") {
+        throw new InvariantError(`workspace ${workspace.id} requires ${field}`);
+      }
+    }
+    if (workspace.kind === WorkspaceKind.SHARED && workspace.parentWorkspaceId != null) {
+      throw new InvariantError(`shared workspace ${workspace.id} must not have a parent workspace`);
+    }
+    if (workspace.kind === WorkspaceKind.ISOLATED && !workspace.parentWorkspaceId) {
+      throw new InvariantError(`isolated workspace ${workspace.id} requires a parent workspace`);
+    }
+    if (!Array.isArray(workspace.writeScopes)) {
+      throw new InvariantError(`workspace ${workspace.id} writeScopes must be an array`);
+    }
+    if (workspace.kind === WorkspaceKind.ISOLATED && workspace.access === WorkspaceAccess.WRITE && !workspace.writeScopes.length) {
+      throw new InvariantError(`writable isolated workspace ${workspace.id} requires enforced write scopes`);
+    }
+    if (typeof workspace.touchedPaths !== "object" || workspace.touchedPaths == null || Array.isArray(workspace.touchedPaths)) {
+      throw new InvariantError(`workspace ${workspace.id} touchedPaths must be an object`);
+    }
+  }
+
+  #assertEvidenceWorkspaceCurrent(evidence) {
+    const hasId = evidence.workspaceId != null;
+    const hasRevision = evidence.workspaceRevision != null;
+    if (hasId !== hasRevision) {
+      throw new InvariantError(
+        `evidence ${evidence.id} must bind workspace id and revision together`,
+      );
+    }
+    if (!hasId) return;
+
+    const workspace = this.#required(Collection.WORKSPACE, evidence.workspaceId, "workspace");
+    if (workspace.kind !== WorkspaceKind.SHARED) {
+      throw new InvariantError(
+        `evidence ${evidence.id} binds isolated workspace ${workspace.id}; acceptance evidence must bind shared reality`,
+      );
+    }
+    if (![WorkspaceStatus.ACTIVE, WorkspaceStatus.DIRTY].includes(workspace.status)) {
+      throw new InvariantError(
+        `evidence ${evidence.id} workspace ${workspace.id} is ${workspace.status}, not current shared reality`,
+      );
+    }
+    if (workspace.currentRevision !== evidence.workspaceRevision) {
+      throw new InvariantError(
+        `evidence ${evidence.id} workspace revision ${evidence.workspaceRevision} is stale; current is ${workspace.currentRevision}`,
+      );
+    }
   }
 
   /**
