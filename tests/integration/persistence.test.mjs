@@ -736,6 +736,10 @@ test("restart: state written by one process is authoritative in another process"
   assert.equal(seen.task2AcceptanceVersion, 2, "a task pinned to v2 stays on v2");
   assert.equal(seen.runStatus, RunStatus.COMPLETED);
   assert.equal(seen.attemptStatus, AttemptStatus.COMPLETED);
+  assert.equal(seen.attemptRuntimeKind, "fake", "opaque runtime identity survives restart");
+  assert.ok(seen.attemptRuntimeExternalId);
+  assert.notEqual(seen.attemptRuntimeExternalId, written.payload.ids.runId);
+  assert.notEqual(seen.attemptRuntimeExternalId, written.payload.ids.attemptId);
   assert.equal(seen.evidenceRunId, written.payload.ids.runId);
   assert.equal(seen.evidenceAttemptId, written.payload.ids.attemptId);
   assert.equal(seen.verificationTaskId, "task-1");
