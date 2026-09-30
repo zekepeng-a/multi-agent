@@ -136,7 +136,7 @@ Each phase has an entry condition, allowed work, and exit gate.
 
 # G0 — Governance convergence
 
-**Status: ACTIVE**
+**Status: COMPLETE**
 
 ## Goal
 
@@ -196,7 +196,7 @@ G0 is complete when a fresh agent entering the repository can determine, from Gi
 
 # G1 — Baseline hardening and reproducibility
 
-**Status: QUEUED**
+**Status: ACTIVE**
 
 ## Goal
 
@@ -448,14 +448,17 @@ A release is justified by end-to-end evidence, not by module count.
 
 ## 6. Current active boundary
 
-As of this roadmap's creation:
+Current durable phase boundary:
 
 ```text
-ACTIVE: G0 Governance convergence
-NEXT:   G1 Baseline hardening
+COMPLETE: G0 Governance convergence
+ACTIVE:   G1 Baseline hardening
+NEXT:     G2 Durable Command boundary
 BLOCKED FROM STARTING:
-        G2+ feature work until G0 exits
+          G2+ feature work until G1 exits
 ```
+
+G0 exited after repository guidance, legacy-runtime scoping, current-reality mapping, Roadmap authority, Changelog, and ADR convention were all present in Git.
 
 No DSH output can move the active boundary from G0 to G1/G2.
 
