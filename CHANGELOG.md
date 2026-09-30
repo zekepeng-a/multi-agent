@@ -22,6 +22,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 
 ### Project Control prototype
 
+- **G3 External Effect + reconciliation completed.** Added durable Effect records, persist-before-dispatch ordering, typed SUCCEEDED/FAILED_NO_EFFECT/UNKNOWN outcomes, fake effect driver, UNKNOWN retry prohibition, reconciliation with observation references, replay safety, and a real cross-process orphaned-DISPATCHED recovery proof. Full CI at the verified G3 head: 467/467, 0 skipped on Node 22.23.2.
+
 - **G2 Durable Command completed.** Added a separate durable Command domain with stored immutable intent, MemoryStore/SQLite persistence, optimistic command versioning, CREATED→AUTHORIZED/REJECTED transitions, event history and restart proof. Existing store-mutation command replay rows remain separate. Full CI at the verified G2 head: 450/450, 0 skipped on Node 22.23.3.
 
 The `project-control/` branch work introduced a separate control-plane prototype above runtimes:
