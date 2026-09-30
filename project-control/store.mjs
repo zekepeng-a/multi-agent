@@ -23,6 +23,7 @@ import {
   EffectReconciliationStatus,
   EffectStatus,
   EvidenceStatus,
+  PolicyEffect,
   ConflictError,
   InvariantError,
   ProjectStatus,
@@ -35,6 +36,7 @@ import {
   createCommand,
   createEffect,
   createEvidence,
+  createPolicyDecision,
   now,
 } from "./domain.mjs";
 
@@ -52,6 +54,7 @@ export const Collection = Object.freeze({
   APPROVAL: "approval",
   COMMAND: "control_command",
   EFFECT: "effect",
+  POLICY_DECISION: "policy_decision",
 });
 
 // A lifecycle transition that is a domain decision in its own right is recorded
@@ -1017,10 +1020,80 @@ export class ProjectControlStore {
     ));
   }
 
+
+  getControlCommandTarget(commandId) {
+    const command = this.#required(Collection.COMMAND, commandId, "command");
+    const collection = COMMAND_TARGET_COLLECTION[command.targetType];
+    if (!collection) return null;
+    const target = this.getRecord(collection, command.targetId);
+    return target ? structuredClone(target) : null;
+  }
+
+  recordPolicyDecision(
+    commandId,
+    expectedCommandVersion,
+    { id, effect, policyVersion, reasons = [], matchedRuleIds = [], context = {}, request = null } = {},
+    { mutationId = null } = {},
+  ) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(mutationId, "recordPolicyDecision");
+      if (replay) return this.getPolicyDecision(replay);
+
+      const command = this.#required(Collection.COMMAND, commandId, "command");
+      this.#assertCommandCoherent(command);
+      if (command.version !== expectedCommandVersion) {
+        throw new ConflictError(
+          `command ${commandId} expected v${expectedCommandVersion}, current v${command.version}`,
+        );
+      }
+      if (command.status !== CommandStatus.CREATED) {
+        throw new InvariantError(
+          `policy may only evaluate a CREATED command; ${commandId} is ${command.status}`,
+        );
+      }
+      this.#assertPolicyRequestMatchesCommand(command, request);
+
+      const decision = createPolicyDecision({
+        id,
+        commandId: command.id,
+        commandVersion: command.version,
+        targetVersion: command.targetVersion,
+        effect,
+        policyVersion,
+        subjectId: command.requestedBy,
+        context,
+        reasons,
+        matchedRuleIds,
+      });
+      if (!this.insertRecord(Collection.POLICY_DECISION, decision.id, structuredClone(decision))) {
+        throw new Error(`policy decision already exists: ${decision.id}`);
+      }
+      this.#event("policy.decided", decision.id, {
+        commandId: command.id,
+        commandVersion: command.version,
+        targetVersion: command.targetVersion,
+        effect: decision.effect,
+        policyVersion: decision.policyVersion,
+        matchedRuleIds: decision.matchedRuleIds,
+        reasons: decision.reasons,
+      }, { commandId: mutationId });
+      this.#rememberCommand(mutationId, "recordPolicyDecision", decision.id);
+      return structuredClone(decision);
+    });
+  }
+
+  getPolicyDecision(id) {
+    return structuredClone(this.#required(Collection.POLICY_DECISION, id, "policy decision"));
+  }
+
+  getPolicyDecisionsForCommand(commandId) {
+    return this.recordsMatching(Collection.POLICY_DECISION, "commandId", commandId);
+  }
+
   authorizeControlCommand(
     commandId,
     expectedCommandVersion,
-    { approvalId = null } = {},
+    { policyDecisionId = null, approvalId = null } = {},
     { mutationId = null } = {},
   ) {
     return this.runInTransaction(() => {
@@ -1049,81 +1122,80 @@ export class ProjectControlStore {
 
       const targetCollection = COMMAND_TARGET_COLLECTION[current.targetType];
       const target = targetCollection ? this.getRecord(targetCollection, current.targetId) : null;
-      if (!target) return this.#rejectControlCommand(current, "target-missing", null, mutationId);
+      if (!target) return this.#rejectControlCommand(current, "target-missing", null, mutationId, null, policyDecisionId);
       if (target.version !== current.targetVersion) {
-        return this.#rejectControlCommand(current, "target-stale", null, mutationId);
+        return this.#rejectControlCommand(current, "target-stale", null, mutationId, null, policyDecisionId);
       }
       if (current.expectedVersion != null && target.version !== current.expectedVersion) {
-        return this.#rejectControlCommand(current, "expected-version-conflict", null, mutationId);
-      }
-
-      if (!approvalId) {
-        return { action: "WAIT", reason: "approval-required", command: structuredClone(current) };
-      }
-
-      let approval;
-      try {
-        approval = this.assertApprovalUsable({
-          approvalId,
-          targetType: current.targetType,
-          targetId: current.targetId,
-          targetVersion: current.targetVersion,
-          action: current.action,
-          capability: current.capability,
-          scope: current.scope,
-          commandId: current.id,
-        });
-      } catch (error) {
-        if (!(error instanceof ApprovalError)) throw error;
-        const reason = `approval-${String(error.approvalReason).toLowerCase().replaceAll("_", "-")}`;
-        if (
-          error.approvalReason === ApprovalFailureReason.MISSING ||
-          error.approvalReason === ApprovalFailureReason.PENDING
-        ) {
-          return {
-            action: "WAIT",
-            reason,
-            approvalReason: error.approvalReason,
-            command: structuredClone(current),
-          };
-        }
-        return this.#rejectControlCommand(current, reason, error.approvalReason, mutationId, approvalId);
-      }
-
-      const next = {
-        ...current,
-        version: current.version + 1,
-        status: CommandStatus.AUTHORIZED,
-        authorization: {
-          approvalId: approval.id,
-          authorizedAt: now(),
-          rejectedAt: null,
-          reason: "command-authorized",
-          approvalReason: null,
-        },
-        updatedAt: now(),
-      };
-      this.#assertCommandCoherent(next);
-      if (!this.updateRecord(Collection.COMMAND, current.id, next, current.version)) {
-        throw new ConflictError(
-          `command ${current.id} expected v${current.version}, but it changed in another writer`,
+        return this.#rejectControlCommand(
+          current, "expected-version-conflict", null, mutationId, null, policyDecisionId,
         );
       }
-      this.#event("command.authorized", current.id, {
-        approvalId: approval.id,
-        targetType: current.targetType,
-        targetId: current.targetId,
-        targetVersion: current.targetVersion,
-      }, { commandId: mutationId, aggregateVersion: next.version });
-      this.#rememberCommand(mutationId, "authorizeControlCommand", current.id);
-      return {
-        action: "AUTHORIZE",
-        reason: "command-authorized",
-        command: structuredClone(next),
-        approval: structuredClone(approval),
-      };
+
+      if (!policyDecisionId) {
+        throw new InvariantError(`command ${commandId} cannot authorize without a PolicyDecision`);
+      }
+      const policy = this.#required(Collection.POLICY_DECISION, policyDecisionId, "policy decision");
+      this.#assertPolicyDecisionMatchesCommand(policy, current);
+
+      if (policy.effect === PolicyEffect.DENY) {
+        return this.#rejectControlCommand(
+          current, "policy-denied", null, mutationId, null, policy.id,
+        );
+      }
+
+      if (policy.effect === PolicyEffect.REQUIRE_APPROVAL) {
+        if (!approvalId) {
+          return {
+            action: "WAIT",
+            reason: "approval-required",
+            command: structuredClone(current),
+            policyDecision: structuredClone(policy),
+          };
+        }
+
+        let approval;
+        try {
+          approval = this.assertApprovalUsable({
+            approvalId,
+            targetType: current.targetType,
+            targetId: current.targetId,
+            targetVersion: current.targetVersion,
+            action: current.action,
+            capability: current.capability,
+            scope: current.scope,
+            commandId: current.id,
+          });
+        } catch (error) {
+          if (!(error instanceof ApprovalError)) throw error;
+          const reason = `approval-${String(error.approvalReason).toLowerCase().replaceAll("_", "-")}`;
+          if (
+            error.approvalReason === ApprovalFailureReason.MISSING ||
+            error.approvalReason === ApprovalFailureReason.PENDING
+          ) {
+            return {
+              action: "WAIT",
+              reason,
+              approvalReason: error.approvalReason,
+              command: structuredClone(current),
+              policyDecision: structuredClone(policy),
+            };
+          }
+          return this.#rejectControlCommand(
+            current, reason, error.approvalReason, mutationId, approvalId, policy.id,
+          );
+        }
+
+        return this.#authorizeControlCommand(current, policy, approval, mutationId);
+      }
+
+      if (policy.effect !== PolicyEffect.ALLOW) {
+        throw new InvariantError(`unknown stored policy effect: ${policy.effect}`);
+      }
+      return this.#authorizeControlCommand(current, policy, null, mutationId);
     });
   }
+
 
   // ── Durable Effect (G3) ─────────────────────────────────────────────────────
   //
@@ -1908,12 +1980,109 @@ export class ProjectControlStore {
     }
   }
 
-  #rejectControlCommand(current, reason, approvalReason, mutationId, approvalId = null) {
+  #authorizeControlCommand(current, policy, approval, mutationId) {
+    const next = {
+      ...current,
+      version: current.version + 1,
+      status: CommandStatus.AUTHORIZED,
+      authorization: {
+        policyDecisionId: policy.id,
+        approvalId: approval?.id ?? null,
+        authorizedAt: now(),
+        rejectedAt: null,
+        reason: "command-authorized",
+        approvalReason: null,
+      },
+      updatedAt: now(),
+    };
+    this.#assertCommandCoherent(next);
+    if (!this.updateRecord(Collection.COMMAND, current.id, next, current.version)) {
+      throw new ConflictError(
+        `command ${current.id} expected v${current.version}, but it changed in another writer`,
+      );
+    }
+    this.#event("command.authorized", current.id, {
+      policyDecisionId: policy.id,
+      policyEffect: policy.effect,
+      approvalId: approval?.id ?? null,
+      targetType: current.targetType,
+      targetId: current.targetId,
+      targetVersion: current.targetVersion,
+    }, { commandId: mutationId, aggregateVersion: next.version });
+    this.#rememberCommand(mutationId, "authorizeControlCommand", current.id);
+    return {
+      action: "AUTHORIZE",
+      reason: "command-authorized",
+      command: structuredClone(next),
+      policyDecision: structuredClone(policy),
+      approval: approval ? structuredClone(approval) : null,
+    };
+  }
+
+  #assertPolicyRequestMatchesCommand(command, request) {
+    if (request == null) return;
+    const got = request.command ?? {};
+    const expected = {
+      id: command.id,
+      version: command.version,
+      targetType: command.targetType,
+      targetId: command.targetId,
+      targetVersion: command.targetVersion,
+      action: command.action,
+      capability: command.capability,
+      scope: command.scope,
+      riskLevel: command.riskLevel,
+    };
+    for (const [field, value] of Object.entries(expected)) {
+      if (got[field] !== value) {
+        throw new InvariantError(
+          `policy request for command ${command.id} mismatches stored ${field}`,
+        );
+      }
+    }
+    if (request.subject?.id !== command.requestedBy) {
+      throw new InvariantError(`policy request for command ${command.id} mismatches stored subject`);
+    }
+  }
+
+  #assertPolicyDecisionMatchesCommand(policy, command) {
+    if (policy.commandId !== command.id) {
+      throw new InvariantError(
+        `policy decision ${policy.id} belongs to command ${policy.commandId}, not ${command.id}`,
+      );
+    }
+    if (policy.commandVersion !== command.version) {
+      throw new InvariantError(
+        `policy decision ${policy.id} evaluated command v${policy.commandVersion}, current v${command.version}`,
+      );
+    }
+    if (policy.targetVersion !== command.targetVersion) {
+      throw new InvariantError(
+        `policy decision ${policy.id} targets v${policy.targetVersion}, command pins v${command.targetVersion}`,
+      );
+    }
+    if (policy.subjectId !== command.requestedBy) {
+      throw new InvariantError(`policy decision ${policy.id} has the wrong subject`);
+    }
+    if (!Object.values(PolicyEffect).includes(policy.effect)) {
+      throw new InvariantError(`policy decision ${policy.id} has unknown effect ${policy.effect}`);
+    }
+  }
+
+  #rejectControlCommand(
+    current,
+    reason,
+    approvalReason,
+    mutationId,
+    approvalId = null,
+    policyDecisionId = null,
+  ) {
     const next = {
       ...current,
       version: current.version + 1,
       status: CommandStatus.REJECTED,
       authorization: {
+        policyDecisionId,
         approvalId,
         authorizedAt: null,
         rejectedAt: now(),
@@ -1931,6 +2100,7 @@ export class ProjectControlStore {
     this.#event("command.rejected", current.id, {
       reason,
       approvalReason,
+      policyDecisionId,
       approvalId,
       targetType: current.targetType,
       targetId: current.targetId,
@@ -1990,8 +2160,8 @@ export class ProjectControlStore {
         throw new InvariantError(`command ${command.id} is CREATED but carries an authorization decision`);
       }
     } else if (command.status === CommandStatus.AUTHORIZED) {
-      if (!authorization.authorizedAt || !authorization.approvalId || authorization.rejectedAt) {
-        throw new InvariantError(`command ${command.id} is AUTHORIZED without an attributable authorization`);
+      if (!authorization.authorizedAt || !authorization.policyDecisionId || authorization.rejectedAt) {
+        throw new InvariantError(`command ${command.id} is AUTHORIZED without an attributable policy decision`);
       }
     } else if (command.status === CommandStatus.REJECTED) {
       if (!authorization.rejectedAt || authorization.authorizedAt || !authorization.reason) {
