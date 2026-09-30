@@ -630,50 +630,21 @@ for (const backend of BACKENDS) {
 
   // ── P/Q: what an approval is NOT ───────────────────────────────────────────
 
-  test(label("P an approved approval authorizes a command; it does not run one"), { skip }, (t) => {
+  test(label("P an approved approval is a permission fact; reading it runs nothing"), { skip }, (t) => {
     const store = backend.make(t);
     seedWorld(store);
     approvedDeploy(store);
-    const { controller, runtime } = makeController(store);
     const eventsBefore = store.getEvents().length;
 
-    const gate = controller.authorizeCommand({
-      targetType: ApprovalTargetType.TASK,
-      targetId: "task-1",
-      targetVersion: 1,
-      action: "deploy",
-      capability: "deploy.production",
-      scope: "production",
-      approvalId: "approval-1",
-      commandId: "cmd-1",
-      expectedVersion: 1,
-    });
+    const usable = store.assertApprovalUsable(deployIntent());
 
-    assert.equal(gate.action, "AUTHORIZE");
-    assert.equal(gate.reason, "command-authorized");
-    assert.equal(gate.intent.action, "deploy");
-    assert.equal(gate.approval.decision.status, ApprovalStatus.APPROVED);
-
-    // nothing ran, nothing was recorded, no state moved
-    assert.equal(runtime.started.length, 0, "authorization never starts a run");
+    assert.equal(usable.decision.status, ApprovalStatus.APPROVED);
     assert.equal(store.getRunsForTask("task-1").length, 0);
-    assert.equal(store.getTask("task-1").status, TaskStatus.READY, "a permission is not a state transition");
+    assert.equal(store.getTask("task-1").status, TaskStatus.READY);
     assert.equal(store.getTask("task-1").version, 1);
-    assert.equal(store.getEvents().length, eventsBefore, "authorization is a read, not a fact");
+    assert.equal(store.getEvents().length, eventsBefore, "permission checks are reads, not execution");
     assert.equal(countEvents(store, "run.created"), 0);
     assert.equal(countEvents(store, "task.accepted"), 0);
-
-    // and the gate fails closed when nobody approved anything
-    const noApproval = controller.authorizeCommand({
-      targetType: ApprovalTargetType.TASK,
-      targetId: "task-1",
-      targetVersion: 1,
-      action: "deploy",
-      capability: "deploy.production",
-      scope: "production",
-    });
-    assert.equal(noApproval.action, "WAIT");
-    assert.equal(noApproval.reason, "approval-required");
   });
 
   test(label("Q approval and acceptance never imply each other"), { skip }, async (t) => {
@@ -682,30 +653,20 @@ for (const backend of BACKENDS) {
     approvedDeploy(store);
     const { controller } = makeController(store);
 
-    // 1. an APPROVED approval accepts nothing
+    // an APPROVED approval accepts nothing
+    assert.equal(store.assertApprovalUsable(deployIntent()).id, "approval-1");
     assert.equal(store.getTask("task-1").status, TaskStatus.READY);
     assert.equal(store.getGoal("goal-1").status, GoalStatus.IN_PROGRESS);
     assert.equal(store.getMilestone("ms-1").status, MilestoneStatus.READY);
-    controller.authorizeCommand({
-      targetType: ApprovalTargetType.TASK,
-      targetId: "task-1",
-      targetVersion: 1,
-      action: "deploy",
-      capability: "deploy.production",
-      scope: "production",
-      approvalId: "approval-1",
-      commandId: "cmd-1",
-    });
-    assert.equal(store.getTask("task-1").status, TaskStatus.READY);
     assert.equal(countEvents(store, "task.accepted"), 0);
 
-    // 2. acceptance needs no approval, and creates none
+    // acceptance needs no approval, and creates none
     assert.equal((await controller.reconcileTask("task-1")).action, "ACCEPT");
     assert.equal(store.getTask("task-1").status, TaskStatus.ACCEPTED);
     assert.equal(store.allRecords(Collection.APPROVAL).length, 1, "acceptance created no approval");
     assert.equal(countEvents(store, "approval.requested"), 1);
 
-    // 3. and acceptance does not make an approval usable for the accepted version
+    // moving the target makes the old permission stale
     assertRefused(() => store.assertApprovalUsable(deployIntent()), ApprovalFailureReason.STALE);
   });
 
@@ -787,19 +748,8 @@ for (const backend of BACKENDS) {
     const store = backend.make(t);
     seedWorld(store);
     approvedDeploy(store, { over: { expiresAt: new Date(Date.now() + 60_000).toISOString() } });
-    const { controller } = makeController(store);
 
     assert.equal(store.assertApprovalUsable(deployIntent()).id, "approval-1");
-    assert.equal(controller.authorizeCommand({
-      targetType: ApprovalTargetType.TASK,
-      targetId: "task-1",
-      targetVersion: 1,
-      action: "deploy",
-      capability: "deploy.production",
-      scope: "production",
-      approvalId: "approval-1",
-      commandId: "cmd-1",
-    }).action, "AUTHORIZE");
 
     // the clock moves — no scheduler anywhere — and the SAME record stops
     // authorizing, before anything has recorded the expiry
@@ -812,10 +762,8 @@ for (const backend of BACKENDS) {
     assert.equal(store.getApproval("approval-1").decision.status, ApprovalStatus.APPROVED);
     assert.equal(countEvents(store, "approval.expired"), 0, "a read is not a state change");
 
-    // APPROVED → EXPIRED is recordable once the deadline has passed
     const expired = store.expireApproval("approval-1", 2, { at: later, commandId: "cmd-expire" });
     assert.equal(expired.decision.status, ApprovalStatus.EXPIRED);
-    // the grant that expired is still visible in the record
     assert.equal(expired.decision.decidedBy, "alice");
     const event = store.getEvents().at(-1);
     assert.equal(event.type, "approval.expired");
@@ -823,30 +771,20 @@ for (const backend of BACKENDS) {
     assertRefused(() => store.assertApprovalUsable(deployIntent()), ApprovalFailureReason.EXPIRED);
   });
 
-  test(label("V a revoked approval cannot authorize, and the gate reports why"), { skip }, (t) => {
+  test(label("V a revoked approval cannot authorize"), { skip }, (t) => {
     const store = backend.make(t);
     seedWorld(store);
     approvedDeploy(store);
-    const { controller } = makeController(store);
-    const intent = {
-      targetType: ApprovalTargetType.TASK,
-      targetId: "task-1",
-      targetVersion: 1,
-      action: "deploy",
-      capability: "deploy.production",
-      scope: "production",
-      approvalId: "approval-1",
-      commandId: "cmd-1",
-    };
-    assert.equal(controller.authorizeCommand(intent).action, "AUTHORIZE");
 
+    assert.equal(store.assertApprovalUsable(deployIntent()).id, "approval-1");
     store.revokeApproval("approval-1", 2, { revokedBy: "carol", reason: "incident-4711" });
 
-    const after = controller.authorizeCommand(intent);
-    assert.equal(after.action, "WAIT");
-    assert.equal(after.reason, "approval-revoked");
-    assert.equal(after.approvalReason, ApprovalFailureReason.REVOKED);
-    assert.equal(after.approval.revocation.reason, "incident-4711");
+    assertRefused(
+      () => store.assertApprovalUsable(deployIntent()),
+      ApprovalFailureReason.REVOKED,
+      /REVOKED/,
+    );
+    assert.equal(store.getApproval("approval-1").revocation.reason, "incident-4711");
   });
 
   // ── the remaining surface: targets, updates, COMMAND binding ───────────────
@@ -1018,179 +956,7 @@ for (const backend of BACKENDS) {
   });
 }
 
-// ── the headline end-to-end flow ─────────────────────────────────────────────
-
-test("end-to-end: an approval authorizes the version it was granted for, and only that", { skip: BACKENDS[1].skip }, (t) => {
-  const store = new MemoryStore();
-  seedWorld(store);
-  const { controller, runtime } = makeController(store);
-
-  // Task v1 · Command C1 (deploy, production, expectedVersion 1) · Approval A1
-  const command = {
-    commandId: "C1",
-    targetType: ApprovalTargetType.TASK,
-    targetId: "task-1",
-    targetVersion: 1,
-    action: "deploy",
-    capability: "deploy.production",
-    scope: "production",
-    expectedVersion: 1,
-  };
-  store.requestApproval(deployRequest({ commandId: "C1" }), { commandId: "cmd-request" });
-  store.decideApproval("approval-1", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" }, {
-    commandId: "cmd-decide",
-  });
-
-  const authorized = controller.authorizeCommand({ ...command, approvalId: "approval-1" });
-  assert.equal(authorized.action, "AUTHORIZE");
-  assert.equal(runtime.started.length, 0, "authorization is not execution");
-  assert.equal(store.getTask("task-1").status, TaskStatus.READY, "authorization is not acceptance");
-
-  // Task v1 → v2: the approval does NOT stretch to the new state
-  store.updateTask("task-1", 1, { status: TaskStatus.IN_PROGRESS }, { commandId: "cmd-task" });
-  const stale = controller.authorizeCommand({ ...command, approvalId: "approval-1" });
-  assert.equal(stale.action, "WAIT");
-  assert.equal(stale.reason, "approval-stale");
-  assert.equal(stale.approvalReason, ApprovalFailureReason.STALE);
-  // C1 was granted for v1, and v1 no longer exists
-  assert.equal(store.getApproval("approval-1").decision.status, ApprovalStatus.APPROVED);
-  assert.equal(store.getApproval("approval-1").request.targetVersion, 1);
-
-  // A fresh approval for v2 is granted…
-  store.requestApproval(deployRequest({ id: "approval-2", commandId: "C1" }));
-  store.decideApproval("approval-2", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
-  // …but C1's own intent still names v1, so it is still not authorized
-  assert.equal(controller.authorizeCommand({ ...command, approvalId: "approval-2" }).reason, "approval-stale");
-
-  // A command that now intends v2 passes the gate — yet a permission is not an
-  // exemption from optimistic concurrency, so the OLD command still cannot run.
-  const staleCommand = controller.authorizeCommand({
-    ...command,
-    targetVersion: 2,
-    expectedVersion: 1,
-    approvalId: "approval-2",
-  });
-  assert.equal(staleCommand.action, "WAIT");
-  assert.equal(staleCommand.reason, "command-version-conflict");
-  assert.equal(staleCommand.expectedVersion, 1);
-  assert.equal(staleCommand.currentVersion, 2);
-  assert.equal(staleCommand.approval.request.targetVersion, 2, "the approval itself was fine");
-
-  const freshCommand = controller.authorizeCommand({
-    ...command,
-    targetVersion: 2,
-    expectedVersion: 2,
-    approvalId: "approval-2",
-  });
-  assert.equal(freshCommand.action, "AUTHORIZE");
-  assert.equal(runtime.started.length, 0);
-
-  // The grant is bound to C1, so another command cannot carry it away.
-  const otherCommand = controller.authorizeCommand({
-    ...command,
-    commandId: "C3",
-    targetVersion: 2,
-    expectedVersion: 2,
-    approvalId: "approval-2",
-  });
-  assert.equal(otherCommand.action, "WAIT");
-  assert.equal(otherCommand.reason, "approval-command-mismatch");
-  assert.equal(runtime.started.length, 0, "no refusal ever executes anything");
-});
-
-test("capability end-to-end: one Approval, four authorization attempts", { skip: BACKENDS[1].skip }, (t) => {
-  const store = new MemoryStore();
-  seedWorld(store);
-  const { controller, runtime } = makeController(store);
-
-  // Task v1 · Approval: TASK task-1 v1 / deploy / deploy.production / production
-  approvedDeploy(store);
-  const intent = {
-    targetType: ApprovalTargetType.TASK,
-    targetId: "task-1",
-    targetVersion: 1,
-    action: "deploy",
-    capability: "deploy.production",
-    scope: "production",
-    approvalId: "approval-1",
-    commandId: "C1",
-  };
-  const eventsBefore = store.getEvents().length;
-
-  // Case 1 — the approved action, capability and scope authorize
-  const authorized = controller.authorizeCommand(intent);
-  assert.equal(authorized.action, "AUTHORIZE");
-  assert.equal(authorized.reason, "command-authorized");
-  assert.equal(authorized.intent.capability, "deploy.production");
-
-  // Case 2 — same action and scope, DIFFERENT capability: fail closed
-  const wrongCapability = controller.authorizeCommand({ ...intent, capability: "delete.production" });
-  assert.equal(wrongCapability.action, "WAIT");
-  assert.equal(wrongCapability.reason, "approval-capability-mismatch");
-  assert.equal(wrongCapability.approvalReason, ApprovalFailureReason.CAPABILITY_MISMATCH);
-  assert.equal(wrongCapability.approval.request.capability, "deploy.production", "the approval is untouched");
-
-  // Case 3 — different action, same capability: the action rule refuses it
-  const wrongAction = controller.authorizeCommand({ ...intent, action: "delete" });
-  assert.equal(wrongAction.action, "WAIT");
-  assert.equal(wrongAction.reason, "approval-action-mismatch");
-  assert.equal(wrongAction.approvalReason, ApprovalFailureReason.ACTION_MISMATCH);
-
-  // Case 4 — different scope, same action and capability
-  const wrongScope = controller.authorizeCommand({ ...intent, scope: "staging" });
-  assert.equal(wrongScope.action, "WAIT");
-  assert.equal(wrongScope.reason, "approval-scope-mismatch");
-  assert.equal(wrongScope.approvalReason, ApprovalFailureReason.SCOPE_MISMATCH);
-
-  // every case is a decision about durable facts, never an action
-  assert.equal(runtime.started.length, 0);
-  assert.equal(store.getTask("task-1").status, TaskStatus.READY);
-  assert.equal(store.getEvents().length, eventsBefore, "authorizing and refusing both write nothing");
-});
-
-test("the gate reports every refusal with a distinct, actionable reason", { skip: BACKENDS[1].skip }, (t) => {
-  const memory = new MemoryStore();
-  seedWorld(memory);
-  const { controller } = makeController(memory);
-  approvedDeploy(memory, { over: { commandId: "cmd-1" } });
-  const intent = {
-    targetType: ApprovalTargetType.TASK,
-    targetId: "task-1",
-    targetVersion: 1,
-    action: "deploy",
-    capability: "deploy.production",
-    scope: "production",
-    approvalId: "approval-1",
-    commandId: "cmd-1",
-  };
-
-  const cases = [
-    [{ action: "delete" }, "approval-action-mismatch"],
-    [{ capability: "delete.production" }, "approval-capability-mismatch"],
-    [{ scope: "staging" }, "approval-scope-mismatch"],
-    [{ targetType: ApprovalTargetType.GOAL, targetId: "goal-1" }, "approval-target-type-mismatch"],
-    [{ targetId: "task-2" }, "approval-target-id-mismatch"],
-    [{ commandId: "cmd-2" }, "approval-command-mismatch"],
-    [{ targetVersion: 2 }, "approval-stale"],
-    [{ approvalId: "approval-missing" }, "approval-missing"],
-  ];
-  for (const [over, reason] of cases) {
-    const result = controller.authorizeCommand({ ...intent, ...over });
-    assert.equal(result.action, "WAIT", JSON.stringify(over));
-    assert.equal(result.reason, reason, JSON.stringify(over));
-    assert.ok(result.approvalReason, "the machine-readable reason survives to the caller");
-  }
-
-  memory.requestApproval(deployRequest({ id: "approval-pending" }));
-  assert.equal(
-    controller.authorizeCommand({ ...intent, approvalId: "approval-pending" }).reason,
-    "approval-pending",
-  );
-  assert.throws(
-    () => controller.authorizeCommand({ ...intent, action: "" }),
-    /must name its action/,
-  );
-});
+// Durable Command authorization has moved to project-control-command/controller tests.
 
 /** Timestamps are the only thing two independent runs may differ in. */
 function withoutClock(approval) {
