@@ -434,14 +434,14 @@ Parallel execution now has real isolated writable roots, enforced scopes, confli
 
 # G7 — Long-horizon Project Control objects
 
-**Status: ACTIVE — G7.2 DECISION D-GATE**
+**Status: ACTIVE — G7.2 DECISION IMPLEMENTATION**
 
 This phase is intentionally decomposed. See `docs/architecture/G7_DECOMPOSITION.md`.
 
 Current candidate sequence:
 
 1. G7.1 Project-level Acceptance — COMPLETE.
-2. G7.2 Decision — D, active.
+2. G7.2 Decision — D-gate resolved by ADR-0007; implementation active.
 3. G7.3 Project-control Memory — D, queued after Decision.
 4. G7.4 Context Capsule — D, queued after Decision/Memory.
 5. G7.5 Roadmap domain — D, queued; distinct from repository `ROADMAP.md`.
@@ -452,20 +452,29 @@ Current candidate sequence:
 
 G7.1 is complete. See `docs/architecture/PROJECT_ACCEPTANCE_G7_1_EVIDENCE.md`.
 
-G7.2 Decision is now the only active design question.
+G7.2 Decision architecture is resolved by
+`docs/architecture/decisions/ADR-0007-decision-authority-lifecycle.md`.
 
-Before Decision code, settle:
+The bounded Decision implementation is now **B — Missing Implementation**.
 
-- who may create a durable Decision fact;
-- HUMAN vs CONTROL_PLANE authority and attribution;
-- whether Decisions are mutable or append/supersede-only;
-- exact ACTIVE / SUPERSEDED / REVOKED semantics;
-- whether a Decision pins source/current-state revisions;
-- how a Decision may become a Memory source without becoming Current Reality;
-- whether runtime/agent proposals can ever be Decisions directly (default: no);
-- optimistic concurrency / idempotency semantics.
+Authorized scope:
 
-Focused source review + ADR required before implementation.
+- Decision authority/status/source-ref vocabulary;
+- create/supersede/revoke lifecycle;
+- immutable meaning;
+- HUMAN vs CONTROL_PLANE authority;
+- MemoryStore/SQLite persistence;
+- active Project query;
+- optimistic concurrency, events, replay;
+- backend parity + restart tests.
+
+Still blocked:
+
+- automatic Memory promotion;
+- Context Capsule;
+- Roadmap domain;
+- observability propagation;
+- leases/fencing.
 
 ## Exit gate
 
@@ -513,7 +522,7 @@ COMPLETE: G3 External Effect + reconciliation boundary
 COMPLETE: G4 Policy / authorization composition
 COMPLETE: G5 Real Runtime Adapter boundary
 COMPLETE: G6 Workspace / Reality / concurrency boundary
-ACTIVE:   G7.2 Decision — D-GATE
+ACTIVE:   G7.2 Decision — implementation allowed by ADR-0007
 NEXT:     G8 End-to-end dogfood + release convergence
 BLOCKED FROM BUNDLE CODING:
           Roadmap / Decision / Memory / Context Capsule / Project Acceptance /
