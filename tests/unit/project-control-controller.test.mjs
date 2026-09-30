@@ -885,12 +885,22 @@ test("pending or missing approval leaves the durable command CREATED", () => {
   assert.equal(pending.reason, "approval-pending");
   assert.equal(pending.command.status, CommandStatus.CREATED);
   assert.equal(store.getControlCommand(command.id).version, 1);
-  assert.equal(store.getEvents().length, eventsBefore, "WAIT is not a state transition");
+  assert.equal(
+    store.getEvents().filter((event) => event.type === "policy.decided").length,
+    1,
+    "WAIT records a PolicyDecision audit fact",
+  );
+  assert.equal(store.getEvents().length, eventsBefore + 1, "WAIT changes audit history, not Command state");
 
   const missing = controller.authorizeCommand(command.id, command.version);
   assert.equal(missing.action, "WAIT");
   assert.equal(missing.reason, "approval-required");
   assert.equal(store.getControlCommand(command.id).status, CommandStatus.CREATED);
+  assert.equal(
+    store.getEvents().filter((event) => event.type === "policy.decided").length,
+    2,
+    "each authorization attempt re-evaluates current policy",
+  );
 });
 
 test("usable approval authorizes the stored command exactly once without executing it", () => {
