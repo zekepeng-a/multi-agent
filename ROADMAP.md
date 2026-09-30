@@ -310,7 +310,7 @@ The system now survives an ambiguous external outcome without blind retry and wi
 
 # G4 — Policy and authorization composition
 
-**Status: ACTIVE / D-GATE REQUIRED**
+**Status: ACTIVE / D-GATE RESOLVED — IMPLEMENTATION ALLOWED**
 
 ## Goal
 
@@ -326,15 +326,21 @@ ALLOW | DENY | REQUIRE_APPROVAL
 
 Approval remains a durable human permission fact.
 
-## Questions
+## Architecture gate
 
-- policy inputs and ownership;
-- default-deny vs explicit allow boundaries;
-- risk classification authority;
-- policy versioning;
-- whether a decision is persisted;
-- how policy interacts with Approval freshness and target versions;
-- runtime enforcement point.
+Resolved by `ADR-0003-policy-approval-composition.md`.
+
+The accepted G4 boundary defines:
+
+- normalized request derived from stored Command/current target;
+- deterministic ALLOW / DENY / REQUIRE_APPROVAL;
+- deny precedence over human Approval;
+- immutable persisted PolicyDecision audit facts;
+- fail-closed reference engine;
+- re-evaluation at each authorization attempt;
+- Approval only as the satisfier of REQUIRE_APPROVAL.
+
+The bounded G4 implementation is now **B — Missing Implementation**.
 
 ## Exit gate
 
@@ -466,10 +472,12 @@ COMPLETE: G0 Governance convergence
 COMPLETE: G1 Baseline hardening
 COMPLETE: G2 Durable Command boundary
 COMPLETE: G3 External Effect + reconciliation boundary
-ACTIVE:   G4 Policy / authorization composition — D-GATE
+ACTIVE:   G4 Policy / authorization composition — implementation allowed by ADR-0003
 NEXT:     G5 Real Runtime Adapter boundary
-BLOCKED FROM CODING:
-          Policy Engine implementation until the G4 architecture decision is accepted
+AUTHORIZED TO CODE:
+          ADR-0003 bounded PolicyDecision + static engine + Command gate composition
+BLOCKED:
+          external enterprise policy integration / real runtime adapter
 ```
 
 G0 exited after governance/read-order, legacy-runtime scoping, current-reality mapping, Roadmap authority, Changelog, and ADR convention were present in Git.
