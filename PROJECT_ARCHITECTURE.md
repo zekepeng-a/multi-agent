@@ -92,7 +92,7 @@ These labels describe the baseline commit above only.
 | Command idempotency key | IMPLEMENTED | Durable command-id replay/operation binding exists in store semantics, but this is not a durable Command domain. |
 | Parent relationship authority | IMPLEMENTED | Child-side links are authoritative; parent cached ID lists are not used as relationship truth. |
 | Goal/Milestone parent Acceptance | IMPLEMENTED | Aggregate child snapshots become identified Evidence and flow through Verification/Acceptance. |
-| Project Acceptance | MISSING | Project can complete by milestone aggregation; it does not yet have the full contract/evidence/verification acceptance flow. |
+| Project Acceptance | IMPLEMENTED | Project may optionally pin a PROJECT Acceptance revision. Contract-free projects still complete by Milestone aggregation; contract-bound projects require current Milestone aggregate Evidence + PASS Verification, with atomic Project COMPLETED + contract PASSED and restart proof. |
 | Durable persistence | IMPLEMENTED | Memory and SQLite backends share control semantics; SQLite restart/transaction behavior is tested. |
 | Observability identity | MISSING | Canonical TraceId/SpanId/CorrelationId/CausationId domain is not implemented. |
 | Leases/fencing | MISSING | No durable ownership lease/fencing model exists. |
@@ -219,7 +219,7 @@ G6 now implements a bounded local WorkspaceManager: durable Workspace identity, 
 
 ### 7.5 Long-horizon project semantics
 
-Roadmap, Decision, Project-control Memory, Context Capsule and Project-level Acceptance remain absent or design-only.
+Roadmap, Decision, Project-control Memory and Context Capsule remain absent or design-only. Project-level Acceptance is now implemented.
 
 ## 8. Current conflicts and documentation drift
 
