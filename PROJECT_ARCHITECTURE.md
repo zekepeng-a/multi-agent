@@ -79,7 +79,7 @@ These labels describe the baseline commit above only.
 | Recovery | PARTIAL | Safe recovery exists for the current LOST-attempt path; typed recovery across Command/Effect/runtime/project boundaries is not complete. |
 | Approval | IMPLEMENTED | Durable scoped human approval lifecycle, target-version pinning, attribution, expiry/revocation, action/capability/scope checks, fail-closed semantics. |
 | Policy | DOCUMENTED_ONLY | Approval is implemented, but a general runtime-enforced Policy Engine deciding ALLOW/DENY/REQUIRE_APPROVAL is not. |
-| Command | RESERVED / PARTIAL | Command IDs are used for idempotency and the Controller exposes an authorization gate. There is no durable Command control object or Command lifecycle. COMMAND-target Approval is intentionally refused. |
+| Command | DOCUMENTED_ONLY / G2 READY | Existing command IDs are only store-mutation replay keys and the Controller still exposes the old read-only intent gate. ADR-0001 now settles the durable Command boundary (CREATED/AUTHORIZED/REJECTED only), but no durable Command object has been implemented yet. COMMAND-target Approval remains intentionally refused. |
 | Effect | MISSING | No durable external Effect ledger/lifecycle exists. |
 | Event | IMPLEMENTED | Append-oriented events are persisted with authoritative mutations and survive SQLite restart. Event is kept distinct from State. |
 | Decision | MISSING | No dedicated Project Control Decision object/store/lifecycle exists. |
