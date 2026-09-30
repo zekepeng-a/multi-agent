@@ -23,6 +23,7 @@ import {
   CommandTargetType,
   ConflictError,
   InvariantError,
+  PolicyEffect,
   RiskLevel,
   createAcceptance,
   createProject,
@@ -80,6 +81,17 @@ function request() {
     parameters: { environment: "production" },
     idempotencyKey: "deploy:task-1:v1",
   };
+}
+
+function requireApprovalPolicy(store, command, id = `policy-${command.id}`) {
+  return store.recordPolicyDecision(command.id, command.version, {
+    id,
+    effect: PolicyEffect.REQUIRE_APPROVAL,
+    policyVersion: "test-v1",
+    reasons: ["test requires approval"],
+    matchedRuleIds: ["require-deploy"],
+    context: {},
+  });
 }
 
 function approve(store, commandId = "command-1") {
@@ -143,10 +155,17 @@ for (const backend of BACKENDS) {
     const command = store.createControlCommand(request());
     const eventsBefore = store.getEvents().length;
 
-    assert.deepEqual(
-      store.authorizeControlCommand(command.id, 1),
-      { action: "WAIT", reason: "approval-required", command },
+    assert.throws(
+      () => store.authorizeControlCommand(command.id, 1),
+      (error) => error instanceof InvariantError && /without a PolicyDecision/.test(error.message),
     );
+    const policy = requireApprovalPolicy(store, command);
+    const withoutApproval = store.authorizeControlCommand(command.id, 1, {
+      policyDecisionId: policy.id,
+    });
+    assert.equal(withoutApproval.action, "WAIT");
+    assert.equal(withoutApproval.reason, "approval-required");
+    assert.equal(withoutApproval.command.id, command.id);
     assert.equal(store.getControlCommand(command.id).version, 1);
     assert.equal(store.getEvents().length, eventsBefore);
 
@@ -160,7 +179,10 @@ for (const backend of BACKENDS) {
       requestedBy: "requester-1",
       commandId: command.id,
     });
-    const pending = store.authorizeControlCommand(command.id, 1, { approvalId: "approval-1" });
+    const pending = store.authorizeControlCommand(command.id, 1, {
+      policyDecisionId: policy.id,
+      approvalId: "approval-1",
+    });
     assert.equal(pending.action, "WAIT");
     assert.equal(pending.reason, "approval-pending");
     assert.equal(pending.approvalReason, ApprovalFailureReason.PENDING);
@@ -172,11 +194,12 @@ for (const backend of BACKENDS) {
     seed(store);
     const command = store.createControlCommand(request());
     approve(store, command.id);
+    const policy = requireApprovalPolicy(store, command);
 
     const result = store.authorizeControlCommand(
       command.id,
       1,
-      { approvalId: "approval-1" },
+      { policyDecisionId: policy.id, approvalId: "approval-1" },
       { mutationId: "mutation-authorize-1" },
     );
 
@@ -189,7 +212,7 @@ for (const backend of BACKENDS) {
     const replay = store.authorizeControlCommand(
       command.id,
       1,
-      { approvalId: "approval-1" },
+      { policyDecisionId: policy.id, approvalId: "approval-1" },
       { mutationId: "mutation-authorize-1" },
     );
     assert.equal(replay.action, "AUTHORIZE");
@@ -232,7 +255,11 @@ for (const backend of BACKENDS) {
       decidedBy: "alice",
     });
 
-    const result = store.authorizeControlCommand(command.id, 1, { approvalId: pending.id });
+    const policy = requireApprovalPolicy(store, command);
+    const result = store.authorizeControlCommand(command.id, 1, {
+      policyDecisionId: policy.id,
+      approvalId: pending.id,
+    });
 
     assert.equal(result.action, "REJECT");
     assert.equal(result.reason, "approval-capability-mismatch");
