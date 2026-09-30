@@ -352,7 +352,7 @@ No code path equates “Approval exists” with “Policy allows this action”.
 
 # G5 — Real Runtime Adapter boundary
 
-**Status: ACTIVE / D-GATE RESOLVED — IMPLEMENTATION ALLOWED**
+**Status: COMPLETE**
 
 ## Goal
 
@@ -392,13 +392,15 @@ A real runtime execution can be started, observed, interrupted/recovered and tur
 
 ## Exit gate
 
-At least one production-like runtime adapter exists, while `FakeRuntime` remains valid for deterministic tests and runtime-specific identity stays behind the adapter.
+**SATISFIED.** See `docs/architecture/RUNTIME_G5_EVIDENCE.md`.
+
+A real LocalProcess adapter executes in CI, DSH Workflow has a production-facing adapter over its public seam, FakeRuntime remains deterministic, and runtime-specific identity stays behind RuntimeRef.
 
 ---
 
 # G6 — Workspace / Reality / concurrency boundary
 
-**Status: QUEUED**
+**Status: ACTIVE / D-GATE REQUIRED**
 
 ## Goal
 
