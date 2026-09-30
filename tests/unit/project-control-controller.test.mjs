@@ -10,6 +10,7 @@ import {
   ConflictError,
   EvidenceStatus,
   InvariantError,
+  PolicyEffect,
   ReconcileOutcome,
   RiskLevel,
   RunStatus,
@@ -26,6 +27,7 @@ import { MemoryStore } from "../../project-control/memory-store.mjs";
 import { FakeRuntime } from "../../project-control/fake-runtime.mjs";
 import { FakeVerifier } from "../../project-control/fake-verifier.mjs";
 import { Controller } from "../../project-control/controller.mjs";
+import { StaticPolicyEngine } from "../../project-control/policy-engine.mjs";
 
 function fixture(runtimeMode = "success", verifierVerdict = VerificationVerdict.PASS) {
   const store = new MemoryStore();
@@ -47,6 +49,15 @@ function fixture(runtimeMode = "success", verifierVerdict = VerificationVerdict.
     store,
     runtime,
     verifier,
+    policyEngine: new StaticPolicyEngine({
+      version: "controller-test-v1",
+      rules: [{
+        id: "require-deploy",
+        effect: PolicyEffect.REQUIRE_APPROVAL,
+        action: "deploy",
+        capability: "deploy.production",
+      }],
+    }),
     idFactory: (prefix) => `${prefix}-${++n}`,
   });
   return { store, runtime, verifier, controller };
