@@ -5,7 +5,8 @@ import {
   ApprovalDecision,
   ApprovalTargetType,
   AttemptStatus,
-  COMMAND_APPROVAL_UNAVAILABLE,
+  CommandStatus,
+  CommandTargetType,
   ConflictError,
   EvidenceStatus,
   InvariantError,
@@ -815,14 +816,24 @@ test("NEEDS_REVIEW recovery: cannot bypass the stale-evidence guard (I-10)", asy
   assert.equal(eventCount(store, "task.accepted"), 0);
 });
 
-// ── the approval gate ────────────────────────────────────────────────────────
-//
-// The Controller owns the GATE, not the policy: it is asked whether a concrete
-// command may pass, and it answers with durable facts. Passing the gate is not
-// running the command, and it is not accepting anything.
+// ── durable Command authorization (G2) ───────────────────────────────────────
 
-function approvalFixture() {
+function commandFixture({ bindApprovalToCommand = true } = {}) {
   const { store, runtime, controller } = fixture();
+  const command = controller.createCommand({
+    id: "command-1",
+    targetType: CommandTargetType.TASK,
+    targetId: "task-1",
+    action: "deploy",
+    capability: "deploy.production",
+    scope: "production",
+    riskLevel: RiskLevel.HIGH,
+    requestedBy: "requester-1",
+    expectedVersion: 1,
+    parameters: { environment: "production" },
+    idempotencyKey: "deploy:task-1:v1",
+  }, { mutationId: "mutation-create-command-1" });
+
   store.requestApproval({
     id: "approval-1",
     targetType: ApprovalTargetType.TASK,
@@ -832,156 +843,135 @@ function approvalFixture() {
     scope: "production",
     riskLevel: RiskLevel.HIGH,
     requestedBy: "requester-1",
-    commandId: "C1",
+    commandId: bindApprovalToCommand ? command.id : null,
   });
-  const intent = {
-    targetType: ApprovalTargetType.TASK,
-    targetId: "task-1",
-    targetVersion: 1,
-    action: "deploy",
-    capability: "deploy.production",
-    scope: "production",
-    approvalId: "approval-1",
-    commandId: "C1",
-  };
-  return { store, runtime, controller, intent };
+  return { store, runtime, controller, command };
 }
 
-test("the gate fails closed while nothing has been approved", () => {
-  const { store, controller, intent } = approvalFixture();
+test("controller creates a durable command by pinning current target state", () => {
+  const { store, runtime, command } = commandFixture();
 
-  const result = controller.authorizeCommand(intent);
-
-  assert.equal(result.action, "WAIT");
-  assert.equal(result.reason, "approval-pending");
-  assert.equal(result.approvalReason, "PENDING");
-  assert.equal(result.intent.action, "deploy", "the refused intent is reported back verbatim");
-  assert.equal(result.intent.capability, "deploy.production");
-  assert.equal(store.getTask("task-1").status, TaskStatus.READY);
+  assert.equal(command.status, CommandStatus.CREATED);
+  assert.equal(command.version, 1);
+  assert.equal(command.targetType, CommandTargetType.TASK);
+  assert.equal(command.targetId, "task-1");
+  assert.equal(command.targetVersion, 1);
+  assert.equal(command.action, "deploy");
+  assert.equal(command.capability, "deploy.production");
+  assert.equal(command.scope, "production");
+  assert.equal(command.expectedVersion, 1);
+  assert.deepEqual(command.parameters, { environment: "production" });
+  assert.equal(store.getControlCommand("command-1").idempotencyKey, "deploy:task-1:v1");
+  assert.equal(runtime.started.length, 0, "creating control intent executes nothing");
 });
 
-test("the gate authorizes only the action, capability, scope and version that were approved", () => {
-  const { store, controller, intent } = approvalFixture();
-  store.decideApproval("approval-1", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
-
-  const authorized = controller.authorizeCommand(intent);
-  assert.equal(authorized.action, "AUTHORIZE");
-  assert.equal(authorized.reason, "command-authorized");
-  assert.equal(authorized.approval.decision.decidedBy, "alice");
-
-  assert.equal(controller.authorizeCommand({ ...intent, action: "delete" }).reason, "approval-action-mismatch");
-  assert.equal(
-    controller.authorizeCommand({ ...intent, capability: "delete.production" }).reason,
-    "approval-capability-mismatch",
-  );
-  assert.equal(controller.authorizeCommand({ ...intent, scope: "staging" }).reason, "approval-scope-mismatch");
-  assert.equal(controller.authorizeCommand({ ...intent, commandId: "C2" }).reason, "approval-command-mismatch");
-});
-
-test("the gate will not authorize an action whose capability is not named", () => {
-  const { controller, intent } = approvalFixture();
-
-  assert.throws(
-    () => controller.authorizeCommand({ ...intent, capability: undefined }),
-    (error) => error instanceof InvariantError && /must name its capability/.test(error.message),
-  );
-  assert.throws(
-    () => controller.authorizeCommand({ ...intent, capability: "  " }),
-    /must name its capability/,
-  );
-});
-
-test("an authorized command is not an executed command, and not an accepted task", () => {
-  const { store, runtime, controller, intent } = approvalFixture();
-  store.decideApproval("approval-1", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
+test("pending or missing approval leaves the durable command CREATED", () => {
+  const { store, controller, command } = commandFixture();
   const eventsBefore = store.getEvents().length;
 
-  assert.equal(controller.authorizeCommand(intent).action, "AUTHORIZE");
+  const pending = controller.authorizeCommand(command.id, command.version, { approvalId: "approval-1" });
+  assert.equal(pending.action, "WAIT");
+  assert.equal(pending.reason, "approval-pending");
+  assert.equal(pending.command.status, CommandStatus.CREATED);
+  assert.equal(store.getControlCommand(command.id).version, 1);
+  assert.equal(store.getEvents().length, eventsBefore, "WAIT is not a state transition");
 
-  assert.equal(runtime.started.length, 0, "the gate never starts anything");
-  assert.equal(store.getRunsForTask("task-1").length, 0);
-  assert.equal(store.getTask("task-1").status, TaskStatus.READY);
-  assert.equal(store.getTask("task-1").version, 1);
-  assert.equal(store.getEvents().length, eventsBefore, "authorization writes nothing: no effect ledger in v0.1");
-  assert.equal(store.getAcceptance("acceptance-1", 1).status, "PENDING", "permission is not correctness");
+  const missing = controller.authorizeCommand(command.id, command.version);
+  assert.equal(missing.action, "WAIT");
+  assert.equal(missing.reason, "approval-required");
+  assert.equal(store.getControlCommand(command.id).status, CommandStatus.CREATED);
 });
 
-test("an approval does not waive the command's own expectedVersion", async () => {
-  const { store, controller, intent } = approvalFixture();
+test("usable approval authorizes the stored command exactly once without executing it", () => {
+  const { store, runtime, controller, command } = commandFixture();
   store.decideApproval("approval-1", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
-  // the task moves on while the approval is still current
-  store.updateTask("task-1", 1, { status: TaskStatus.IN_PROGRESS }, { commandId: "cmd-task" });
-  store.requestApproval({
-    id: "approval-2",
-    targetType: ApprovalTargetType.TASK,
-    targetId: "task-1",
-    action: "deploy",
-    capability: "deploy.production",
-    scope: "production",
-    requestedBy: "requester-1",
-  });
-  store.decideApproval("approval-2", 1, { decision: ApprovalDecision.APPROVE, decidedBy: "alice" });
+  const taskBefore = store.getTask("task-1");
 
-  const conflict = controller.authorizeCommand({
-    ...intent,
-    approvalId: "approval-2",
-    targetVersion: 2,
-    expectedVersion: 1,
+  const result = controller.authorizeCommand(command.id, command.version, {
+    approvalId: "approval-1",
+    mutationId: "mutation-authorize-command-1",
+    // Extra caller data cannot substitute for durable intent; Controller ignores it.
+    action: "delete",
+    capability: "delete.production",
+    scope: "staging",
   });
 
-  assert.equal(conflict.action, "WAIT");
-  assert.equal(conflict.reason, "command-version-conflict");
-  assert.equal(conflict.expectedVersion, 1);
-  assert.equal(conflict.currentVersion, 2);
-  assert.equal(conflict.approval.request.targetVersion, 2, "the permission itself was current");
-  // the command that expects the current version passes
-  assert.equal(
-    controller.authorizeCommand({ ...intent, approvalId: "approval-2", targetVersion: 2, expectedVersion: 2 }).action,
-    "AUTHORIZE",
+  assert.equal(result.action, "AUTHORIZE");
+  assert.equal(result.command.status, CommandStatus.AUTHORIZED);
+  assert.equal(result.command.version, 2);
+  assert.equal(result.command.action, "deploy");
+  assert.equal(result.command.capability, "deploy.production");
+  assert.equal(result.command.scope, "production");
+  assert.equal(result.command.authorization.approvalId, "approval-1");
+  assert.equal(runtime.started.length, 0, "authorization is not execution");
+  assert.deepEqual(store.getTask("task-1"), taskBefore, "authorization is not project acceptance");
+  assert.ok(store.getEvents().some((event) => event.type === "command.authorized"));
+
+  const replay = controller.authorizeCommand(command.id, command.version, {
+    approvalId: "approval-1",
+    mutationId: "mutation-authorize-command-1",
+  });
+  assert.equal(replay.action, "AUTHORIZE");
+  assert.equal(replay.command.version, 2, "mutation replay does not transition twice");
+  assert.equal(store.getEvents().filter((event) => event.type === "command.authorized").length, 1);
+});
+
+test("a stale target rejects the concrete command instead of retargeting it", () => {
+  const { store, controller, command } = commandFixture();
+  store.updateTask("task-1", 1, { status: TaskStatus.IN_PROGRESS }, { commandId: "move-task" });
+
+  const result = controller.authorizeCommand(command.id, command.version, { approvalId: "approval-1" });
+
+  assert.equal(result.action, "REJECT");
+  assert.equal(result.reason, "target-stale");
+  assert.equal(result.command.status, CommandStatus.REJECTED);
+  assert.equal(result.command.targetVersion, 1, "the command is never silently rebound to v2");
+  assert.equal(store.getTask("task-1").version, 2);
+  assert.ok(store.getEvents().some((event) => event.type === "command.rejected"));
+});
+
+test("command concurrency is independent of target/approval concurrency", () => {
+  const { controller, command } = commandFixture();
+
+  assert.throws(
+    () => controller.authorizeCommand(command.id, 99, { approvalId: "approval-1" }),
+    (error) => error instanceof ConflictError && /expected v99, current v1/.test(error.message),
   );
 });
 
-test("the gate refuses a COMMAND target, because v0.1 has no durable Command", () => {
-  const { store, runtime, controller } = fixture();
-  const commandIntent = {
-    targetType: ApprovalTargetType.COMMAND,
-    targetId: "C9",
-    action: "deploy",
-    capability: "deploy.production",
-    scope: "production",
-    approvalId: "approval-cmd",
-    commandId: "C9",
-  };
+test("a durable command cannot be created against a caller-invented target version", () => {
+  const { controller } = fixture();
 
-  // never authorized, whatever anyone claims exists — and the store agrees
   assert.throws(
-    () => controller.authorizeCommand(commandIntent),
-    (error) => error instanceof InvariantError && error.message === COMMAND_APPROVAL_UNAVAILABLE,
-  );
-  assert.throws(
-    () => store.requestApproval({
-      id: "approval-cmd",
-      targetType: ApprovalTargetType.COMMAND,
-      targetId: "C9",
-      commandId: "C9",
+    () => controller.createCommand({
+      id: "command-stale",
+      targetType: CommandTargetType.TASK,
+      targetId: "task-1",
+      targetVersion: 9,
       action: "deploy",
       capability: "deploy.production",
       scope: "production",
       requestedBy: "requester-1",
+      idempotencyKey: "stale",
     }),
-    (error) => error instanceof InvariantError && error.message === COMMAND_APPROVAL_UNAVAILABLE,
+    (error) => error instanceof InvariantError && /is v1, not v9/.test(error.message),
   );
-  assert.equal(store.getRecord("approval", "approval-cmd"), null, "no Command approval can be created");
+});
 
-  // asking about a COMMAND target with no approval keeps the established answer,
-  // and a command target still cannot pretend to have a version
-  assert.equal(
-    controller.authorizeCommand({ ...commandIntent, approvalId: null }).reason,
-    "approval-required",
-  );
+test("COMMAND-target Approval remains fail closed even though durable Command now exists", () => {
+  const { store } = commandFixture();
+
   assert.throws(
-    () => controller.authorizeCommand({ ...commandIntent, expectedVersion: 1 }),
-    (error) => error instanceof InvariantError && /no version/.test(error.message),
+    () => store.requestApproval({
+      id: "approval-command-target",
+      targetType: ApprovalTargetType.COMMAND,
+      targetId: "command-1",
+      action: "deploy",
+      capability: "deploy.production",
+      scope: "production",
+      requestedBy: "requester-1",
+      commandId: "command-1",
+    }),
+    (error) => error instanceof InvariantError,
   );
-  assert.equal(runtime.started.length, 0, "a refused COMMAND gate executes nothing");
 });
