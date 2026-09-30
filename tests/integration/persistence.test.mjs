@@ -769,6 +769,16 @@ test("durable Command survives a real process restart and authorization replay s
   assert.equal(read.payload.createdEvents, 1);
   assert.equal(read.payload.authorizedEvents, 1, "restart replay does not authorize twice");
   assert.equal(read.payload.isAuthorized, true);
+
+  // G4: the immutable PolicyDecision used to authorize is a durable audit fact.
+  assert.equal(read.payload.policyDecisionId, written.payload.ids.policyDecisionId);
+  assert.equal(read.payload.policyEffect, "REQUIRE_APPROVAL");
+  assert.equal(read.payload.policyVersion, "child-policy-v1");
+  assert.equal(read.payload.policyCommandId, written.payload.ids.commandId);
+  assert.equal(read.payload.policyCommandVersion, 1);
+  assert.equal(read.payload.policyTargetVersion, 1);
+  assert.equal(read.payload.policySubjectId, "requester-1");
+  assert.equal(read.payload.policyEvents, 1, "restart does not manufacture another policy decision");
 });
 
 test("orphaned DISPATCHED Effect survives process restart and reconciles before retry", { skip }, (t) => {
