@@ -199,7 +199,7 @@ for (const backend of BACKENDS) {
       receipt: { provider: "fake", receiptId: "r-1", resultRef: "result://1" },
     });
     assert.equal(effect.status, EffectStatus.SUCCEEDED);
-    assert.equal(effect.reconciliation.status, EffectReconciliationStatus.RESOLVED);
+    assert.equal(effect.reconciliation.status, EffectReconciliationStatus.NOT_REQUIRED);
 
     const noCommand = createAuthorizedCommand(store, "command-no-effect");
     let noEffect = store.createEffectFromCommand({
