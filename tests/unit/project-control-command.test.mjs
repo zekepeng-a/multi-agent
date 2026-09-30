@@ -167,7 +167,12 @@ for (const backend of BACKENDS) {
     assert.equal(withoutApproval.reason, "approval-required");
     assert.equal(withoutApproval.command.id, command.id);
     assert.equal(store.getControlCommand(command.id).version, 1);
-    assert.equal(store.getEvents().length, eventsBefore);
+    assert.equal(
+      store.getEvents().filter((event) => event.type === "policy.decided").length,
+      1,
+      "WAIT records the policy audit fact but does not mutate Command",
+    );
+    assert.equal(store.getEvents().length, eventsBefore + 1);
 
     store.requestApproval({
       id: "approval-1",
