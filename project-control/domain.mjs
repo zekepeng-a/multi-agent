@@ -137,6 +137,8 @@ export function createProject({
   status = ProjectStatus.ACTIVE,
   currentRevision = null,
   metadata = {},
+  acceptanceId = null,
+  acceptanceVersion = null,
 } = {}) {
   if (!id || !name) throw new Error("id and name are required");
   return {
@@ -147,6 +149,8 @@ export function createProject({
     status,
     currentRevision,
     metadata,
+    acceptanceId,
+    acceptanceVersion,
     createdAt: now(),
     updatedAt: now(),
   };
