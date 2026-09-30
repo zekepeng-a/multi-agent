@@ -487,7 +487,11 @@ export class Controller {
    * decision about records that already exist.
    */
   #acceptParent({ collection, target, context }) {
-    const noun = collection === Collection.GOAL ? "goal" : "milestone";
+    const noun = collection === Collection.GOAL
+      ? "goal"
+      : collection === Collection.MILESTONE
+        ? "milestone"
+        : "project";
     const observed = { ...context, [noun]: target };
 
     let acceptance;
@@ -521,22 +525,28 @@ export class Controller {
 
     const current = collection === Collection.GOAL
       ? this.store.getGoal(target.id)
-      : this.store.getMilestone(target.id);
+      : collection === Collection.MILESTONE
+        ? this.store.getMilestone(target.id)
+        : this.store.getProject(target.id);
     // The write re-proves everything inside one transaction; passing the version
     // read here makes a concurrent change a conflict rather than an overwrite.
+    const options = {
+      verificationId: verification.id,
+      commandId: `accept:${collection}:${current.id}:${verification.id}`,
+    };
     const accepted = collection === Collection.GOAL
-      ? this.store.acceptGoal(current.id, current.version, {
-          verificationId: verification.id,
-          commandId: `accept:${collection}:${current.id}:${verification.id}`,
-        })
-      : this.store.completeMilestone(current.id, current.version, {
-          verificationId: verification.id,
-          commandId: `accept:${collection}:${current.id}:${verification.id}`,
-        });
+      ? this.store.acceptGoal(current.id, current.version, options)
+      : collection === Collection.MILESTONE
+        ? this.store.completeMilestone(current.id, current.version, options)
+        : this.store.acceptProject(current.id, current.version, options);
 
     return {
       action: "ACCEPT",
-      reason: collection === Collection.GOAL ? "goal-accepted" : "milestone-completed",
+      reason: collection === Collection.GOAL
+        ? "goal-accepted"
+        : collection === Collection.MILESTONE
+          ? "milestone-completed"
+          : "project-completed",
       ...context,
       [noun]: accepted,
       evidence,
@@ -899,6 +909,13 @@ export class Controller {
     }
 
     if (milestones.every((milestone) => milestone.status === MilestoneStatus.COMPLETED)) {
+      if (project.acceptanceId != null) {
+        return this.#acceptParent({
+          collection: Collection.PROJECT,
+          target: project,
+          context: { milestones, synced },
+        });
+      }
       const sync = this.#syncStatus(Collection.PROJECT, project, ProjectStatus.COMPLETED);
       return { action: sync.action, reason: "project-completed", project: sync.record, milestones, synced };
     }
