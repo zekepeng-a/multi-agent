@@ -194,15 +194,11 @@ Roadmap, Decision, Project-control Memory, Context Capsule and Project-level Acc
 
 ## 8. Current conflicts and documentation drift
 
-### C-01 — repository identity drift
+### C-01 — repository identity drift — RESOLVED FOR DOCUMENT AUTHORITY
 
-`PROJECT_BLUEPRINT.md` defines the current product as Project Control OS.
+`AGENTS.md` now declares Project Control OS as the current product direction and defines the governance read order. `docs/architecture.md` is explicitly scoped as **Legacy V0.5 Runtime Architecture**.
 
-`AGENTS.md`, `package.json`, and `docs/architecture.md` still present the repository primarily as the frozen V0.5 DSH Multi-Agent Runtime.
-
-This is a **documentation authority conflict**, not evidence that either codebase should be deleted.
-
-Required resolution: preserve the V0.5 documents as legacy-runtime documentation while making the Project Control governance/read order explicit.
+The old runtime remains present and valid for its own scope. `package.json` still carries the historical package identity; that remaining packaging question is tracked separately below and does not control document authority.
 
 ### C-02 — package/runtime identity drift
 
