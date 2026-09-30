@@ -434,25 +434,44 @@ Parallel execution now has real isolated writable roots, enforced scopes, confli
 
 # G7 — Long-horizon Project Control objects
 
-**Status: ACTIVE / DECOMPOSITION GATE**
+**Status: ACTIVE — G7.1 PROJECT ACCEPTANCE D-GATE**
 
-This phase is intentionally after the execution/reality boundary because these objects should reflect proven project-control needs, not abstract completeness.
+This phase is intentionally decomposed. See `docs/architecture/G7_DECOMPOSITION.md`.
 
-Candidate items:
+Current candidate sequence:
 
-- Roadmap domain/lifecycle;
-- Decision records;
-- source-referenced Project-control Memory;
-- Context Capsule;
-- Project-level Acceptance;
-- observability identity;
-- leases/fencing where demonstrated necessary.
+1. G7.1 Project-level Acceptance — D, active.
+2. G7.2 Decision — D, queued.
+3. G7.3 Project-control Memory — D, queued after Decision.
+4. G7.4 Context Capsule — D, queued after Decision/Memory.
+5. G7.5 Roadmap domain — D, queued; distinct from repository `ROADMAP.md`.
+6. G7.6 Observability hardening — only to demonstrated G8 need.
+7. leases/fencing — not currently required; do not implement without a concrete ownership problem.
 
-Each item must be classified separately A/B/C/D/E. They do not ship as one “complete the architecture” bundle.
+## Current gate
+
+G7.1 is the only active design question.
+
+`PROJECT` already exists as an Acceptance target type, but Project has no pinned
+Acceptance revision and no contract-bound completion flow.
+
+Before code, settle:
+
+- whether Project may optionally pin an Acceptance Contract like Goal/Milestone;
+- whether all Milestones must first be COMPLETED;
+- how aggregate Project Evidence identifies the child snapshot;
+- which Project source states may enter acceptance;
+- whether Project without a contract may continue aggregate completion;
+- stale/superseded Project evidence behavior;
+- exact atomic transition of Project + contract status.
+
+Focused source review + ADR required before implementation.
 
 ## Exit gate
 
-Only implement concepts with a clear authority role and demonstrated use in the control loop.
+G7 is complete only when each implemented candidate has its own evidenced boundary,
+and candidates without demonstrated need are explicitly deferred rather than added
+for completeness.
 
 ---
 
@@ -494,7 +513,7 @@ COMPLETE: G3 External Effect + reconciliation boundary
 COMPLETE: G4 Policy / authorization composition
 COMPLETE: G5 Real Runtime Adapter boundary
 COMPLETE: G6 Workspace / Reality / concurrency boundary
-ACTIVE:   G7 Long-horizon Project Control objects — decomposition gate
+ACTIVE:   G7.1 Project-level Acceptance — D-GATE
 NEXT:     G8 End-to-end dogfood + release convergence
 BLOCKED FROM BUNDLE CODING:
           Roadmap / Decision / Memory / Context Capsule / Project Acceptance /
