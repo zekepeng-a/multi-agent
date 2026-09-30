@@ -433,6 +433,142 @@ export function createVerification({
   };
 }
 
+// ── Durable Project Decision (G7.2) ─────────────────────────────────────────
+
+export const DecisionAuthorityType = Object.freeze({
+  HUMAN: "HUMAN",
+  CONTROL_PLANE: "CONTROL_PLANE",
+});
+
+export const DecisionStatus = Object.freeze({
+  ACTIVE: "ACTIVE",
+  SUPERSEDED: "SUPERSEDED",
+  REVOKED: "REVOKED",
+});
+
+export const DecisionSourceType = Object.freeze({
+  HUMAN_INSTRUCTION: "HUMAN_INSTRUCTION",
+  PROJECT_STATE: "PROJECT_STATE",
+  EVIDENCE: "EVIDENCE",
+  VERIFICATION: "VERIFICATION",
+  POLICY_DECISION: "POLICY_DECISION",
+  DECISION: "DECISION",
+  EXTERNAL_REFERENCE: "EXTERNAL_REFERENCE",
+});
+
+const CONTROL_PLANE_DECISION_SOURCE_TYPES = Object.freeze([
+  DecisionSourceType.PROJECT_STATE,
+  DecisionSourceType.EVIDENCE,
+  DecisionSourceType.VERIFICATION,
+  DecisionSourceType.POLICY_DECISION,
+  DecisionSourceType.DECISION,
+]);
+
+function validateDecisionActor(actor, label = "decidedBy") {
+  if (!actor || !Object.values(DecisionAuthorityType).includes(actor.type)) {
+    throw new Error(`${label} must be HUMAN or CONTROL_PLANE`);
+  }
+  if (typeof actor.actorId !== "string" || actor.actorId.trim() === "") {
+    throw new Error(`${label} requires a non-empty actorId`);
+  }
+}
+
+function validateDecisionSourceRefs(sourceRefs, authorityType) {
+  if (!Array.isArray(sourceRefs) || sourceRefs.length === 0) {
+    throw new Error("decision requires non-empty sourceRefs");
+  }
+  for (const ref of sourceRefs) {
+    if (!ref || !Object.values(DecisionSourceType).includes(ref.type)) {
+      throw new Error(`decision source has unknown type: ${ref?.type}`);
+    }
+    if (typeof ref.id !== "string" || ref.id.trim() === "") {
+      throw new Error("decision source requires a non-empty id");
+    }
+    if (ref.revision != null && (typeof ref.revision !== "string" || ref.revision.trim() === "")) {
+      throw new Error("decision source revision must be a non-empty string when present");
+    }
+  }
+  if (
+    authorityType === DecisionAuthorityType.HUMAN &&
+    !sourceRefs.some((ref) => ref.type === DecisionSourceType.HUMAN_INSTRUCTION)
+  ) {
+    throw new Error("a HUMAN decision must preserve HUMAN_INSTRUCTION provenance");
+  }
+  if (
+    authorityType === DecisionAuthorityType.CONTROL_PLANE &&
+    !sourceRefs.some((ref) => CONTROL_PLANE_DECISION_SOURCE_TYPES.includes(ref.type))
+  ) {
+    throw new Error("a CONTROL_PLANE decision requires authoritative control/evidence provenance");
+  }
+}
+
+export function createDecision({
+  id,
+  projectId,
+  title,
+  rationale,
+  alternatives = [],
+  decidedBy,
+  sourceRefs,
+  supersedesDecisionId = null,
+  status = DecisionStatus.ACTIVE,
+  version = 1,
+} = {}) {
+  for (const [field, value] of Object.entries({ id, projectId, title, rationale })) {
+    if (typeof value !== "string" || value.trim() === "") {
+      throw new Error(`decision requires a non-empty ${field}`);
+    }
+  }
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error("decision version must be a positive integer");
+  }
+  if (!Object.values(DecisionStatus).includes(status)) {
+    throw new Error(`unknown decision status: ${status}`);
+  }
+  if (status !== DecisionStatus.ACTIVE) {
+    throw new Error("a new decision must start ACTIVE");
+  }
+  if (!Array.isArray(alternatives)) {
+    throw new Error("decision alternatives must be an array");
+  }
+  for (const alternative of alternatives) {
+    if (!alternative || typeof alternative.description !== "string" || alternative.description.trim() === "") {
+      throw new Error("decision alternative requires a non-empty description");
+    }
+    if (
+      alternative.rejectedReason != null &&
+      (typeof alternative.rejectedReason !== "string" || alternative.rejectedReason.trim() === "")
+    ) {
+      throw new Error("decision alternative rejectedReason must be a non-empty string when present");
+    }
+  }
+  validateDecisionActor(decidedBy);
+  validateDecisionSourceRefs(sourceRefs, decidedBy.type);
+  if (
+    supersedesDecisionId != null &&
+    (typeof supersedesDecisionId !== "string" || supersedesDecisionId.trim() === "")
+  ) {
+    throw new Error("supersedesDecisionId must be a non-empty string when present");
+  }
+
+  return {
+    id,
+    version,
+    projectId,
+    title,
+    rationale,
+    alternatives: structuredClone(alternatives),
+    decidedBy: structuredClone(decidedBy),
+    status,
+    sourceRefs: structuredClone(sourceRefs),
+    supersedesDecisionId,
+    supersededByDecisionId: null,
+    revocation: null,
+    createdAt: now(),
+    updatedAt: now(),
+  };
+}
+
 // ── Durable Workspace (G6 Reality/isolation boundary) ───────────────────────
 
 export const WorkspaceKind = Object.freeze({
