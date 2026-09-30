@@ -321,13 +321,22 @@ export function createRun({ id, taskId, status = RunStatus.CREATED } = {}) {
   };
 }
 
-export function createAttempt({ id, runId, attemptNumber, status = AttemptStatus.CREATED } = {}) {
+export function createAttempt({
+  id,
+  runId,
+  attemptNumber,
+  status = AttemptStatus.CREATED,
+  runtimeRef = null,
+} = {}) {
   if (!id || !runId || !attemptNumber) throw new Error("id, runId and attemptNumber are required");
   return {
     id,
     runId,
     attemptNumber,
     status,
+    // Opaque execution identity owned by the Runtime Adapter. It is persisted
+    // for observation/recovery but never becomes RunId/AttemptId authority.
+    runtimeRef: runtimeRef ? structuredClone(runtimeRef) : null,
     createdAt: now(),
     startedAt: null,
     endedAt: null,
