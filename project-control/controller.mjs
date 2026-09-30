@@ -1,8 +1,5 @@
 import {
-  ApprovalError,
-  ApprovalTargetType,
   AttemptStatus,
-  COMMAND_APPROVAL_UNAVAILABLE,
   EvidenceStatus,
   GoalStatus,
   InvariantError,
@@ -501,131 +498,32 @@ export class Controller {
     return verification;
   }
 
-  // ── Human approval gate ───────────────────────────────────────────────────
+  // ── Durable Command authorization (G2) ─────────────────────────────────────
   //
-  // The gate asks ONE question: does an Approval authorize this concrete action,
-  // on this concrete target, exercising this concrete capability, at its current
-  // version? It is deliberately SYNCHRONOUS — it reads durable facts and starts
-  // nothing, so it cannot be mistaken for, or accidentally wired into, an
-  // execution path.
-  //
-  // What passing the gate means, and what it does not:
-  //
-  //   • it means the named action may proceed past the control gate;
-  //   • it does NOT mean the command succeeded. v0.1 has no Command status and no
-  //     Effect tracking, so authorization is reported as a decision and nothing
-  //     is written about it: recording "consumed" would claim knowledge about the
-  //     external world that this layer does not have (that is the Effect Ledger's
-  //     job, and it is not in this round);
-  //   • it does NOT accept anything. Permission and correctness are different
-  //     facts, and no Task, Goal or Milestone changes status because a human said
-  //     yes to an action.
-  //
-  // The gate also does not decide WHEN approval is required. That is a Policy
-  // question, and inventing a per-Task "requires approval" flag here would be a
-  // fake Policy Engine. A caller that has decided an action needs approval hands
-  // in an approvalId; a caller that has none is refused, because the gate fails
-  // closed.
-  authorizeCommand({
-    targetType,
-    targetId,
-    targetVersion = null,
-    action,
-    capability,
-    scope,
-    approvalId = null,
-    commandId = null,
-    expectedVersion = null,
-  } = {}) {
-    const intent = { targetType, targetId, targetVersion, action, capability, scope, commandId };
-    // The request must name the capability it exercises: without it the gate
-    // cannot tell which authorization is being exercised, and "no capability
-    // stated" is never a wildcard.
-    for (const field of ["targetType", "targetId", "action", "capability", "scope"]) {
-      if (typeof intent[field] !== "string" || intent[field].trim() === "") {
-        throw new InvariantError(`a command authorization must name its ${field}`);
-      }
-    }
-    if (expectedVersion != null && targetType === ApprovalTargetType.COMMAND) {
-      throw new InvariantError("a command target has no version, so no command can expect one");
-    }
+  // A Command is created first as durable immutable intent. Authorization then
+  // operates only on that stored record. The Controller never accepts a second
+  // caller-presented action/capability/scope at authorization time.
 
-    // No approval to check: the answer is the same as it has always been, and it
-    // is decided before anything else is asked of the request.
-    if (!approvalId) {
-      return { action: "WAIT", reason: "approval-required", intent };
-    }
-
-    // There is no durable Command control object in v0.1, so a COMMAND-typed
-    // permission cannot be validated — let alone authorized. Fail closed, loudly,
-    // the moment one is presented.
-    if (targetType === ApprovalTargetType.COMMAND) {
-      throw new InvariantError(COMMAND_APPROVAL_UNAVAILABLE);
-    }
-
-    let approval;
-    try {
-      approval = this.store.assertApprovalUsable({
-        approvalId,
-        targetType,
-        targetId,
-        targetVersion,
-        action,
-        capability,
-        scope,
-        commandId,
-      });
-    } catch (error) {
-      // The store refuses with a machine-readable reason; the Controller turns it
-      // into an actionable WAIT instead of throwing, and keeps the reason so the
-      // difference between "nobody approved this" and "the target moved since it
-      // was approved" survives to the caller.
-      if (!(error instanceof ApprovalError)) throw error;
-      return {
-        action: "WAIT",
-        reason: `approval-${String(error.approvalReason).toLowerCase().replaceAll("_", "-")}`,
-        approvalReason: error.approvalReason,
-        intent,
-        approval: this.#approvalIfPresent(approvalId),
-      };
-    }
-
-    // The permission is current — but a permission is not an exemption from
-    // optimistic concurrency. The command still has to win its own expectedVersion
-    // check, and it is checked against the target as it is now.
-    if (expectedVersion != null) {
-      const current = this.#approvalTarget(targetType, targetId);
-      if (current.version !== expectedVersion) {
-        return {
-          action: "WAIT",
-          reason: "command-version-conflict",
-          intent,
-          expectedVersion,
-          currentVersion: current.version,
-          approval,
-        };
-      }
-    }
-
-    return { action: "AUTHORIZE", reason: "command-authorized", intent, approval };
+  createCommand(request, { mutationId = null } = {}) {
+    return this.store.createControlCommand(request, { mutationId });
   }
 
-  #approvalTarget(targetType, targetId) {
-    switch (targetType) {
-      case ApprovalTargetType.PROJECT: return this.store.getProject(targetId);
-      case ApprovalTargetType.MILESTONE: return this.store.getMilestone(targetId);
-      case ApprovalTargetType.GOAL: return this.store.getGoal(targetId);
-      case ApprovalTargetType.TASK: return this.store.getTask(targetId);
-      default: return null;
+  authorizeCommand(commandId, expectedCommandVersion, { approvalId = null, mutationId = null } = {}) {
+    if (typeof commandId !== "string" || commandId.trim() === "") {
+      throw new InvariantError("command authorization requires a durable command id");
     }
-  }
+    if (!Number.isInteger(expectedCommandVersion) || expectedCommandVersion < 1) {
+      throw new InvariantError("command authorization requires a positive expected command version");
+    }
 
-  #approvalIfPresent(approvalId) {
-    try {
-      return this.store.getApproval(approvalId);
-    } catch {
-      return null;
-    }
+    // Store owns the semantic transition and re-reads the durable Command and
+    // target. Controller starts no runtime and writes no Effect in G2.
+    return this.store.authorizeControlCommand(
+      commandId,
+      expectedCommandVersion,
+      { approvalId },
+      { mutationId },
+    );
   }
 
   async reconcileGoal(goalId) {
