@@ -116,11 +116,13 @@ CREATE TABLE IF NOT EXISTS attempts (
 );
 
 CREATE TABLE IF NOT EXISTS evidence (
-  id         TEXT PRIMARY KEY,
-  task_id    TEXT NOT NULL,
-  run_id     TEXT NOT NULL,
-  attempt_id TEXT NOT NULL,
-  body       TEXT NOT NULL
+  id          TEXT PRIMARY KEY,
+  task_id     TEXT,
+  run_id      TEXT,
+  attempt_id  TEXT,
+  target_type TEXT,
+  target_id   TEXT,
+  body        TEXT NOT NULL
 );
 
 -- task_id / acceptance revision are real foreign keys because the rules prove
@@ -128,9 +130,18 @@ CREATE TABLE IF NOT EXISTS evidence (
 -- record is allowed to exist and is rejected when something tries to use it, so
 -- both backends keep identical semantics and the lineage rules keep a single
 -- owner (./store.mjs).
+--
+-- task_id / run_id / attempt_id are NULLABLE, and target_type / target_id are
+-- projected beside them, because Evidence and Verification may be about an
+-- aggregate — a Goal or a Milestone — which has no Run and no Attempt at all.
+-- The target columns are deliberately NOT constrained: as with every other loose
+-- column here, a record that the rules would reject must be rejected by the
+-- rules in ./store.mjs, not by one backend's constraints.
 CREATE TABLE IF NOT EXISTS verifications (
   id                 TEXT PRIMARY KEY,
-  task_id            TEXT NOT NULL,
+  task_id            TEXT,
+  target_type        TEXT,
+  target_id          TEXT,
   acceptance_id      TEXT NOT NULL,
   acceptance_version INTEGER NOT NULL,
   body               TEXT NOT NULL,
@@ -159,6 +170,8 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS runs_by_task ON runs (task_id);
 CREATE INDEX IF NOT EXISTS tasks_by_goal ON tasks (goal_id);
 CREATE INDEX IF NOT EXISTS evidence_by_task ON evidence (task_id);
+CREATE INDEX IF NOT EXISTS evidence_by_target ON evidence (target_id);
+CREATE INDEX IF NOT EXISTS verifications_by_target ON verifications (target_id);
 CREATE INDEX IF NOT EXISTS events_by_aggregate ON events (aggregate_id);
 `;
 
@@ -223,19 +236,28 @@ const SHAPES = {
   [Collection.EVIDENCE]: {
     table: "evidence",
     scope: "id",
-    columns: (r) => ({ id: r.id, task_id: r.taskId, run_id: r.runId, attempt_id: r.attemptId }),
-    filters: { id: "id", taskId: "task_id" },
+    columns: (r) => ({
+      id: r.id,
+      task_id: r.taskId ?? null,
+      run_id: r.runId ?? null,
+      attempt_id: r.attemptId ?? null,
+      target_type: r.targetType ?? null,
+      target_id: r.targetId ?? r.taskId ?? null,
+    }),
+    filters: { id: "id", taskId: "task_id", targetId: "target_id" },
   },
   [Collection.VERIFICATION]: {
     table: "verifications",
     scope: "id",
     columns: (r) => ({
       id: r.id,
-      task_id: r.taskId,
+      task_id: r.taskId ?? null,
+      target_type: r.targetType ?? null,
+      target_id: r.targetId ?? r.taskId ?? null,
       acceptance_id: r.acceptanceId,
       acceptance_version: r.acceptanceVersion,
     }),
-    filters: { id: "id", taskId: "task_id" },
+    filters: { id: "id", taskId: "task_id", targetId: "target_id" },
   },
 };
 
@@ -243,6 +265,31 @@ function shapeFor(collection) {
   const shape = SHAPES[collection];
   if (!shape) throw new Error(`unknown collection: ${collection}`);
   return shape;
+}
+
+/**
+ * Evidence and Verification now describe a TARGET, which may be an aggregate
+ * (Goal / Milestone) instead of a Task: their task/run/attempt columns became
+ * nullable and `target_type` / `target_id` were added. `CREATE TABLE IF NOT
+ * EXISTS` cannot change a table that already exists, and SQLite cannot relax a
+ * NOT NULL constraint in place, so a database file written by the earlier shape
+ * is refused HERE — loudly, at open time — instead of failing later with a
+ * confusing "no such column" error the first time parent evidence is written.
+ * v0.1 ships no migration path; this guard is the honest boundary of that choice.
+ */
+function assertCurrentSchema(db) {
+  for (const table of ["evidence", "verifications"]) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name);
+    // No table at all means a new (or empty) file: the schema creates it in the
+    // current shape, so there is nothing to refuse.
+    if (columns.length === 0) continue;
+    if (!columns.includes("target_id")) {
+      throw new Error(
+        `SqliteStore: table ${table} was written before parent acceptance (no target_id column); ` +
+          "this database file uses an older schema and cannot be opened by this version",
+      );
+    }
+  }
 }
 
 // Acceptance revisions are addressed by the composite key `id@version`; every
@@ -263,11 +310,21 @@ export class SqliteStore extends ProjectControlStore {
     super();
     const sqlite = sqliteDriver();
     if (!sqlite) throw new Error(`SqliteStore unavailable: ${SQLITE_REQUIREMENT}`);
-    this.#db = new sqlite.DatabaseSync(file);
-    this.#db.exec("PRAGMA journal_mode = WAL");
-    this.#db.exec("PRAGMA foreign_keys = ON");
-    this.#db.exec(`PRAGMA busy_timeout = ${Number(busyTimeoutMs)}`);
-    this.#db.exec(SCHEMA);
+    const db = new sqlite.DatabaseSync(file);
+    try {
+      db.exec("PRAGMA journal_mode = WAL");
+      db.exec("PRAGMA foreign_keys = ON");
+      db.exec(`PRAGMA busy_timeout = ${Number(busyTimeoutMs)}`);
+      // Checked BEFORE the schema is applied: on a file written by the earlier
+      // shape, `CREATE INDEX ... ON evidence (target_id)` would otherwise fail
+      // first, with a message about a column instead of about the file.
+      assertCurrentSchema(db);
+      db.exec(SCHEMA);
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+    this.#db = db;
   }
 
   // ── Backend primitives ────────────────────────────────────────────────────

@@ -111,6 +111,60 @@ decision in one object, separated by field. `PERSISTENCE_BOUNDARY.md` §7 names
 `AcceptanceContract` and the acceptance decision as separate durable categories,
 so splitting them is the eventual shape — not this prototype's.
 
+A Goal and a Milestone pin a revision the same way, and the store proves that the
+revision is about *that* parent:
+
+```
+Goal.acceptanceId + Goal.acceptanceVersion            → the pinned contract revision
+Milestone.acceptanceId + Milestone.acceptanceVersion  → the pinned contract revision
+acceptance.targetType === the parent's own type
+acceptance.targetId   === the parent's own id
+```
+
+A half-pin is refused: a bare `acceptanceId` is not a revision, and a bare
+`acceptanceVersion` names nothing. This is checked at seed and at every update,
+so a parent can never be stored pointing at a contract that cannot be resolved.
+
+## Parent acceptance (Goal / Milestone)
+
+A parent with an Acceptance Contract is **not** accepted by aggregation. Child
+completion is the input; the decision has to be verified against the pinned
+revision, exactly as it is for a Task:
+
+```
+contract revision → Aggregate Evidence → Verification → Acceptance
+```
+
+1. **Aggregate Evidence.** No runtime produces a Goal, so the Control Plane
+   records its own observation of the children: `target_type`/`target_id`, no
+   task/run/attempt, `sourceRefs` = one ref per child (found through the child's
+   own parent link), and `revision = sha256(canonical child snapshot)`.
+2. **Reuse, not duplication.** The revision is the observation's identity, so a
+   repeated reconcile returns the *same* Evidence and writes no second
+   `evidence.recorded`. When the child state moves, a new record is created and
+   the record it replaces is marked `SUPERSEDED` — never deleted. Idempotency here
+   comes from that identity, **not** from a command id: a command id is durable and
+   its replay returns the evidence it recorded, so reusing one across observations
+   would freeze the parent to its first observation.
+3. **One observation, one verdict.** A verdict recorded for an observation and a
+   contract revision is reused instead of re-asked, which is what makes
+   `reconcile*` idempotent. New observation, new evidence id, new verification.
+4. **Re-proved at the write.** The acceptance re-derives the snapshot inside the
+   same transaction as the status change, so a verification that was legal when
+   recorded cannot accept a parent whose reality has since moved.
+
+Outcomes, and the reasons the Controller reports:
+
+| Result | Action | Reason |
+|---|---|---|
+| PASS, contract pinned | `ACCEPT` | `goal-accepted` / `milestone-completed` |
+| FAIL or INCONCLUSIVE | `WAIT` | `goal-acceptance-not-passed` / `milestone-acceptance-not-passed` |
+| pin unresolvable, contract not about this parent, or children not finished | `WAIT` | `goal-acceptance-unprovable` / `milestone-acceptance-unprovable` |
+| no contract | `SYNC` | the parent status is synchronised from children |
+
+No status is invented for a failed parent acceptance, no Runtime call is made, and
+`PROJECT` has no acceptance flow in v0.1.
+
 ## What v0.1 proves
 
 1. Task and Run are separate.
@@ -125,6 +179,10 @@ so splitting them is the eventual shape — not this prototype's.
    recovery, and `unknown` never repeats external work.
 10. A Task cannot drift onto a newer acceptance contract revision: it executes and
     accepts only against the revision it pinned.
+11. A Goal or a Milestone with its own contract is accepted only through that
+    contract: aggregate evidence is observed from the live children, verified, and
+    re-proved at the acceptance write — child completion alone never completes a
+    contract-bound parent.
 
 ## What v0.1 does NOT prove
 
@@ -141,7 +199,10 @@ so splitting them is the eventual shape — not this prototype's.
 - real agent execution
 - human approval
 - Policy Engine
-- full Goal/Milestone/Project lifecycle
+- Project acceptance against its own contract: `PROJECT` is a declared target type
+  with no v0.1 acceptance flow
+- re-pinning a parent contract revision mid-flight (a revision can be created, but
+  nothing rewrites an existing pin)
 - production-grade transaction atomicity
 
 Those remain later implementation questions.

@@ -416,6 +416,70 @@ test("project: a Project row survives a restart", { skip }, (t) => {
   assert.ok(reopened.getEvents().some((event) => event.type === "project.created"));
 });
 
+test("restart: a parent acceptance written by one process is authoritative in another", { skip }, (t) => {
+  const db = projectFixture(t);
+
+  const written = runChild("parent", db.file);
+  assert.equal(written.code, 0, `child writer failed: ${written.stderr}`);
+  assert.ok(written.payload, "child writer produced no result");
+  assert.equal(written.payload.action, "ACCEPT");
+  assert.equal(written.payload.reason, "goal-accepted");
+  assert.equal(written.payload.goalStatus, GoalStatus.ACCEPTED);
+  assert.equal(written.payload.goalVersion, 2, "the decision moved the goal exactly once");
+  assert.equal(written.payload.contractStatus, "PASSED");
+  assert.match(written.payload.evidenceRevision, /^sha256:[0-9a-f]{64}$/);
+  assert.ok(written.payload.acceptCommandId, "the acceptance recorded its command");
+
+  // a genuinely separate process, started after the first one exited
+  const readBack = runChild("parent-read", db.file, {
+    ...written.payload.ids,
+    acceptCommandId: written.payload.acceptCommandId,
+  });
+  assert.equal(readBack.code, 0, `child reader failed: ${readBack.stderr}`);
+  const seen = readBack.payload;
+
+  assert.equal(seen.goalStatus, GoalStatus.ACCEPTED);
+  assert.equal(seen.contractStatus, "PASSED");
+  assert.equal(seen.evidenceTargetType, "GOAL");
+  assert.equal(seen.evidenceTargetId, "goal-1");
+  assert.equal(seen.evidenceTaskId, null, "aggregate evidence has no task lineage");
+  assert.equal(seen.evidenceRunId, null);
+  assert.equal(
+    seen.reobservedId,
+    written.payload.evidenceId,
+    "the same children produce the same observation id in another process",
+  );
+  assert.equal(seen.replayedVersion, 2, "a replayed acceptance command does not accept twice");
+  assert.equal(seen.acceptedEvents, 1);
+  assert.equal(seen.eventCount, written.payload.eventCount, "a reuse and a replay write nothing");
+});
+
+test("schema: a database file written before parent acceptance is refused at open", { skip }, (t) => {
+  const db = projectFixture(t);
+  const store = db.open();
+  seedBase(store);
+  store.close();
+
+  // Rebuild `evidence` the way the earlier version wrote it: no target columns.
+  const sqlite = createRequire(import.meta.url)("node:sqlite");
+  const raw = new sqlite.DatabaseSync(db.file);
+  raw.exec("ALTER TABLE evidence RENAME TO evidence_previous");
+  raw.exec(
+    "CREATE TABLE evidence (id TEXT PRIMARY KEY, task_id TEXT NOT NULL, run_id TEXT NOT NULL, " +
+      "attempt_id TEXT NOT NULL, body TEXT NOT NULL)",
+  );
+  raw.exec(
+    "INSERT INTO evidence (id, task_id, run_id, attempt_id, body) " +
+      "SELECT id, task_id, run_id, attempt_id, body FROM evidence_previous",
+  );
+  raw.exec("DROP TABLE evidence_previous");
+  raw.close();
+
+  // Refused loudly at open time — never later as "no such column: target_id",
+  // and never by silently ignoring the rows that lack the new columns.
+  assert.throws(() => db.open(), /older schema and cannot be opened by this version/);
+});
+
 test("K: a PASS verification whose evidence goes STALE in the database cannot accept, after a restart", { skip }, (t) => {
   const db = projectFixture(t);
   const store = db.open();

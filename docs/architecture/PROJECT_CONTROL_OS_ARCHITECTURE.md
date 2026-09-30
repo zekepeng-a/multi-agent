@@ -346,15 +346,26 @@ Purpose: bounded stage inside a Roadmap.
 ```yaml
 id: MilestoneId
 roadmap_id: RoadmapId
+project_id: ProjectId
 version: integer
 name: string
 description: string
 status: DRAFT | READY | IN_PROGRESS | COMPLETED | BLOCKED | CANCELLED
 goal_ids: GoalId[]
 acceptance_id: AcceptanceId?
+acceptance_version: integer?
 created_at: timestamp
 updated_at: timestamp
 ```
+
+A Milestone that declares an `acceptance_id` also pins `acceptance_version`: the
+pair names one concrete contract revision, exactly as it does for a Task. See
+*Parent acceptance* under Goal (5.4).
+
+In v0.1 the milestone also states its `project_id` explicitly. Roadmap has no
+lifecycle yet, so the project a milestone belongs to is a fact recorded on the
+milestone itself rather than derived through a roadmap — the same
+child-side-link rule every other relationship follows.
 
 ---
 
@@ -374,9 +385,45 @@ description: string
 status: DRAFT | READY | IN_PROGRESS | BLOCKED | ACCEPTED | REJECTED | CANCELLED
 task_ids: TaskId[]
 acceptance_id: AcceptanceId?
+acceptance_version: integer?
 created_at: timestamp
 updated_at: timestamp
 ```
+
+### Parent acceptance (v0.1)
+
+A Goal and a Milestone may carry their own Acceptance Contract. When one does, the
+parent may **not** be accepted by aggregation:
+
+```text
+Task acceptance  →  the children are ACCEPTED  →  parent acceptance
+                                                (its own contract, not the sum)
+```
+
+Child completion is the **input** to the parent's acceptance, never the decision.
+Without a contract, "every child is accepted" is a derived summary and the
+Controller may write it directly. With a contract, the same observation is only a
+claim to be verified, and the flow is the task flow one level up:
+
+```text
+pinned contract revision → Aggregate Evidence → Verification → Acceptance
+```
+
+Consequences recorded for v0.1:
+
+- The pin is a fact about **that** parent: `acceptance_id` names a contract, the
+  `(acceptance_id, acceptance_version)` pair names one revision of it, and the
+  revision must target that record's own type and id. A Goal pinning a Milestone
+  contract, or another Goal's contract, is refused at seed and at update.
+- Both halves of the pin are required. A bare `acceptance_id` is not a revision,
+  and a bare `acceptance_version` names nothing.
+- `PROJECT` is a declared target type with **no v0.1 acceptance flow**: Project
+  status is still only ever completed by observing completed milestones.
+- A parent in a terminal state, or in `BLOCKED`, is never accepted by contract —
+  the same source-state whitelist rule as a Task (`READY`, `IN_PROGRESS`).
+- The acceptance write moves the parent's status and the contract's decision in
+  one transaction, recording the lifecycle event for the status reached
+  (`goal.accepted`, `milestone.completed`).
 
 ---
 
@@ -463,6 +510,16 @@ Contract identity is the pair `(id, version)`. Contract **content** (`criteria`,
 one identity must never be reused for different content. `status` is the
 acceptance **decision** state, not contract content: `PENDING → PASSED` is not a
 contract revision change.
+
+`target_type` makes a contract unambiguous about what it is about. A Task
+contract is bound at creation; a Goal or Milestone contract is bound by the
+parent's own pin, and the revision must target that record's type and id — so one
+contract id can never be read as covering a task **and** a goal. In v0.1 only
+`TASK`, `GOAL` and `MILESTONE` have an acceptance flow; `PROJECT` is defined but
+not yet reachable.
+
+A content fingerprint is stored beside every revision and re-checked on every
+resolution, so a revision edited in place fails closed instead of being trusted.
 
 ---
 
@@ -591,6 +648,39 @@ revision it is bound to. Evidence created for a different
 `(acceptance_id, acceptance_version)` cannot support a PASS verification for
 this Task.
 
+### Aggregate Evidence
+
+A Goal or a Milestone does not "run", so nothing external can produce evidence
+about it. Its evidence is the Control Plane's **own observation** of the
+authoritative child state, recorded in the same collection:
+
+```text
+Aggregate Evidence
+  target_type / target_id   → the Goal or Milestone observed
+  task_id / run_id / attempt_id = null
+  acceptance_id + acceptance_version → the revision the target pins
+  source_refs               → one ref per child: id, version, status, contract pin
+  revision                  → sha256 of the canonical child snapshot
+```
+
+- Children are found through the **child's own parent link** (`Task.goalId`,
+  `Goal.milestoneId`); the aggregate's cached `task_ids` / `goal_ids` are never
+  consulted. A snapshot taken from a stale cache would be evidence about a list,
+  not about the project.
+- The **revision is the observation's identity**. The same child state always
+  yields the same revision and therefore the same Evidence record: one
+  observation, one record, no duplicate `evidence.recorded` on a repeated
+  reconcile.
+- When the child state moves, the new observation is a **new** record, and the
+  record it replaces is marked `SUPERSEDED` — never deleted. Historical evidence
+  stays readable, so a verification built on it can be seen to be stale.
+- Observation fails closed: an aggregate with no children, or with even one child
+  that has not reached its finished state, has no finished observation to record.
+- Before a parent acceptance is written, the snapshot is re-derived from live
+  records and must still match the evidence revision. **Current Reality outranks
+  Historical Evidence**: a verification may be well-formed and still unable to
+  accept, because the state it describes is gone.
+
 Agent claim:
 
 ```text"done"
@@ -614,6 +704,9 @@ Purpose: evaluate Evidence against Acceptance criteria.
 
 ```yaml
 id: VerificationId
+target_type: TASK | GOAL | MILESTONE
+target_id: string
+task_id: TaskId?
 evidence_ids: EvidenceId[]
 acceptance_id: AcceptanceId
 acceptance_version: integer
@@ -631,6 +724,19 @@ created_at: timestamp
 ```
 
 Verification produces a verdict; it does not directly replace Project State.
+
+A verification is about one target, and the target decides how it is proved:
+
+- `TASK` verification: `task_id` is required, and the whole
+  `Task ← Run ← Attempt ← Evidence` lineage is re-proved against the task the
+  verification declares — and again against the task actually being accepted.
+- `GOAL` / `MILESTONE` verification: no `task_id` at all. What replaces lineage is
+  the snapshot identity: the evidence must belong to that target, must carry no
+  Run or Attempt, must be of the revision the target pins, and must still
+  describe the current child state.
+
+`revision` must equal the revision of the evidence the verification reads, so a
+verdict can never be attached to a different observation than the one it names.
 
 ---
 
@@ -991,6 +1097,23 @@ VERIFYING → REJECTED
 
 Accepted results can later become STALE / INVALIDATED if their basis is no longer valid.
 
+### Parent acceptance (Goal / Milestone)
+
+```text
+children finished
+  ↓
+Aggregate Evidence (snapshot revision = identity)
+  ↓
+Verification of that observation
+  ↓
+PASS → ACCEPTED (Goal) / COMPLETED (Milestone)
+  └ not PASS → no transition; the parent stays open and the case is reported
+```
+
+The parent's decision and its contract revision move in one transaction. Without
+a contract there is no acceptance decision at all: the parent's status is simply
+synchronised from its children.
+
 ## Effect
 
 ```text
@@ -1057,6 +1180,10 @@ I-32 A Run may have multiple Attempts without becoming multiple Tasks.
 I-33 Verification evaluates evidence; it does not itself become Project State.
 I-34 A command must not silently overwrite a newer authoritative version.
 I-35 Historical Events are not rewritten to repair current state.
+I-36 Child completion is not parent acceptance; a parent with its own contract is accepted only through that contract.
+I-37 Aggregate Evidence is an observation with an identity: one snapshot, one record, and a superseded record is history, never garbage.
+I-38 Evidence that no longer describes current reality cannot carry an acceptance.
+I-39 A parent's contract pin is a fact about that parent: the revision must target its own type and id, and both halves of the pin are required.
 ```
 
 ---
@@ -1422,6 +1549,19 @@ Project
  ├── Memory
  └── ContextCapsule
 ```
+
+The same chain exists one and two levels up, with aggregate evidence standing in
+for the runtime product a parent never has:
+
+```text
+Task  → Evidence(run/attempt)      → Verification → Task.accepted
+Goal  → Evidence(child snapshot)   → Verification → Goal.accepted
+Milestone → Evidence(goal snapshot) → Verification → Milestone.completed
+```
+
+`Goal` and `Milestone` may each carry their own Acceptance Contract. A parent that
+declares none is still a derived summary of its children; a parent that declares
+one is a decision that has to be proved.
 
 Control path:
 
@@ -1872,6 +2012,19 @@ Verification.acceptance_id + Verification.acceptance_version  →  the same revi
   bound to the revision it was created against.
 - Acceptance is evaluated against that pinned revision, never against the newest
   one.
+
+A Goal or a Milestone pins a contract revision the same way, and its evidence is
+an observation of its own children rather than a Runtime product:
+
+```text
+Goal.acceptance_id + Goal.acceptance_version        →  that revision
+Milestone.acceptance_id + Milestone.acceptance_version →  that revision
+Evidence.source_refs (child snapshot)               →  the observed children
+```
+
+- A parent contract revision must target that parent's own type and id.
+- A revised contract does not re-open an accepted decision, and a newer revision
+  does not move an existing pin.
 
 ### Project State authority boundary
 

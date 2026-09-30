@@ -20,6 +20,7 @@ import { Controller } from "../../project-control/controller.mjs";
 import { FakeRuntime } from "../../project-control/fake-runtime.mjs";
 import { FakeVerifier } from "../../project-control/fake-verifier.mjs";
 import {
+  AcceptanceTargetType,
   GoalStatus,
   MilestoneStatus,
   ProjectStatus,
@@ -61,10 +62,10 @@ const BACKENDS = [
 
 // ── backend-agnostic fixtures ────────────────────────────────────────────────
 
-function makeController(store) {
+function makeController(store, { verdict = VerificationVerdict.PASS } = {}) {
   let n = 0;
   const runtime = new FakeRuntime({ mode: "success" });
-  const verifier = new FakeVerifier({ verdict: VerificationVerdict.PASS });
+  const verifier = new FakeVerifier({ verdict });
   const controller = new Controller({
     store,
     runtime,
@@ -74,12 +75,29 @@ function makeController(store) {
   return { controller, runtime, verifier };
 }
 
+/**
+ * Seeds a parent's own Acceptance Contract and returns the pin the parent has to
+ * carry. The contract is seeded FIRST, because a Goal or a Milestone that pins a
+ * revision is validated at seed time — a pin that names a revision which does not
+ * exist (or is about another aggregate) fails closed instead of being stored.
+ */
+function seedParentContract(store, { id, targetType, targetId, version = 1 }) {
+  store.seedAcceptance(createAcceptance({
+    id,
+    targetType,
+    targetId,
+    version,
+    criteria: [{ id: "aggregate", type: "AGGREGATE", required: true }],
+  }));
+  return { acceptanceId: id, acceptanceVersion: version };
+}
+
 function seedHierarchy(store, {
   projectStatus = ProjectStatus.ACTIVE,
   milestoneStatus = MilestoneStatus.READY,
   goalStatus = GoalStatus.READY,
-  milestoneAcceptanceId = null,
-  goalAcceptanceId = null,
+  milestoneAcceptance = null,
+  goalAcceptance = null,
   goalIds = ["goal-1"],
   taskIds = [],
   withMilestone = true,
@@ -87,15 +105,31 @@ function seedHierarchy(store, {
 } = {}) {
   store.seedProject(createProject({ id: "project-1", name: "Hierarchy project", status: projectStatus }));
   if (!withMilestone) return;
+  const milestonePin = milestoneAcceptance
+    ? seedParentContract(store, {
+        id: milestoneAcceptance.id,
+        version: milestoneAcceptance.version,
+        targetType: AcceptanceTargetType.MILESTONE,
+        targetId: "ms-1",
+      })
+    : { acceptanceId: null, acceptanceVersion: null };
   store.seedMilestone(createMilestone({
     id: "ms-1",
     projectId: "project-1",
     name: "Milestone 1",
     status: milestoneStatus,
     goalIds,
-    acceptanceId: milestoneAcceptanceId,
+    ...milestonePin,
   }));
   if (!withGoal) return;
+  const goalPin = goalAcceptance
+    ? seedParentContract(store, {
+        id: goalAcceptance.id,
+        version: goalAcceptance.version,
+        targetType: AcceptanceTargetType.GOAL,
+        targetId: "goal-1",
+      })
+    : { acceptanceId: null, acceptanceVersion: null };
   store.seedGoal(createGoal({
     id: "goal-1",
     projectId: "project-1",
@@ -103,7 +137,7 @@ function seedHierarchy(store, {
     title: "Goal 1",
     status: goalStatus,
     taskIds,
-    acceptanceId: goalAcceptanceId,
+    ...goalPin,
   }));
 }
 
@@ -239,13 +273,33 @@ const GOAL_CASES = [
     reason: "goal-blocked-awaiting-resolution",
   },
   {
-    label: "E/H a goal with its own acceptance contract does not fake acceptance",
+    label: "E/H a goal with its own contract is accepted through that contract",
     goal: GoalStatus.IN_PROGRESS,
     tasks: [TaskStatus.ACCEPTED, TaskStatus.ACCEPTED],
-    goalAcceptanceId: "acceptance-1",
+    goalAcceptance: { id: "acceptance-goal", version: 1 },
+    action: "ACCEPT",
+    status: GoalStatus.ACCEPTED,
+    reason: "goal-accepted",
+  },
+  {
+    label: "H a goal whose contract is not verified stays open",
+    goal: GoalStatus.IN_PROGRESS,
+    tasks: [TaskStatus.ACCEPTED, TaskStatus.ACCEPTED],
+    goalAcceptance: { id: "acceptance-goal", version: 1 },
+    verdict: VerificationVerdict.FAIL,
     action: "WAIT",
     status: GoalStatus.IN_PROGRESS,
-    reason: "goal-acceptance-required",
+    reason: "goal-acceptance-not-passed",
+  },
+  {
+    label: "H a goal whose contract is inconclusive stays open",
+    goal: GoalStatus.IN_PROGRESS,
+    tasks: [TaskStatus.ACCEPTED, TaskStatus.ACCEPTED],
+    goalAcceptance: { id: "acceptance-goal", version: 1 },
+    verdict: VerificationVerdict.INCONCLUSIVE,
+    action: "WAIT",
+    status: GoalStatus.IN_PROGRESS,
+    reason: "goal-acceptance-not-passed",
   },
 ];
 
@@ -333,13 +387,33 @@ const MILESTONE_CASES = [
     reason: "milestone-blocked-awaiting-resolution",
   },
   {
-    label: "O a milestone with its own acceptance contract does not fake completion",
+    label: "O a milestone with its own contract is completed through that contract",
     milestone: MilestoneStatus.IN_PROGRESS,
     goals: [GoalStatus.ACCEPTED],
-    milestoneAcceptanceId: "acceptance-1",
+    milestoneAcceptance: { id: "acceptance-ms", version: 1 },
+    action: "ACCEPT",
+    status: MilestoneStatus.COMPLETED,
+    reason: "milestone-completed",
+  },
+  {
+    label: "O a milestone whose contract is not verified stays open",
+    milestone: MilestoneStatus.IN_PROGRESS,
+    goals: [GoalStatus.ACCEPTED],
+    milestoneAcceptance: { id: "acceptance-ms", version: 1 },
+    verdict: VerificationVerdict.FAIL,
     action: "WAIT",
     status: MilestoneStatus.IN_PROGRESS,
-    reason: "milestone-acceptance-required",
+    reason: "milestone-acceptance-not-passed",
+  },
+  {
+    label: "O a milestone whose contract is inconclusive stays open",
+    milestone: MilestoneStatus.IN_PROGRESS,
+    goals: [GoalStatus.ACCEPTED],
+    milestoneAcceptance: { id: "acceptance-ms", version: 1 },
+    verdict: VerificationVerdict.INCONCLUSIVE,
+    action: "WAIT",
+    status: MilestoneStatus.IN_PROGRESS,
+    reason: "milestone-acceptance-not-passed",
   },
 ];
 
@@ -410,9 +484,12 @@ for (const backend of BACKENDS) {
   for (const testCase of GOAL_CASES) {
     test(`${name} goal ${testCase.label}`, { skip }, async (t) => {
       const store = backend.make(t);
-      seedHierarchy(store, { goalStatus: testCase.goal, goalAcceptanceId: testCase.goalAcceptanceId ?? null });
+      seedHierarchy(store, {
+        goalStatus: testCase.goal,
+        goalAcceptance: testCase.goalAcceptance ?? null,
+      });
       seedGoalTasks(store, testCase.tasks);
-      const { controller, runtime } = makeController(store);
+      const { controller, runtime } = makeController(store, { verdict: testCase.verdict });
 
       const result = await controller.reconcileGoal("goal-1");
 
@@ -422,11 +499,12 @@ for (const backend of BACKENDS) {
       assert.equal(store.getGoal("goal-1").status, testCase.status);
       assert.equal(runtime.started.length, 0, "parent reconciliation never executes work");
       assert.equal(store.getRunsForTask("task-1").length, 0, "no Run may be created");
-      // a WAIT/NOOP never churns the aggregate; a SYNC writes exactly once
-      assert.equal(store.getGoal("goal-1").version, testCase.action === "SYNC" ? 2 : 1, "version churn");
+      // a WAIT/NOOP never churns the aggregate; SYNC and ACCEPT write exactly once
+      const wrote = testCase.action === "SYNC" || testCase.action === "ACCEPT";
+      assert.equal(store.getGoal("goal-1").version, wrote ? 2 : 1, "version churn");
       assert.equal(
         eventCount(store, "goal.updated") + eventCount(store, "goal.accepted"),
-        testCase.action === "SYNC" ? 1 : 0,
+        wrote ? 1 : 0,
         "no redundant goal event",
       );
     });
@@ -438,7 +516,7 @@ for (const backend of BACKENDS) {
       const goalIds = testCase.goals.map((_status, index) => `goal-${index + 1}`);
       seedHierarchy(store, {
         milestoneStatus: testCase.milestone,
-        milestoneAcceptanceId: testCase.milestoneAcceptanceId ?? null,
+        milestoneAcceptance: testCase.milestoneAcceptance ?? null,
         goalIds,
         withGoal: testCase.goals.length > 0,
       });
@@ -455,7 +533,7 @@ for (const backend of BACKENDS) {
           }));
         }
       });
-      const { controller, runtime } = makeController(store);
+      const { controller, runtime } = makeController(store, { verdict: testCase.verdict });
 
       const result = await controller.reconcileMilestone("ms-1");
 
@@ -464,10 +542,11 @@ for (const backend of BACKENDS) {
       assert.equal(result.milestone.status, testCase.status, testCase.label);
       assert.equal(store.getMilestone("ms-1").status, testCase.status);
       assert.equal(runtime.started.length, 0, "parent reconciliation never executes work");
-      assert.equal(store.getMilestone("ms-1").version, testCase.action === "SYNC" ? 2 : 1, "version churn");
+      const wroteMilestone = testCase.action === "SYNC" || testCase.action === "ACCEPT";
+      assert.equal(store.getMilestone("ms-1").version, wroteMilestone ? 2 : 1, "version churn");
       assert.equal(
         eventCount(store, "milestone.updated") + eventCount(store, "milestone.completed"),
-        testCase.action === "SYNC" ? 1 : 0,
+        wroteMilestone ? 1 : 0,
         "no redundant milestone event",
       );
     });

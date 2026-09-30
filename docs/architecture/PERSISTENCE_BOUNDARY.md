@@ -187,6 +187,7 @@ All of the following are covered by `tests/integration/persistence.test.mjs` and
 | Command idempotency | durable `commands(command_id, operation, result_id)`: a replayed command returns the recorded result and performs no second mutation — including after a restart |
 | Contract revision pinning | `acceptance_revisions` is keyed by `(id, version)`, so both revisions coexist; a Task keeps the revision it was created with; content fingerprints live in a separate table, so contract content edited in place fails closed on read |
 | Evidence lineage | Run / Attempt / Evidence / Verification rows keep the identity the rules re-prove on every use, and the lineage is re-provable from durable rows alone |
+| Parent acceptance on disk | Evidence and Verification carry `target_type` / `target_id` beside nullable `task_id` / `run_id` / `attempt_id`, so an **aggregate observation** is a first-class durable row with no Runtime lineage. The child snapshot and its `sha256` revision live in the record, so the same observation is re-derived identically in a later process, and a parent acceptance replayed there performs no second mutation |
 | Reconciliation history | a blocked Run and its LOST Attempt remain as history after recovery, across restarts |
 | Restart proof | a test writes state in **process A**, lets it exit, and reads it back in **process B** — not a second store object inside one process |
 | Backend contract | one behaviour suite runs against MemoryStore and SqliteStore, so a future backend must satisfy the same contract without touching the Controller tests |
@@ -199,7 +200,7 @@ Explicitly **not** proven by this spike:
 - multi-host locking — WAL plus `busy_timeout` only orders writers on one host
 - production backup, restore, or point-in-time recovery strategy
 - operational recovery: runbooks, on-call procedures, disaster recovery
-- a migration system: the schema is `CREATE TABLE IF NOT EXISTS`, so a schema change is currently a manual step
+- a migration system: the schema is `CREATE TABLE IF NOT EXISTS`, so a schema change is currently a manual step. Parent acceptance made that concrete — `task_id` / `run_id` / `attempt_id` became nullable and `target_type` / `target_id` were added, which SQLite cannot apply in place. A database file written by the earlier shape is therefore **refused at open time** with an explicit message, rather than failing later with a confusing `no such column: target_id`. That is a loud boundary, not a migration path
 - high-volume performance: state rows carry a JSON `body`, so a growing table is scanned rather than queried by index
 - artifact metadata (`sha256` / `size` / `media_type`): artifact **payloads** never enter SQLite — only references inside the records — but those metadata columns are not yet part of the domain model
 - the engine declaration: `node:sqlite` needs Node ≥ 22.5, so `package.json`'s `>=20` is inaccurate for the persistent store. It was deliberately left unchanged rather than adjusted as a side effect of this spike

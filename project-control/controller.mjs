@@ -2,11 +2,13 @@ import {
   AttemptStatus,
   EvidenceStatus,
   GoalStatus,
+  InvariantError,
   MilestoneStatus,
   ProjectStatus,
   ReconcileOutcome,
   RunStatus,
   TaskStatus,
+  VerificationVerdict,
   createAttempt,
   createEvidence,
   createRun,
@@ -331,10 +333,15 @@ export class Controller {
   // ── Lifecycle reconciliation: Project → Milestone → Goal → Task ───────────
   //
   // These three methods only OBSERVE children and synchronise the parent's
-  // Project Control state. They never call runtime.start(), never create a Run,
-  // Attempt or Evidence, and never call reconcileTask — "parent lifecycle sync"
-  // and "task execution scheduling" stay two separate layers. A parent can
-  // therefore only ever move because state below it already exists.
+  // Project Control state. They never call runtime.start(), never create a Run or
+  // an Attempt, and never call reconcileTask — "parent lifecycle sync" and "task
+  // execution scheduling" stay two separate layers. A parent can therefore only
+  // ever move because state below it already exists.
+  //
+  // The ONE record a parent may create is the Aggregate Evidence of its own
+  // children (see #acceptParent): an observation the Control Plane makes about
+  // records it already owns, not a Runtime product, and not a reason to start
+  // anything.
   //
   // RELATIONSHIP AUTHORITY: membership always comes from the child's explicit
   // parent link (`Task.goalId`, `Goal.milestoneId`, `Milestone.projectId`).
@@ -348,8 +355,8 @@ export class Controller {
   // would let a child's later recovery silently overturn a recorded decision.
   //
   // Actions: SYNC (a transition was written), NOOP (already in the target state,
-  // or a terminal state that must not be reversed) and WAIT (no rule settles the
-  // case, with a reason).
+  // or a terminal state that must not be reversed), ACCEPT (an acceptance
+  // decision was written) and WAIT (no rule settles the case, with a reason).
 
   /**
    * Applies one lifecycle transition through the store — never by writing the
@@ -370,6 +377,125 @@ export class Controller {
         ? this.store.updateMilestone(record.id, record.version, patch, { commandId })
         : this.store.updateGoal(record.id, record.version, patch, { commandId });
     return { action: "SYNC", record: updated };
+  }
+
+  /**
+   * Parent acceptance: the ONLY way a Goal or a Milestone that declares an
+   * Acceptance Contract may be accepted.
+   *
+   * Without a contract, an aggregate whose children have all finished is a
+   * derived summary, and the Controller may write it directly (the `#syncStatus`
+   * path). With a contract, the same observation is not a decision: something has
+   * to be VERIFIED against the contract revision the parent pinned, and the
+   * verification has to be about evidence of this parent's actual children.
+   *
+   * The flow mirrors the task-level flow exactly, one level up:
+   *
+   *   contract revision → Aggregate Evidence → Verification → Acceptance
+   *
+   * 1. the pinned revision is resolved (a bare acceptanceId is not a revision);
+   * 2. Aggregate Evidence is created or reused from the live child records — the
+   *    Control Plane's own observation, since no runtime produces a Goal;
+   * 3. one verdict is recorded per observation: an existing PASS for the same
+   *    evidence and contract revision is reused rather than re-asked, so a
+   *    repeated reconcile does not accumulate duplicate verification facts;
+   * 4. only a PASS reaches the store's acceptance write, which re-proves the
+   *    whole chain — target, contract revision, evidence currency — before the
+   *    status change.
+   *
+   * Anything that cannot be proven is reported as WAIT with a reason. Nothing is
+   * inferred, no status is invented, and no Runtime call is made: this is a
+   * decision about records that already exist.
+   */
+  #acceptParent({ collection, target, context }) {
+    const noun = collection === Collection.GOAL ? "goal" : "milestone";
+    const observed = { ...context, [noun]: target };
+
+    let acceptance;
+    let evidence;
+    try {
+      acceptance = this.store.getAcceptance(target.acceptanceId, target.acceptanceVersion);
+      // NO command id here on purpose. This operation is idempotent by the
+      // observation's OWN identity (same child state → same Evidence), whereas a
+      // command id is durable and its replay returns the evidence it recorded —
+      // so a per-target command id would freeze the first observation forever and
+      // make a re-observation after a child change impossible.
+      evidence = this.store.ensureAggregateEvidence(collection, target.id);
+    } catch (error) {
+      // An unpinned revision, a contract that is not about this parent, or a
+      // child set that is not actually finished: the case is unprovable, and an
+      // unprovable acceptance waits instead of being approximated.
+      if (!(error instanceof InvariantError)) throw error;
+      return { action: "WAIT", reason: `${noun}-acceptance-unprovable`, ...observed };
+    }
+
+    const verification = this.#aggregateVerdict({ target, acceptance, evidence });
+    if (verification.verdict !== VerificationVerdict.PASS) {
+      return {
+        action: "WAIT",
+        reason: `${noun}-acceptance-not-passed`,
+        ...observed,
+        evidence,
+        verification,
+      };
+    }
+
+    const current = collection === Collection.GOAL
+      ? this.store.getGoal(target.id)
+      : this.store.getMilestone(target.id);
+    // The write re-proves everything inside one transaction; passing the version
+    // read here makes a concurrent change a conflict rather than an overwrite.
+    const accepted = collection === Collection.GOAL
+      ? this.store.acceptGoal(current.id, current.version, {
+          verificationId: verification.id,
+          commandId: `accept:${collection}:${current.id}:${verification.id}`,
+        })
+      : this.store.completeMilestone(current.id, current.version, {
+          verificationId: verification.id,
+          commandId: `accept:${collection}:${current.id}:${verification.id}`,
+        });
+
+    return {
+      action: "ACCEPT",
+      reason: collection === Collection.GOAL ? "goal-accepted" : "milestone-completed",
+      ...context,
+      [noun]: accepted,
+      evidence,
+      verification,
+    };
+  }
+
+  /**
+   * One observation, one verdict.
+   *
+   * A verdict is a fact about a specific observation of a specific contract
+   * revision, so re-asking the verifier for evidence that has not changed would
+   * add a second verification of the same thing without adding information.
+   * Reuse is also what makes `reconcile*` idempotent. A recorded FAIL or
+   * INCONCLUSIVE is reused too: the observation is the same, so the verdict is
+   * the same, and repeating the call must not manufacture a different one. A new
+   * observation (the child state moved) is new evidence with a new id, and gets
+   * its own verification.
+   *
+   * The store re-proves a reused verification against current state at acceptance
+   * time, so reuse can never launder a stale verdict into an acceptance.
+   */
+  #aggregateVerdict({ target, acceptance, evidence }) {
+    const recorded = this.store
+      .getVerificationsForTarget(target.id)
+      .filter(
+        (verification) =>
+          verification.acceptanceId === acceptance.id &&
+          verification.acceptanceVersion === acceptance.version &&
+          verification.evidenceIds?.includes(evidence.id),
+      );
+    const passed = recorded.find((verification) => verification.verdict === VerificationVerdict.PASS);
+    if (passed) return passed;
+    if (recorded.length) return recorded[recorded.length - 1];
+
+    const verification = this.verifier.verify({ acceptance, evidence, target });
+    this.store.recordVerification(verification);
+    return verification;
   }
 
   async reconcileGoal(goalId) {
@@ -403,10 +529,14 @@ export class Controller {
 
     if (statuses.every((status) => status === TaskStatus.ACCEPTED)) {
       if (goal.acceptanceId != null) {
-        // A Goal-level acceptance contract is out of scope for this round.
-        // Aggregating child completion into an ACCEPTED Goal would fake the
-        // contract-bound acceptance of I-27/I-28, so it fails closed instead.
-        return { action: "WAIT", reason: "goal-acceptance-required", goal, tasks };
+        // A Goal with a contract is not accepted by aggregation: child
+        // completion is the INPUT to acceptance, never the decision. The Goal
+        // is accepted only through its own contract-bound flow.
+        return this.#acceptParent({
+          collection: Collection.GOAL,
+          target: goal,
+          context: { tasks },
+        });
       }
       const sync = this.#syncStatus(Collection.GOAL, goal, GoalStatus.ACCEPTED);
       return { action: sync.action, reason: "goal-accepted", goal: sync.record, tasks };
@@ -466,7 +596,13 @@ export class Controller {
 
     if (statuses.every((status) => status === GoalStatus.ACCEPTED)) {
       if (milestone.acceptanceId != null) {
-        return { action: "WAIT", reason: "milestone-acceptance-required", milestone, goals, synced };
+        // Same rule one level up: all goals accepted is the input to the
+        // milestone's own contract-bound acceptance, not the decision itself.
+        return this.#acceptParent({
+          collection: Collection.MILESTONE,
+          target: milestone,
+          context: { goals, synced },
+        });
       }
       const sync = this.#syncStatus(Collection.MILESTONE, milestone, MilestoneStatus.COMPLETED);
       return { action: sync.action, reason: "milestone-completed", milestone: sync.record, goals, synced };

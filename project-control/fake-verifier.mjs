@@ -1,4 +1,4 @@
-import { VerificationVerdict, createVerification } from "./domain.mjs";
+import { AcceptanceTargetType, VerificationVerdict, createVerification } from "./domain.mjs";
 
 export class FakeVerifier {
   constructor({ verdict = VerificationVerdict.PASS } = {}) {
@@ -11,11 +11,21 @@ export class FakeVerifier {
     this.sequence = 0;
   }
 
-  verify({ acceptance, evidence, task }) {
+  /**
+   * A verdict is about the TARGET of the evidence, and the evidence states what
+   * it is about. A task-level verification therefore names the task, and an
+   * aggregate (Goal / Milestone) verification names the aggregate and carries no
+   * task at all — the store re-proves both shapes against the live records.
+   */
+  verify({ acceptance, evidence, task = null, target = null }) {
     this.sequence += 1;
+    const targetType = evidence.targetType ?? AcceptanceTargetType.TASK;
+    const taskId = targetType === AcceptanceTargetType.TASK ? (task?.id ?? target?.id) : null;
     return createVerification({
       id: `verification-${evidence.id}-${this.sequence}`,
-      taskId: task.id,
+      targetType,
+      targetId: evidence.targetId ?? taskId,
+      taskId,
       acceptanceId: acceptance.id,
       acceptanceVersion: acceptance.version,
       evidenceIds: [evidence.id],

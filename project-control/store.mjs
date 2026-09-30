@@ -8,7 +8,9 @@
 // A backend must implement the primitives in the "Backend primitives" block
 // below; everything after it is shared behaviour.
 
+import { createHash } from "node:crypto";
 import {
+  AcceptanceTargetType,
   EvidenceStatus,
   ConflictError,
   InvariantError,
@@ -18,6 +20,7 @@ import {
   TaskStatus,
   RunStatus,
   AttemptStatus,
+  createEvidence,
   now,
 } from "./domain.mjs";
 
@@ -43,6 +46,60 @@ const LIFECYCLE_EVENT_TYPES = Object.freeze({
   [Collection.MILESTONE]: Object.freeze({ [MilestoneStatus.COMPLETED]: "milestone.completed" }),
   [Collection.PROJECT]: Object.freeze({ [ProjectStatus.COMPLETED]: "project.completed" }),
 });
+
+// ── Parent acceptance vocabulary ─────────────────────────────────────────────
+// A parent aggregate (Goal, Milestone) may declare its own Acceptance Contract.
+// Its evidence is an AGGREGATE observation of the authoritative child state, not
+// a Runtime product, so the collections below map onto acceptance target types,
+// child "finished" statuses and the status the parent reaches on success.
+
+const ACCEPTANCE_TARGET_TYPE_BY_COLLECTION = Object.freeze({
+  [Collection.GOAL]: AcceptanceTargetType.GOAL,
+  [Collection.MILESTONE]: AcceptanceTargetType.MILESTONE,
+});
+
+const COLLECTION_BY_ACCEPTANCE_TARGET_TYPE = Object.freeze({
+  [AcceptanceTargetType.GOAL]: Collection.GOAL,
+  [AcceptanceTargetType.MILESTONE]: Collection.MILESTONE,
+});
+
+const ACCEPTED_CHILD_STATUS = Object.freeze({
+  [Collection.GOAL]: TaskStatus.ACCEPTED,
+  [Collection.MILESTONE]: GoalStatus.ACCEPTED,
+});
+
+const ACCEPTED_TARGET_STATUS = Object.freeze({
+  [Collection.GOAL]: GoalStatus.ACCEPTED,
+  [Collection.MILESTONE]: MilestoneStatus.COMPLETED,
+});
+
+/** Parent acceptance may only be taken while the parent's outcome is open. */
+const ACCEPTABLE_SOURCE_AGGREGATE_STATES = Object.freeze({
+  [Collection.GOAL]: Object.freeze([GoalStatus.READY, GoalStatus.IN_PROGRESS]),
+  [Collection.MILESTONE]: Object.freeze([MilestoneStatus.READY, MilestoneStatus.IN_PROGRESS]),
+});
+
+const CHILD_REF_TYPE = Object.freeze({
+  [Collection.GOAL]: "TASK_ACCEPTANCE",
+  [Collection.MILESTONE]: "GOAL_ACCEPTANCE",
+});
+
+/**
+ * Deterministic JSON: object keys are sorted, so two structurally equal snapshots
+ * always serialize to the same bytes regardless of insertion order.
+ */
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+function snapshotRevision(snapshot) {
+  return `sha256:${createHash("sha256").update(canonicalJson(snapshot)).digest("hex")}`;
+}
 
 /**
  * The authoritative parent links for each child collection.
@@ -102,8 +159,9 @@ export function acceptanceKey(id, version) {
 }
 
 export function acceptanceContractFingerprint(acceptance) {
-  return JSON.stringify({
+  return canonicalJson({
     id: acceptance.id,
+    targetType: acceptance.targetType,
     targetId: acceptance.targetId,
     version: acceptance.version,
     criteria: acceptance.criteria,
@@ -230,6 +288,7 @@ export class ProjectControlStore {
   seedMilestone(milestone) {
     this.runInTransaction(() => {
       this.#assertRelationship(Collection.MILESTONE, milestone);
+      this.#assertAcceptanceContract(Collection.MILESTONE, milestone);
       if (!this.insertRecord(Collection.MILESTONE, milestone.id, structuredClone(milestone))) {
         throw new Error(`milestone already exists: ${milestone.id}`);
       }
@@ -269,6 +328,7 @@ export class ProjectControlStore {
   seedGoal(goal) {
     this.runInTransaction(() => {
       this.#assertRelationship(Collection.GOAL, goal);
+      this.#assertAcceptanceContract(Collection.GOAL, goal);
       if (!this.insertRecord(Collection.GOAL, goal.id, structuredClone(goal))) {
         throw new Error(`goal already exists: ${goal.id}`);
       }
@@ -518,15 +578,29 @@ export class ProjectControlStore {
         }
       }
       // Matching an acceptance contract is not enough: the verification must also
-      // be provable back to the task it declares, through evidence that really
-      // belongs to that task's Run and Attempt.
-      if (!verification.taskId) {
-        throw new InvariantError("verification must declare the task it belongs to");
+      // be provable back to the target it declares — through the Run/Attempt
+      // lineage for a Task, through the live child snapshot for an aggregate.
+      const targetType = verification.targetType ?? AcceptanceTargetType.TASK;
+      if (targetType === AcceptanceTargetType.TASK) {
+        if (!verification.taskId) {
+          throw new InvariantError("verification must declare the task it belongs to");
+        }
+        this.#proveVerification({
+          task: this.#required(Collection.TASK, verification.taskId, "task"),
+          verification,
+        });
+      } else {
+        const collection = COLLECTION_BY_ACCEPTANCE_TARGET_TYPE[targetType];
+        if (!collection) {
+          // PROJECT acceptance is a declared target type with no v0.1 lifecycle.
+          throw new InvariantError(`verification target type ${targetType} has no acceptance flow in v0.1`);
+        }
+        this.#proveAggregateVerification({
+          collection,
+          target: this.#required(collection, verification.targetId, "aggregate"),
+          verification,
+        });
       }
-      this.#proveVerification({
-        task: this.#required(Collection.TASK, verification.taskId, "task"),
-        verification,
-      });
       this.insertRecord(Collection.VERIFICATION, verification.id, structuredClone(verification));
       this.#event("verification.recorded", verification.id, {
         acceptanceId: verification.acceptanceId,
@@ -599,6 +673,142 @@ export class ProjectControlStore {
   }
 
   /**
+   * Records the Control Plane's own observation of an aggregate's children as
+   * Aggregate Evidence, and returns the Evidence that describes the aggregate
+   * state as it is *now*.
+   *
+   * A parent's evidence cannot be a Runtime product — nothing "runs" for a Goal —
+   * so it is derived here from the authoritative child records. The Evidence
+   * identity is a function of the observed state (`sha256` of the child
+   * snapshot), which gives the operation its two defining properties:
+   *
+   * - the SAME observation is REUSED — one observation, one Evidence record, no
+   *   duplicate `evidence.recorded` on a repeated reconcile;
+   * - a CHANGED observation produces a NEW record, and the record it replaces is
+   *   marked SUPERSEDED, never deleted. Historical evidence stays readable, so a
+   *   Verification built on it can be seen to be stale rather than silently
+   *   disappearing.
+   *
+   * Everything the children must satisfy is checked here from the live records:
+   * the target must pin a contract revision that really targets it, and every
+   * child must have reached its finished state. An incomplete aggregate fails
+   * closed; it is never observed as "finished enough".
+   *
+   * Command ids: a `commandId` makes ONE command replayable, exactly as
+   * everywhere else — but be precise about what that means here. Its replay
+   * returns the evidence that command recorded, so a command id reused across
+   * observations pins the aggregate to its first observation and a later child
+   * change could never be observed. Callers that want "the observation of the
+   * current state" pass no command id and rely on the evidence identity.
+   */
+  ensureAggregateEvidence(collection, targetId, { commandId = null } = {}) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(commandId, "ensureAggregateEvidence");
+      if (replay) return this.getEvidence(replay);
+
+      const targetType = ACCEPTANCE_TARGET_TYPE_BY_COLLECTION[collection];
+      if (!targetType) {
+        throw new InvariantError(`aggregate evidence is not defined for ${collection}`);
+      }
+      const target = this.#required(collection, targetId, "aggregate");
+      if (target.acceptanceId == null || target.acceptanceVersion == null) {
+        throw new InvariantError(
+          `${collection} ${target.id} has no pinned acceptance contract revision to observe against`,
+        );
+      }
+      const acceptance = this.#acceptanceRevision(target.acceptanceId, target.acceptanceVersion);
+      if (acceptance.targetType !== targetType || acceptance.targetId !== target.id) {
+        throw new InvariantError(
+          `acceptance contract ${acceptance.id} v${acceptance.version} does not target ${targetType} ${target.id}`,
+        );
+      }
+
+      const snapshot = this.#childSnapshot(collection, target);
+      const revision = snapshotRevision(snapshot);
+      // Deterministic identity: same observed state → same Evidence id.
+      const evidenceId = `evidence-aggregate-${target.id}-${revision.slice("sha256:".length, "sha256:".length + 16)}`;
+      const existing = this.getRecord(Collection.EVIDENCE, evidenceId);
+      if (existing) {
+        this.#rememberCommand(commandId, "ensureAggregateEvidence", evidenceId);
+        return structuredClone(existing);
+      }
+
+      for (const stale of this.recordsMatching(Collection.EVIDENCE, "targetId", target.id)) {
+        if (
+          stale.targetType !== targetType ||
+          stale.status === EvidenceStatus.SUPERSEDED ||
+          stale.id === evidenceId
+        ) {
+          continue;
+        }
+        this.putRecord(Collection.EVIDENCE, stale.id, { ...stale, status: EvidenceStatus.SUPERSEDED });
+        this.#event(
+          "evidence.superseded",
+          stale.id,
+          { targetType, targetId: target.id, revision: stale.revision, supersededBy: evidenceId },
+          { commandId },
+        );
+      }
+
+      const evidence = createEvidence({
+        id: evidenceId,
+        targetType,
+        targetId: target.id,
+        acceptanceId: acceptance.id,
+        acceptanceVersion: acceptance.version,
+        revision,
+        sourceRefs: snapshot.children,
+      });
+      this.insertRecord(Collection.EVIDENCE, evidence.id, structuredClone(evidence));
+      this.#event(
+        "evidence.recorded",
+        evidence.id,
+        {
+          targetType,
+          targetId: target.id,
+          acceptanceId: acceptance.id,
+          acceptanceVersion: acceptance.version,
+          revision,
+        },
+        { commandId },
+      );
+      this.#rememberCommand(commandId, "ensureAggregateEvidence", evidence.id);
+      return structuredClone(evidence);
+    });
+  }
+
+  /**
+   * Accepts a Goal against its pinned contract revision and a PASS Verification
+   * of the Aggregate Evidence that describes it.
+   *
+   * This is the Goal-level counterpart of `acceptTask`, and it is deliberately
+   * the SAME shape: state whitelist, explicit contract revision, re-proved
+   * Verification, compare-and-set write, contract decision and event in one
+   * transaction. Aggregating "all tasks are ACCEPTED" into an ACCEPTED Goal
+   * remains the contract-free path in the Controller; it never comes through
+   * here, so a Goal with a contract can only be accepted by proving one.
+   */
+  acceptGoal(goalId, expectedVersion, { verificationId, commandId = null } = {}) {
+    return this.#acceptAggregate(Collection.GOAL, goalId, expectedVersion, "acceptGoal", {
+      verificationId,
+      commandId,
+    });
+  }
+
+  /** Milestone counterpart of `acceptGoal`: the decision is `COMPLETED`. */
+  completeMilestone(milestoneId, expectedVersion, { verificationId, commandId = null } = {}) {
+    return this.#acceptAggregate(Collection.MILESTONE, milestoneId, expectedVersion, "completeMilestone", {
+      verificationId,
+      commandId,
+    });
+  }
+
+  /** Verifications already recorded about one target; used to reuse a verdict. */
+  getVerificationsForTarget(targetId) {
+    return this.recordsMatching(Collection.VERIFICATION, "targetId", targetId);
+  }
+
+  /**
    * Resolves one contract revision and proves its content is unchanged. A
    * revision is always named explicitly — there is no implicit "current
    * version" lookup — and mutating contract content without a new version fails
@@ -630,6 +840,199 @@ export class ProjectControlStore {
   }
 
   /**
+   * The shared Goal / Milestone acceptance write.
+   *
+   * It takes a decision the Control Plane is not allowed to infer: the target's
+   * contract revision, a PASS Verification, and evidence that still describes
+   * the current child state are all re-proved here, inside the same transaction
+   * as the status change — so a state that moved between the check and the write
+   * cannot be accepted on the strength of a stale reading.
+   */
+  #acceptAggregate(collection, id, expectedVersion, operation, { verificationId, commandId = null } = {}) {
+    return this.runInTransaction(() => {
+      const replay = this.#replayCommand(commandId, operation);
+      if (replay) return structuredClone(this.#required(collection, replay, "aggregate"));
+
+      const target = this.#required(collection, id, "aggregate");
+      if (target.version !== expectedVersion) {
+        throw new ConflictError(`${collection} ${id} expected v${expectedVersion}, current v${target.version}`);
+      }
+      // Same whitelist rule as a Task, for the same reason: an unlisted state is
+      // refused by default, and BLOCKED (a control state awaiting resolution) or
+      // a terminal state is never reversed by acceptance.
+      const allowed = ACCEPTABLE_SOURCE_AGGREGATE_STATES[collection];
+      const targetStatus = ACCEPTED_TARGET_STATUS[collection];
+      if (!allowed.includes(target.status)) {
+        throw new InvariantError(
+          target.status === targetStatus
+            ? `${collection} ${id} is already ${targetStatus}: acceptance is terminal`
+            : `${collection} ${id} is ${target.status} and may not enter ${targetStatus}: ` +
+              `parent acceptance requires one of ${allowed.join(", ")}`,
+        );
+      }
+      if (target.acceptanceId == null || target.acceptanceVersion == null) {
+        throw new InvariantError(`${collection} ${id} has no acceptance contract to be accepted against`);
+      }
+      this.#assertAcceptanceContract(collection, target);
+      const acceptance = this.#acceptanceRevision(target.acceptanceId, target.acceptanceVersion);
+
+      const verification = this.#required(Collection.VERIFICATION, verificationId, "verification");
+      if (verification.verdict !== "PASS") {
+        throw new InvariantError(`${collection} ${id} cannot be accepted by a ${verification.verdict} verification`);
+      }
+      this.#proveAggregateVerification({ collection, target, verification });
+
+      const next = {
+        ...target,
+        status: targetStatus,
+        version: target.version + 1,
+        updatedAt: now(),
+      };
+      if (!this.updateRecord(collection, id, next, expectedVersion)) {
+        throw new ConflictError(`${collection} ${id} expected v${expectedVersion}, but it changed in another writer`);
+      }
+      // The revision record keeps its contract version; only the decision moves.
+      this.putRecord(
+        Collection.ACCEPTANCE,
+        acceptanceKey(acceptance.id, acceptance.version),
+        { ...acceptance, status: "PASSED", updatedAt: now() },
+      );
+      // The lifecycle event is named by the status reached — `goal.accepted`
+      // versus `milestone.completed` — from the single mapping above.
+      this.#event(
+        LIFECYCLE_EVENT_TYPES[collection][targetStatus],
+        id,
+        { verificationId, version: next.version },
+        { commandId, aggregateVersion: next.version },
+      );
+      this.#rememberCommand(commandId, operation, id);
+      return structuredClone(next);
+    });
+  }
+
+  /**
+   * The aggregate state a parent's Evidence observes: one entry per child, in a
+   * deterministic order, built ONLY from the authoritative child records found
+   * through the child's own parent link.
+   *
+   * `Goal.taskIds` / `Milestone.goalIds` are derived caches and play no part: a
+   * snapshot taken from a stale cache would be evidence about a list, not about
+   * the project. An empty child set is refused rather than snapshotted, and so is
+   * any child that has not reached its finished state — an unfinished aggregate
+   * has no "finished" observation to record.
+   */
+  #childSnapshot(collection, target) {
+    const childCollection = collection === Collection.GOAL ? Collection.TASK : Collection.GOAL;
+    const linkField = collection === Collection.GOAL ? "goalId" : "milestoneId";
+    const finishedStatus = ACCEPTED_CHILD_STATUS[collection];
+    const children = this.recordsMatching(childCollection, linkField, target.id)
+      .map((child) => ({
+        refType: CHILD_REF_TYPE[collection],
+        collection: childCollection,
+        id: child.id,
+        version: child.version,
+        status: child.status,
+        acceptanceId: child.acceptanceId ?? null,
+        acceptanceVersion: child.acceptanceVersion ?? null,
+      }))
+      .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+
+    if (children.length === 0) {
+      throw new InvariantError(`${collection} ${target.id} has no ${childCollection} to observe`);
+    }
+    const unfinished = children.filter((child) => child.status !== finishedStatus);
+    if (unfinished.length) {
+      throw new InvariantError(
+        `${collection} ${target.id} is not finished: ` +
+          unfinished.map((child) => `${child.id} is ${child.status}`).join(", "),
+      );
+    }
+    return { targetType: ACCEPTANCE_TARGET_TYPE_BY_COLLECTION[collection], targetId: target.id, children };
+  }
+
+  /**
+   * Re-derives the child snapshot from live records. Current Reality outranks
+   * Historical Evidence: evidence describing a state the aggregate has left is
+   * no longer a proof about the aggregate, however well-formed the verification
+   * recorded against it may be.
+   */
+  #assertSnapshotCurrent({ collection, target, evidence }) {
+    const current = snapshotRevision(this.#childSnapshot(collection, target));
+    if (evidence.revision !== current) {
+      throw new InvariantError(
+        `aggregate evidence ${evidence.id} no longer describes the current state of ${target.id}`,
+      );
+    }
+  }
+
+  /**
+   * Proves that a Verification may legally speak for a Goal or a Milestone.
+   *
+   * Aggregate evidence is not a Runtime product, so there is no Run/Attempt
+   * lineage to walk. What replaces it is the snapshot identity: the evidence must
+   * have observed THIS target, must carry no Run or Attempt, must be the
+   * evidence of the contract revision the target pins, and must still describe
+   * the child state as it is now. The same routine guards both doors, exactly as
+   * its Task counterpart does.
+   */
+  #proveAggregateVerification({ collection, target, verification }) {
+    const targetType = ACCEPTANCE_TARGET_TYPE_BY_COLLECTION[collection];
+    if (verification.targetType !== targetType || verification.targetId !== target.id) {
+      throw new InvariantError(
+        `verification ${verification.id} does not belong to ${targetType} ${target.id}`,
+      );
+    }
+    // An aggregate has no task, so an aggregate verification may not declare one.
+    if (verification.taskId != null) {
+      throw new InvariantError(
+        `verification ${verification.id} is about ${targetType} ${target.id} and must not declare a task`,
+      );
+    }
+    const acceptance = this.#acceptanceRevision(target.acceptanceId, target.acceptanceVersion);
+    if (verification.acceptanceId !== acceptance.id || verification.acceptanceVersion !== acceptance.version) {
+      throw new InvariantError(
+        `verification ${verification.id} does not match the acceptance contract revision pinned by ${target.id}`,
+      );
+    }
+    if (!verification.evidenceIds?.length) {
+      throw new InvariantError(`verification ${verification.id} references no evidence`);
+    }
+
+    const chain = [];
+    for (const evidenceId of verification.evidenceIds) {
+      const evidence = this.#required(Collection.EVIDENCE, evidenceId, "evidence");
+      if (evidence.targetType !== targetType || evidence.targetId !== target.id) {
+        throw new InvariantError(`evidence ${evidenceId} does not belong to ${targetType} ${target.id}`);
+      }
+      // Aggregate evidence must not claim a Runtime product it never had.
+      if (evidence.taskId != null || evidence.runId != null || evidence.attemptId != null) {
+        throw new InvariantError(`aggregate evidence ${evidenceId} must not reference a task, run or attempt`);
+      }
+      if (evidence.acceptanceId !== acceptance.id || evidence.acceptanceVersion !== acceptance.version) {
+        throw new InvariantError(`evidence ${evidenceId} does not match the acceptance contract of ${target.id}`);
+      }
+      this.#assertSnapshotCurrent({ collection, target, evidence });
+      if (chain.length && evidence.revision !== chain[0].revision) {
+        throw new InvariantError("verification mixes evidence with different revisions");
+      }
+      if (
+        verification.verdict === "PASS" &&
+        evidence.status !== EvidenceStatus.CANDIDATE &&
+        evidence.status !== EvidenceStatus.VERIFIED
+      ) {
+        throw new InvariantError(`evidence ${evidenceId} is ${evidence.status} and cannot support a PASS verification`);
+      }
+      chain.push(evidence);
+    }
+
+    if (verification.revision == null || verification.revision !== chain[0].revision) {
+      throw new InvariantError("verification revision must match the revision of the evidence it refers to");
+    }
+
+    return { acceptance, evidence: chain };
+  }
+
+  /**
    * Proves that a Verification may legally speak for a Task.
    *
    * Evidence is a claim; ownership is re-derived from the aggregates this store
@@ -646,6 +1049,13 @@ export class ProjectControlStore {
   #proveVerification({ task, verification }) {
     if (verification.taskId !== task.id) {
       throw new InvariantError(`verification ${verification.id} does not belong to task ${task.id}`);
+    }
+    // The declared target and the declared task must be the same thing: a
+    // verification may not claim one task while naming another as its target.
+    if (verification.targetId != null && verification.targetId !== task.id) {
+      throw new InvariantError(
+        `verification ${verification.id} names target ${verification.targetId} but task ${task.id}`,
+      );
     }
     const acceptance = this.#acceptanceRevision(task.acceptanceId, task.acceptanceVersion);
     if (verification.acceptanceId !== acceptance.id || verification.acceptanceVersion !== acceptance.version) {
@@ -703,6 +1113,51 @@ export class ProjectControlStore {
   }
 
   /**
+   * Proves that a parent's pinned acceptance contract really is about that
+   * parent, as a fact rather than as a convention.
+   *
+   * `acceptanceId` names a contract; the (id, version) pair names ONE revision of
+   * it, and a revision that cannot be resolved — or whose content no longer
+   * matches its fingerprint — fails closed in `#acceptanceRevision`. On top of
+   * that, a Goal or Milestone must pin a contract whose target type and target id
+   * are its own: otherwise a milestone could be accepted by a contract written
+   * about a different milestone, or about a task. Both halves of the pin are
+   * required together; a bare id is not a revision and a bare version names
+   * nothing.
+   *
+   * Only Goal and Milestone are checked here. A Task keeps its own rules (it is
+   * pinned at creation and re-proved through Run/Attempt lineage), and Project
+   * acceptance has no v0.1 lifecycle, so this guard deliberately stays silent
+   * about it instead of inventing a rule.
+   */
+  #assertAcceptanceContract(collection, record) {
+    const targetType = ACCEPTANCE_TARGET_TYPE_BY_COLLECTION[collection];
+    if (!targetType) return;
+
+    const acceptanceId = record.acceptanceId ?? null;
+    const acceptanceVersion = record.acceptanceVersion ?? null;
+    if (acceptanceId == null && acceptanceVersion == null) return;
+    if (acceptanceId == null) {
+      throw new InvariantError(
+        `${collection} ${record.id} pins acceptance revision v${acceptanceVersion} without naming a contract`,
+      );
+    }
+    if (acceptanceVersion == null) {
+      throw new InvariantError(
+        `${collection} ${record.id} names acceptance contract ${acceptanceId} without pinning a revision`,
+      );
+    }
+
+    const acceptance = this.#acceptanceRevision(acceptanceId, acceptanceVersion);
+    if (acceptance.targetType !== targetType || acceptance.targetId !== record.id) {
+      throw new InvariantError(
+        `${collection} ${record.id} pins acceptance contract ${acceptanceId} v${acceptanceVersion}, ` +
+          `which targets ${acceptance.targetType} ${acceptance.targetId}`,
+      );
+    }
+  }
+
+  /**
    * Proves that a child's explicit parent links, when present, point at
    * aggregates that actually exist, and that a Goal's own project does not
    * contradict the project its Milestone belongs to.
@@ -756,6 +1211,7 @@ export class ProjectControlStore {
       };
       // A re-parenting update is validated exactly like a seed.
       this.#assertRelationship(collection, next);
+      this.#assertAcceptanceContract(collection, next);
       if (!this.updateRecord(collection, id, next, expectedVersion)) {
         // The record moved between the read and the write (another connection).
         // The backend's compare-and-set is the second line of defence; it must

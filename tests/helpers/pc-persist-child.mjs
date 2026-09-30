@@ -7,6 +7,8 @@
 //
 // usage: node pc-persist-child.mjs write <dbfile>
 //        node pc-persist-child.mjs read  <dbfile> <json ids from the write phase>
+//        node pc-persist-child.mjs parent <dbfile>
+//        node pc-persist-child.mjs parent-read <dbfile> <json ids from the parent phase>
 
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -16,14 +18,26 @@ const PC = path.join(HERE, "..", "..", "project-control");
 const load = (name) => import(pathToFileURL(path.join(PC, name)).href);
 
 const { SqliteStore } = await load("sqlite-store.mjs");
+const { Collection } = await load("store.mjs");
 const { Controller } = await load("controller.mjs");
 const { FakeRuntime } = await load("fake-runtime.mjs");
 const { FakeVerifier } = await load("fake-verifier.mjs");
-const { createAcceptance, createTask, createVerification, VerificationVerdict } = await load("domain.mjs");
+const {
+  AcceptanceTargetType,
+  GoalStatus,
+  TaskStatus,
+  VerificationVerdict,
+  createAcceptance,
+  createGoal,
+  createMilestone,
+  createProject,
+  createTask,
+  createVerification,
+} = await load("domain.mjs");
 
 const [mode, file, idsJson] = process.argv.slice(2);
 if (!mode || !file) {
-  console.error("usage: node pc-persist-child.mjs <write|read> <dbfile> [idsJson]");
+  console.error("usage: node pc-persist-child.mjs <write|read|parent|parent-read> <dbfile> [idsJson]");
   process.exit(2);
 }
 
@@ -99,6 +113,77 @@ try {
         verdict: VerificationVerdict.PASS,
         revision: evidence.revision,
       })).verdict,
+    };
+  } else if (mode === "parent") {
+    // A parent acceptance decided in THIS process, against a contract, with the
+    // child state already durable.
+    store.seedProject(createProject({ id: "project-1", name: "Parent restart" }));
+    store.seedAcceptance(createAcceptance({
+      id: "acceptance-goal",
+      targetType: AcceptanceTargetType.GOAL,
+      targetId: "goal-1",
+      criteria: [{ id: "aggregate", type: "AGGREGATE", required: true }],
+    }));
+    store.seedMilestone(createMilestone({ id: "ms-1", projectId: "project-1", name: "M1" }));
+    store.seedGoal(createGoal({
+      id: "goal-1",
+      projectId: "project-1",
+      milestoneId: "ms-1",
+      title: "G1",
+      status: GoalStatus.IN_PROGRESS,
+      acceptanceId: "acceptance-goal",
+      acceptanceVersion: 1,
+    }));
+    store.seedTask(createTask({
+      id: "task-1",
+      goalId: "goal-1",
+      title: "T1",
+      acceptanceId: "acceptance-1",
+      acceptanceVersion: 1,
+      status: TaskStatus.ACCEPTED,
+    }));
+
+    const result = await controllerFor(store).reconcileGoal("goal-1");
+    const accepted = store.getEvents().find((event) => event.type === "goal.accepted");
+
+    payload = {
+      action: result.action,
+      reason: result.reason,
+      goalStatus: store.getGoal("goal-1").status,
+      goalVersion: store.getGoal("goal-1").version,
+      contractStatus: store.getAcceptance("acceptance-goal", 1).status,
+      evidenceId: result.evidence.id,
+      evidenceRevision: result.evidence.revision,
+      acceptCommandId: accepted?.commandId ?? null,
+      eventCount: store.getEvents().length,
+      ids: { evidenceId: result.evidence.id, verificationId: result.verification.id },
+    };
+  } else if (mode === "parent-read") {
+    const ids = JSON.parse(idsJson ?? "{}");
+    const evidence = store.getEvidence(ids.evidenceId);
+    // Re-deriving the observation from durable child rows only must land on the
+    // SAME evidence identity — that is what makes the snapshot revision real
+    // rather than an in-process cache.
+    const reobserved = store.ensureAggregateEvidence(Collection.GOAL, "goal-1");
+    // …and the original acceptance command replays instead of applying twice.
+    const replayed = store.acceptGoal("goal-1", 1, {
+      verificationId: ids.verificationId,
+      commandId: ids.acceptCommandId,
+    });
+
+    payload = {
+      goalStatus: store.getGoal("goal-1").status,
+      goalVersion: store.getGoal("goal-1").version,
+      contractStatus: store.getAcceptance("acceptance-goal", 1).status,
+      evidenceTargetType: evidence.targetType,
+      evidenceTargetId: evidence.targetId,
+      evidenceTaskId: evidence.taskId,
+      evidenceRunId: evidence.runId,
+      evidenceRevision: evidence.revision,
+      reobservedId: reobserved.id,
+      replayedVersion: replayed.version,
+      acceptedEvents: store.getEvents().filter((event) => event.type === "goal.accepted").length,
+      eventCount: store.getEvents().length,
     };
   } else {
     throw new Error(`unknown mode: ${mode}`);

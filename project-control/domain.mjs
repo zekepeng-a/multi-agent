@@ -148,6 +148,10 @@ export function createProject({
  * `goalIds` is DERIVED / CACHED / NON-AUTHORITATIVE. The relationship fact is
  * `Goal.milestoneId`; this list is a convenience view that this version does not
  * maintain and must never be used to decide who belongs to the milestone.
+ *
+ * `acceptanceId` + `acceptanceVersion` are a PINNED contract revision, exactly
+ * like a Task's: a milestone that declares an acceptance contract must pin the
+ * revision it was accepted against, so it can never drift onto a newer one.
  */
 export function createMilestone({
   id,
@@ -158,6 +162,7 @@ export function createMilestone({
   status = MilestoneStatus.READY,
   goalIds = [],
   acceptanceId = null,
+  acceptanceVersion = null,
 } = {}) {
   if (!id || !name) throw new Error("id and name are required");
   return {
@@ -170,6 +175,7 @@ export function createMilestone({
     status,
     goalIds: [...goalIds],
     acceptanceId,
+    acceptanceVersion,
     createdAt: now(),
     updatedAt: now(),
   };
@@ -182,6 +188,10 @@ export function createMilestone({
  * `taskIds` is DERIVED / CACHED / NON-AUTHORITATIVE. The relationship fact is
  * `Task.goalId`; this list is a convenience view that this version does not
  * maintain and must never be used to decide who belongs to the goal.
+ *
+ * `acceptanceId` + `acceptanceVersion` are a PINNED contract revision: a goal
+ * that declares an acceptance contract must pin the revision it was accepted
+ * against, so it can never drift onto a newer one.
  */
 export function createGoal({
   id,
@@ -192,6 +202,7 @@ export function createGoal({
   status = GoalStatus.READY,
   taskIds = [],
   acceptanceId = null,
+  acceptanceVersion = null,
 } = {}) {
   if (!id || !title) throw new Error("id and title are required");
   return {
@@ -204,6 +215,7 @@ export function createGoal({
     status,
     taskIds: [...taskIds],
     acceptanceId,
+    acceptanceVersion,
     createdAt: now(),
     updatedAt: now(),
   };
@@ -242,10 +254,32 @@ export function createTask({
   };
 }
 
-export function createAcceptance({ id, targetId, criteria = [], version = 1 } = {}) {
+/**
+ * What an Acceptance Contract (and the Evidence and Verification that serve it)
+ * is about. A contract is bound to exactly one target identity, so the same
+ * acceptance id can never be read as covering a task AND a goal.
+ */
+export const AcceptanceTargetType = Object.freeze({
+  TASK: "TASK",
+  GOAL: "GOAL",
+  MILESTONE: "MILESTONE",
+  PROJECT: "PROJECT",
+});
+
+export function createAcceptance({
+  id,
+  targetType = AcceptanceTargetType.TASK,
+  targetId,
+  criteria = [],
+  version = 1,
+} = {}) {
   if (!id || !targetId) throw new Error("id and targetId are required");
+  if (!Object.values(AcceptanceTargetType).includes(targetType)) {
+    throw new Error(`unknown acceptance target type: ${targetType}`);
+  }
   return {
     id,
+    targetType,
     targetId,
     version,
     criteria,
@@ -283,22 +317,39 @@ export function createAttempt({ id, runId, attemptNumber, status = AttemptStatus
   };
 }
 
+/**
+ * Evidence about a target.
+ *
+ * TASK evidence is a Runtime product: it carries the Run and Attempt that
+ * produced it. GOAL / MILESTONE evidence is an AGGREGATE observation made by the
+ * Control Plane from the current authoritative child state — it has no Run and no
+ * Attempt, and it carries `sourceRefs`, the child snapshot it represents.
+ */
 export function createEvidence({
   id,
-  taskId,
-  runId,
-  attemptId,
+  targetType = AcceptanceTargetType.TASK,
+  targetId,
+  taskId = null,
+  runId = null,
+  attemptId = null,
   acceptanceId,
   acceptanceVersion,
   revision = null,
   status = EvidenceStatus.CANDIDATE,
   contentRef = null,
+  sourceRefs = [],
 } = {}) {
-  if (!id || !taskId || !runId || !attemptId || !acceptanceId || !acceptanceVersion) {
+  const resolvedTargetId = targetId ?? taskId;
+  if (!id || !resolvedTargetId || !acceptanceId || !acceptanceVersion) {
     throw new Error("evidence identity is incomplete");
+  }
+  if (targetType === AcceptanceTargetType.TASK && (!taskId || !runId || !attemptId)) {
+    throw new Error("task evidence requires taskId, runId and attemptId");
   }
   return {
     id,
+    targetType,
+    targetId: resolvedTargetId,
     taskId,
     runId,
     attemptId,
@@ -307,24 +358,33 @@ export function createEvidence({
     revision,
     status,
     contentRef,
+    sourceRefs: structuredClone(sourceRefs),
     createdAt: now(),
   };
 }
 
 export function createVerification({
   id,
-  taskId,
+  targetType = AcceptanceTargetType.TASK,
+  targetId,
+  taskId = null,
   acceptanceId,
   acceptanceVersion,
   evidenceIds,
   verdict,
   revision = null,
 } = {}) {
-  if (!id || !taskId || !acceptanceId || !evidenceIds?.length || !verdict) {
+  const resolvedTargetId = targetId ?? taskId;
+  if (!id || !resolvedTargetId || !acceptanceId || !evidenceIds?.length || !verdict) {
     throw new Error("verification identity is incomplete");
+  }
+  if (targetType === AcceptanceTargetType.TASK && !taskId) {
+    throw new Error("task verification requires taskId");
   }
   return {
     id,
+    targetType,
+    targetId: resolvedTargetId,
     taskId,
     acceptanceId,
     acceptanceVersion,
