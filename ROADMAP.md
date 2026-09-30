@@ -229,7 +229,7 @@ Packaging identity may become E if it implies splitting/renaming the product.
 
 # G2 — Durable Command boundary
 
-**Status: ACTIVE / D-GATE REQUIRED**
+**Status: ACTIVE / D-GATE RESOLVED — IMPLEMENTATION ALLOWED**
 
 ## Why this comes before Effect
 
@@ -256,10 +256,14 @@ This phase starts as **D — Architectural Gap** until the following are explici
 
 ## Required process
 
-1. focused external research only for these questions;
-2. ADR for Command semantics;
-3. update canonical architecture if needed;
-4. then implementation if it becomes B.
+Completed for the architecture gate:
+
+1. focused external evidence was reviewed from the existing source-traceability chain;
+2. `ADR-0001-durable-command-boundary.md` was accepted;
+3. canonical architecture was updated to separate G2 durable authorization from G3 external execution;
+4. the bounded G2 Command implementation is now **B — Missing Implementation**.
+
+Implementation must remain inside ADR-0001's boundary.
 
 ## Exit gate
 
@@ -453,10 +457,12 @@ Current durable phase boundary:
 ```text
 COMPLETE: G0 Governance convergence
 COMPLETE: G1 Baseline hardening
-ACTIVE:   G2 Durable Command boundary — D-GATE
+ACTIVE:   G2 Durable Command boundary — implementation allowed by ADR-0001
 NEXT:     G3 External Effect + reconciliation boundary
-BLOCKED FROM CODING:
-          durable Command implementation until G2 ADR is ACCEPTED
+AUTHORIZED TO CODE:
+          ADR-0001 bounded Command CREATED/AUTHORIZED/REJECTED lifecycle only
+BLOCKED:
+          dispatch / Effect / UNKNOWN / retry semantics until G3
 ```
 
 G0 exited after governance/read-order, legacy-runtime scoping, current-reality mapping, Roadmap authority, Changelog, and ADR convention were present in Git.
