@@ -413,6 +413,114 @@ export function createVerification({
   };
 }
 
+// ── Durable Command (G2 authorization boundary) ─────────────────────────────
+//
+// A Command is a durable control-plane intent. G2 deliberately implements only
+// creation + authorization/rejection. Dispatch/execution/effect outcomes remain
+// reserved for G3 and MUST NOT be written by current code.
+
+export const CommandStatus = Object.freeze({
+  CREATED: "CREATED",
+  AUTHORIZED: "AUTHORIZED",
+  REJECTED: "REJECTED",
+  // Canonical future states. G2 store rules refuse transitions into them.
+  DISPATCHED: "DISPATCHED",
+  EXECUTING: "EXECUTING",
+  SUCCEEDED: "SUCCEEDED",
+  FAILED: "FAILED",
+  UNKNOWN: "UNKNOWN",
+});
+
+export const CommandTargetType = Object.freeze({
+  PROJECT: "PROJECT",
+  MILESTONE: "MILESTONE",
+  GOAL: "GOAL",
+  TASK: "TASK",
+});
+
+const REQUIRED_COMMAND_FIELDS = Object.freeze([
+  "id",
+  "targetId",
+  "action",
+  "capability",
+  "scope",
+  "requestedBy",
+  "idempotencyKey",
+]);
+
+/**
+ * Creates one immutable requested action. The caller must supply the target
+ * version already observed by the Control Plane; ProjectControlStore#createControlCommand
+ * is the normal entry point and reads that version from authoritative state.
+ */
+export function createCommand({
+  id,
+  projectId = null,
+  targetType,
+  targetId,
+  targetVersion,
+  action,
+  capability,
+  scope,
+  riskLevel = "MODERATE",
+  requestedBy,
+  expectedVersion = null,
+  parameters = {},
+  idempotencyKey,
+  status = CommandStatus.CREATED,
+  version = 1,
+  authorization = null,
+} = {}) {
+  const identity = { id, targetId, action, capability, scope, requestedBy, idempotencyKey };
+  for (const field of REQUIRED_COMMAND_FIELDS) {
+    if (typeof identity[field] !== "string" || identity[field].trim() === "") {
+      throw new Error(`command requires a non-empty ${field}`);
+    }
+  }
+  if (!Object.values(CommandTargetType).includes(targetType)) {
+    throw new Error(`unknown command target type: ${targetType}`);
+  }
+  if (!Number.isInteger(targetVersion) || targetVersion < 1) {
+    throw new Error("command must pin the authoritative target version");
+  }
+  if (expectedVersion != null && (!Number.isInteger(expectedVersion) || expectedVersion < 1)) {
+    throw new Error("command expectedVersion must be a positive integer when present");
+  }
+  if (!Object.values(CommandStatus).includes(status)) {
+    throw new Error(`unknown command status: ${status}`);
+  }
+  if (!Number.isInteger(version) || version < 1) {
+    throw new Error("command version must be a positive integer");
+  }
+
+  return {
+    id,
+    version,
+    projectId,
+    targetType,
+    targetId,
+    targetVersion,
+    action,
+    capability,
+    scope,
+    riskLevel,
+    requestedBy,
+    expectedVersion,
+    parameters: structuredClone(parameters ?? {}),
+    idempotencyKey,
+    status,
+    authorization: authorization ? structuredClone(authorization) : {
+      approvalId: null,
+      authorizedAt: null,
+      rejectedAt: null,
+      reason: null,
+      approvalReason: null,
+    },
+    createdAt: now(),
+    updatedAt: now(),
+  };
+}
+
 // ── Durable Human Approval ───────────────────────────────────────────────────
 //
 // An Approval is a PERMISSION fact: a named subject decided, within a stated
