@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { acceptCapsuleInput, capsuleReceipt, CapsuleInputRefusedError } from "./capsule-receipt.mjs";
 import {
   RuntimeOutcome,
   RuntimeState,
@@ -39,16 +40,18 @@ export class DshWorkflowRuntimeAdapter {
     });
   }
 
-  async start({ run, attempt, contextCapsule = {}, signal = null } = {}) {
-    const spec = contextCapsule?.dshWorkflow ?? contextCapsule;
+  async start({ run, attempt, contextCapsule = {}, capsuleBinding = null, launchConfig = {}, signal = null } = {}) {
+    const accepted = acceptCapsuleInput({ run, attempt, contextCapsule, capsuleBinding });
+    const input = accepted ? launchConfig : contextCapsule;
+    const spec = input?.dshWorkflow ?? input;
     if (typeof spec?.script !== "string" || spec.script.trim() === "") {
-      throw new Error("DshWorkflowRuntimeAdapter requires contextCapsule.dshWorkflow.script");
+      throw new (accepted ? CapsuleInputRefusedError : Error)("DshWorkflowRuntimeAdapter requires dshWorkflow.script");
     }
     if (!spec?.meta || typeof spec.meta.name !== "string" || typeof spec.meta.description !== "string") {
-      throw new Error("DshWorkflowRuntimeAdapter requires workflow meta name/description");
+      throw new (accepted ? CapsuleInputRefusedError : Error)("DshWorkflowRuntimeAdapter requires workflow meta name/description");
     }
     if (!spec.parent) {
-      throw new Error("DshWorkflowRuntimeAdapter requires the live DSH parent Agent");
+      throw new (accepted ? CapsuleInputRefusedError : Error)("DshWorkflowRuntimeAdapter requires the live DSH parent Agent");
     }
 
     const live = this.workflowEngine.start({
@@ -76,6 +79,7 @@ export class DshWorkflowRuntimeAdapter {
       },
     });
     const execution = {
+      ...(accepted ? { capsuleInput: accepted } : {}),
       live,
       runtimeRef,
       state: RuntimeState.RUNNING,
@@ -95,6 +99,7 @@ export class DshWorkflowRuntimeAdapter {
 
     return {
       runtimeRef: structuredClone(runtimeRef),
+      ...(accepted ? { capsuleReceipt: capsuleReceipt(accepted, runtimeRef) } : {}),
       observation: createRuntimeObservation({
         state: RuntimeState.RUNNING,
         runtimeRef,

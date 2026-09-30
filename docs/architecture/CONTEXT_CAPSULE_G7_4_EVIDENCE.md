@@ -1,0 +1,124 @@
+# G7.4 Context Capsule implementation Evidence
+
+## Scope and baseline
+
+- Architecture: ACCEPTED ADR-0009; implementation authorized by Human.
+- Baseline: `3593b161b69885b36658bbb757367c8d1fd112f6`, branch
+  `project-control/controller-v0.1`.
+- This is implementation evidence, not independent review or stage completion.
+  G7.4 is not marked COMPLETE; G7.5/G7.6 and governance boundaries are unchanged.
+
+## Implemented boundary
+
+`ContextCapsuleControl` is configured at the existing trusted Controller composition
+boundary. Its versioned profile and synchronous source/Policy/Runtime/Reality and
+required-integrity callbacks are supplied by Control, never by Runtime output or
+an Agent's self-reported role. The integrity callback must positively prove
+completeness and consistency; conflicting/unresolved required meaning fails closed.
+There is no new identity, Reviewer, resolver or authorization subsystem.
+
+An independent CapsuleId names one immutable inline canonical finite-JSON UTF-8
+snapshot for one Project/Task/Run/Attempt. The archive includes complete execution
+meaning, typed source pins, provenance/authority, validity observations, profile and
+assembler/schema versions, selection checkpoints and bounded omission count. SHA-256
+and byte budget use precisely these archived bytes. Required meaning cannot be
+truncated, summarized, demoted or replaced by a path. Whole supplemental items use
+profile priority followed by typed identity; no model ranking is introduced.
+
+The default required selection includes the bounded hierarchy, its pinned contracts,
+all project ACTIVE Decisions, Workspace/Reality, mandatory Policy/Approval and
+Runtime restrictions. Evidence/Verification reuse G7.3 source proof; Memory comes
+only from ADR-0008 current-use, with explicit trusted INFERRED opt-in. Historical
+Evidence/Verification have a separate historical label and integrity check; they
+cannot become current proof. PolicyDecision is audit only; Capsule does not authorize
+the associated Command. Actual authorization still belongs to the existing gates.
+
+Generation and dispatch reservation reuse the Store's transactions, event append and
+mutation replay registry. The latter stores intent fingerprints and bounded operation
+results, not another Command/Effect subsystem. A whole-record Attempt CAS is shared
+by both backends; SQLite compares the expected JSON body under BEGIN IMMEDIATE.
+Snapshot writes are insert-only. Generic Attempt updates cannot set delivery metadata
+or rebind a Capsule-bound execution.
+
+Reservation rechecks selection completeness and included-source eligibility/pins in
+the writer transaction. External observations carry their own pins/times and are
+recorded separately; no filesystem/database atomic snapshot is claimed. Any included
+supplemental drift also refuses the old snapshot. Explicit regeneration uses a new
+identity and is allowed only before reservation.
+
+PREPARED, DISPATCHING, RECEIVED, NOT_RECEIVED and UNKNOWN remain distinct. Matching
+Adapter receipt and RuntimeRef are persisted atomically with delivery observation.
+Missing/mismatched receipts and ambiguous errors yield UNKNOWN and existing LOST/
+BLOCKED recovery. Intent replay never repeats start. Trustworthy reconciliation may
+append input receipt/non-execution proof; completion alone cannot invent delivery.
+No dispatched Attempt can substitute/reuse another snapshot, including after refusal.
+
+The Controller enables this path only with explicit `capsuleBoundary`; old
+`runtimeContextFactory` objects retain their legacy contract. LocalProcess and DSH
+accept a detached Capsule plus binding/hash and separate launchConfig. They retain
+exact Adapter input bytes and return input-bound receipts. Credentials/live handles
+stay in launch configuration. Receipt proves the Adapter boundary, not final model
+tokens. Existing non-Capsule Adapter behavior remains compatible.
+
+## Test proof
+
+Targeted command:
+
+```sh
+node --test tests/unit/context-capsule.test.mjs tests/integration/context-capsule-restart.test.mjs
+```
+
+Local Node 24.19.0: **67 passed, 0 failed, 0 skipped**. Full regression:
+
+```sh
+node --test tests/unit/*.test.mjs tests/integration/*.test.mjs
+```
+
+Local Node 24.19.0: **659 passed, 0 failed, 0 skipped**. This is additional local
+validation; Node 22 CI remains the authoritative SQLite baseline. The existing CI
+matrix retains Node 20 compatibility and mandatory Node 22 SQLite availability.
+
+`U` below is `tests/unit/context-capsule.test.mjs`. Every backend case runs against
+MemoryStore and SQLite. `R` is `tests/integration/context-capsule-restart.test.mjs`.
+Its helper uses separate OS processes and an explicit readiness barrier for the
+independent SQLite writer race; it does not simulate restart by reopening an object.
+
+| ADR-0009 exit | Concrete proof |
+|---|---|
+| 1 | U immutable canonical archive; hierarchy/cross-project admission; atomic CAS/reuse rejection |
+| 2 | U exact Task contract pin; parent contract pins; source target validation |
+| 3 | U typed complete sources; unsupported/unresolved required input; Goal/Milestone; Evidence/Verification; PolicyDecision |
+| 4 | U task and Workspace/Reality drift; Goal source drift; current Evidence/Verification |
+| 5 | U new Decision membership, Policy and Runtime drift; required-integrity refusal |
+| 6 | U source observations and drift; R actual filesystem after process restart; reserved metadata separates external observations |
+| 7 | U Memory withdrawal invalidates included supplemental; regeneration uses new CapsuleId |
+| 8 | U UTF-8 whole-item trimming preserves every required item; profile priority/identity ordering |
+| 9 | U final UTF-8/envelope budget and no Runtime on required overflow |
+| 10 | U required consistency and budget refusal; required items are copied whole with no compression path |
+| 11 | U necessary Memory validity, default INFERRED exclusion, explicit recorded opt-in and no history escape |
+| 12 | U historical Evidence/current Verification boundaries; inactive Decision excluded by existing ACTIVE query; required HISTORY refused |
+| 13 | U exact archive/hash at Fake Adapter; R LocalProcess/DSH exact Adapter bytes |
+| 14 | U detached Runtime mutation and separate secret/live launch configuration; R both real adapters |
+| 15 | U missing/wrong hash/wrong Attempt receipts; matching receipt and RuntimeRef validation |
+| 16 | U PREPARED/reservation/receipt distinctions; refusal versus exception; reservation rollback before start |
+| 17 | U crash UNKNOWN and no substitute/retry; R interrupted reservation and restart |
+| 18 | U attributable non-receipt and recovered receipt append-only facts; terminal observations cannot be rewritten |
+| 19 | U cross-Attempt reuse/history/substitution refusal; R delivered history remains readable without another call |
+| 20 | U snapshot/event/replay and reservation rollback; whole-record CAS; R independent writer processes, one winner/one call |
+| 21 | U intent-bound replay adds no events or external starts; R restarted replay |
+| 22 | R exact archive/receipt and UNKNOWN after true restart; corruption/missing record fails closed |
+| 23 | U shared backend suite; R SQLite durability and independent writer competition |
+| 24 | Full regression includes Decision, Memory, Acceptance, Policy, Approval, Workspace, Runtime Adapter and legacy runtime; U Controller integration |
+| 25 | Final Node 20/22 CI must pass before independent review; CI result is appended below after the implementation commit runs |
+
+## Review limits
+
+Exact pins, all ACTIVE Decisions and included-supplemental drift are intentionally
+conservative. Profile integrations must provide truthful scoped observations and
+semantic integrity checks; Capsule does not authenticate arbitrary callback callers
+or prevent filesystem changes after observation. SQLite transactions cannot make
+external calls exactly-once: ambiguous windows remain UNKNOWN and are never blindly
+replayed. No fixed TTL, history cleanup, leases/fencing or new Effect layer was added.
+
+No new D/E issue was discovered within this bounded implementation. Independent
+review and separately authorized governance closure remain necessary.

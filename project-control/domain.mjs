@@ -1,3 +1,26 @@
+import { canonicalCapsuleJson, capsuleHash } from "./capsule-json.mjs";
+
+export const CapsuleRole = Object.freeze({ REQUIRED: "REQUIRED", SUPPLEMENTAL: "SUPPLEMENTAL" });
+export const CapsuleSourceType = Object.freeze(Object.fromEntries([
+  "PROJECT", "MILESTONE", "GOAL", "TASK", "ACCEPTANCE", "DECISION", "MEMORY",
+  "EVIDENCE", "VERIFICATION", "WORKSPACE", "REALITY", "POLICY", "POLICY_DECISION", "APPROVAL", "RUNTIME",
+].map(type => [type, type])));
+export const CapsuleDeliveryStatus = Object.freeze(Object.fromEntries([
+  "PREPARED", "DISPATCHING", "RECEIVED", "NOT_RECEIVED", "UNKNOWN",
+].map(status => [status, status])));
+
+export function createContextCapsule({ id, payload }) {
+  if (!id || payload?.capsuleId !== id) throw new InvariantError("Capsule requires independent matching identity");
+  for (const key of ["projectId", "taskId", "runId", "attemptId"]) {
+    if (typeof payload.binding?.[key] !== "string" || !payload.binding[key]) throw new InvariantError("Capsule requires full execution binding");
+  }
+  const payloadJson = canonicalCapsuleJson(payload);
+  return { id, ...payload.binding, payloadJson, payloadHash: capsuleHash(payloadJson),
+    byteLength: Buffer.byteLength(payloadJson, "utf8"), schemaVersion: payload.schemaVersion,
+    assemblerVersion: payload.assemblerVersion, profileVersion: payload.profile.version,
+    createdAt: payload.generatedAt };
+}
+
 // ADR-0008 vocabulary. These labels confer no Acceptance or permission authority.
 export const MemoryType = Object.freeze({ FACT: "FACT", DECISION: "DECISION", CONSTRAINT: "CONSTRAINT", LESSON: "LESSON" });
 export const MemoryConfidence = Object.freeze({ VERIFIED: "VERIFIED", ACCEPTED: "ACCEPTED", INFERRED: "INFERRED" });

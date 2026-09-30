@@ -1,4 +1,5 @@
 import { ReconcileOutcome, now } from "./domain.mjs";
+import { acceptCapsuleInput, capsuleReceipt } from "./capsule-receipt.mjs";
 import {
   RuntimeOutcome,
   RuntimeState,
@@ -39,7 +40,8 @@ export class FakeRuntime {
     });
   }
 
-  async start({ run, attempt }) {
+  async start({ run, attempt, contextCapsule, capsuleBinding }) {
+    const accepted = acceptCapsuleInput({ run, attempt, contextCapsule, capsuleBinding });
     this.started.push({ runId: run.id, attemptId: attempt.id });
     const mode = this.modes.length > 1 ? this.modes.shift() : this.modes[0];
     const externalId = `fake-${++this.sequence}`;
@@ -54,9 +56,11 @@ export class FakeRuntime {
       runtimeRef,
       state: RuntimeState.RUNNING,
       cancelled: false,
+      ...(accepted ? { capsuleInput: accepted } : {}),
     });
     return {
       runtimeRef,
+      ...(accepted ? { capsuleReceipt: capsuleReceipt(accepted, runtimeRef) } : {}),
       observation: createRuntimeObservation({
         state: RuntimeState.RUNNING,
         runtimeRef,

@@ -19,6 +19,7 @@ import {
 import { Collection } from "./store.mjs";
 import { RuntimeOutcome } from "./runtime-adapter.mjs";
 import { ProjectMemoryControl } from "./project-memory.mjs";
+import { ContextCapsuleControl } from "./context-capsule.mjs";
 
 export class Controller {
   constructor({
@@ -29,6 +30,8 @@ export class Controller {
     policyEngine = null,
     runtimeContextFactory = null,
     memoryBoundary = null,
+    capsuleBoundary = null,
+    runtimeLaunchConfigFactory = null,
     idFactory = defaultIdFactory,
   } = {}) {
     if (!store || !runtime || !verifier) throw new Error("store, runtime and verifier are required");
@@ -39,6 +42,8 @@ export class Controller {
     this.policyEngine = policyEngine;
     this.runtimeContextFactory = runtimeContextFactory;
     this.idFactory = idFactory;
+    this.capsules = capsuleBoundary == null ? null : new ContextCapsuleControl({ ...capsuleBoundary, store, runtime });
+    this.runtimeLaunchConfigFactory = runtimeLaunchConfigFactory;
     // Trusted composition input, never copied from Runtime output. G7.3 adds
     // no role/identity service and does not inject Memory into runtime context.
     this.memory = memoryBoundary == null ? null : new ProjectMemoryControl({ ...memoryBoundary, store });
@@ -70,6 +75,13 @@ export class Controller {
 
     if (task.status === TaskStatus.IN_PROGRESS && task.currentRunId) {
       const run = this.store.getRun(task.currentRunId);
+      if (this.capsules && run.currentAttemptId) {
+        const delivery = this.store.getAttempt(run.currentAttemptId).capsuleDelivery;
+        if (["DISPATCHING", "UNKNOWN"].includes(delivery?.status) && !this.capsules.inFlight.has(run.currentAttemptId)) {
+          this.capsules.recoverInterruptedDispatch(run.currentAttemptId, { commandId: `capsule-recover:${run.currentAttemptId}:${delivery.version}` });
+          return this.#reconcileBlockedRun(task, acceptance, this.store.getRun(run.id));
+        }
+      }
       // A BLOCKED Run is the only state that requires reconciliation; every
       // other Run is still observed passively.
       if (run.status === RunStatus.BLOCKED) {
@@ -105,20 +117,43 @@ export class Controller {
     });
 
     let runningAttempt = this.store.updateAttempt(attemptId, { status: AttemptStatus.RUNNING });
-    const contextCapsule = typeof this.runtimeContextFactory === "function"
-      ? await this.runtimeContextFactory({
-          task: structuredClone(task),
-          acceptance: structuredClone(acceptance),
-          run: this.store.getRun(run.id),
-          attempt: structuredClone(runningAttempt),
-        })
-      : {};
+    let started;
+    if (this.capsules) {
+      try {
+        const capsule = this.capsules.generate({ id: this.idFactory("capsule"), projectId: task.projectId, taskId: task.id, runId: run.id, attemptId },
+          { commandId: `capsule-generate:${attemptId}` });
+        const launchConfig = this.runtimeLaunchConfigFactory ? await this.runtimeLaunchConfigFactory({ task, run: this.store.getRun(run.id), attempt: runningAttempt }) : {};
+        const dispatched = await this.capsules.dispatch({ capsuleId: capsule.id, attemptId,
+          expectedDeliveryVersion: this.store.getAttempt(attemptId).capsuleDelivery.version, launchConfig }, { commandId: `capsule-dispatch:${attemptId}` });
+        if (!dispatched.started) return { action: "WAIT", reason: `capsule-${dispatched.delivery.status.toLowerCase()}`, task: this.store.getTask(task.id) };
+        started = dispatched.started;
+      } catch (error) {
+        // No external retry. Errors after reservation are uncertain input delivery.
+        const delivery = this.store.getAttempt(attemptId).capsuleDelivery;
+        if (delivery && ["DISPATCHING", "UNKNOWN"].includes(delivery.status)) {
+          this.capsules.recoverInterruptedDispatch(attemptId, { commandId: `capsule-recover:${attemptId}:${delivery.version}` });
+          return { action: "WAIT", reason: "capsule-unknown", error: error.message, task: this.store.getTask(task.id) };
+        }
+        this.store.updateAttempt(attemptId, { status: AttemptStatus.FAILED });
+        const latest = this.store.getRun(run.id); this.store.updateRun(run.id, latest.version, { status: RunStatus.FAILED });
+        return { action: "WAIT", reason: "capsule-preparation-refused", error: error.message, task: this.store.getTask(task.id) };
+      }
+    } else {
+      const contextCapsule = typeof this.runtimeContextFactory === "function"
+        ? await this.runtimeContextFactory({
+            task: structuredClone(task),
+            acceptance: structuredClone(acceptance),
+            run: this.store.getRun(run.id),
+            attempt: structuredClone(runningAttempt),
+          })
+        : {};
 
-    const started = await this.runtime.start({
-      run: this.store.getRun(run.id),
-      attempt: runningAttempt,
-      contextCapsule: contextCapsule ?? {},
-    });
+      started = await this.runtime.start({
+        run: this.store.getRun(run.id),
+        attempt: runningAttempt,
+        contextCapsule: contextCapsule ?? {},
+      });
+    }
 
     // G5 normalized RuntimeAdapter path. Runtime identity is persisted on the
     // Attempt, never substituted for RunId/AttemptId.
@@ -237,6 +272,13 @@ export class Controller {
       observation = await this.runtime.reconcile({ task, acceptance, run, attempt });
     }
     const outcome = observation?.outcome ?? ReconcileOutcome.UNKNOWN;
+    if (this.capsules && attempt.capsuleDelivery?.status === "UNKNOWN") {
+      if (observation?.capsuleReceipt) this.capsules.reconcileDelivery(attempt.id, { receipt: observation.capsuleReceipt, runtimeRef: observation.runtimeRef },
+        { commandId: `capsule-receipt-reconcile:${attempt.id}:${attempt.capsuleDelivery.version}`, expectedDeliveryVersion: attempt.capsuleDelivery.version });
+      else if (outcome === ReconcileOutcome.CONFIRMED_NO_EFFECT) this.capsules.reconcileDelivery(attempt.id,
+        { noExecution: true, observationRef: observation.observationRef ?? `runtime-reconcile:${attempt.id}`, reason: "Adapter confirmed no effect" },
+        { commandId: `capsule-nonreceipt-reconcile:${attempt.id}:${attempt.capsuleDelivery.version}`, expectedDeliveryVersion: attempt.capsuleDelivery.version });
+    }
 
     // External work already happened: its result becomes Evidence for the Run
     // and Attempt that really produced it, then it enters the very same

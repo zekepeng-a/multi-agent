@@ -32,6 +32,7 @@ export class MemoryStore extends ProjectControlStore {
     this.policyDecisions = new Map();
     this.decisions = new Map();
     this.memories = new Map();
+    this.capsules = new Map();
     this.workspaces = new Map();
     this.commands = new Map();
     this.events = [];
@@ -54,6 +55,7 @@ export class MemoryStore extends ProjectControlStore {
       case Collection.POLICY_DECISION: return this.policyDecisions;
       case Collection.DECISION: return this.decisions;
       case Collection.MEMORY: return this.memories;
+      case Collection.CAPSULE: return this.capsules;
       case Collection.WORKSPACE: return this.workspaces;
       default: throw new Error(`unknown collection: ${collection}`);
     }
@@ -65,6 +67,7 @@ export class MemoryStore extends ProjectControlStore {
   }
 
   putRecord(collection, key, record) {
+    if (collection === Collection.CAPSULE && this.#mapFor(collection).has(key)) throw new Error("Capsule snapshots are immutable");
     this.#mapFor(collection).set(key, structuredClone(record));
   }
 
@@ -76,6 +79,7 @@ export class MemoryStore extends ProjectControlStore {
   }
 
   updateRecord(collection, key, record, expectedVersion) {
+    if (collection === Collection.CAPSULE) throw new Error("Capsule snapshots are immutable");
     const map = this.#mapFor(collection);
     const current = map.get(key);
     if (!current) return false;
@@ -86,6 +90,14 @@ export class MemoryStore extends ProjectControlStore {
 
   allRecords(collection) {
     return [...this.#mapFor(collection).values()].map((record) => structuredClone(record));
+  }
+
+  compareRecord(collection, key, record, expectedRecord) {
+    if (collection === Collection.CAPSULE) throw new Error("Capsule snapshots are immutable");
+    const map = this.#mapFor(collection);
+    if (JSON.stringify(map.get(key)) !== JSON.stringify(expectedRecord)) return false;
+    map.set(key, structuredClone(record));
+    return true;
   }
 
   recordsMatching(collection, field, value) {

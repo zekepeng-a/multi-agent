@@ -44,6 +44,10 @@ export function isSqliteAvailable() {
 }
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS context_capsules (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, task_id TEXT NOT NULL,
+  run_id TEXT NOT NULL, attempt_id TEXT NOT NULL, body TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS projects (
   id      TEXT PRIMARY KEY,
   version INTEGER NOT NULL,
@@ -438,6 +442,11 @@ const SHAPES = {
     columns: (r) => ({ id: r.id, version: r.version, project_id: r.projectId, status: r.status }),
     filters: { id: "id", projectId: "project_id" },
   },
+  [Collection.CAPSULE]: {
+    table: "context_capsules", scope: "id",
+    columns: r => ({ id: r.id, project_id: r.projectId, task_id: r.taskId, run_id: r.runId, attempt_id: r.attemptId }),
+    filters: { id: "id", projectId: "project_id", taskId: "task_id", runId: "run_id", attemptId: "attempt_id" },
+  },
 };
 
 function shapeFor(collection) {
@@ -517,6 +526,7 @@ export class SqliteStore extends ProjectControlStore {
   }
 
   putRecord(collection, key, record) {
+    if (collection === Collection.CAPSULE && this.getRecord(collection, key)) throw new Error("Capsule snapshots are immutable");
     const shape = shapeFor(collection);
     this.#upsert(shape, key, record);
   }
@@ -535,6 +545,7 @@ export class SqliteStore extends ProjectControlStore {
   }
 
   updateRecord(collection, key, record, expectedVersion) {
+    if (collection === Collection.CAPSULE) throw new Error("Capsule snapshots are immutable");
     const shape = shapeFor(collection);
     const columns = shape.columns(record);
     const names = Object.keys(columns);
@@ -551,6 +562,17 @@ export class SqliteStore extends ProjectControlStore {
         ...keyParams(shape, key),
         ...(expectedVersion === undefined ? [] : [expectedVersion]),
       );
+    return Number(info.changes) === 1;
+  }
+
+  compareRecord(collection, key, record, expectedRecord) {
+    if (collection === Collection.CAPSULE) throw new Error("Capsule snapshots are immutable");
+    const shape = shapeFor(collection);
+    if (shape.scope !== "id") throw new Error("Whole-record CAS requires an identity collection");
+    const columns = shape.columns(record);
+    const names = Object.keys(columns);
+    const info = this.#db.prepare(`UPDATE ${shape.table} SET ${names.map(name => `${name} = ?`).join(", ")}, body = ? WHERE id = ? AND body = ?`)
+      .run(...names.map(name => columns[name]), JSON.stringify(record), key, JSON.stringify(expectedRecord));
     return Number(info.changes) === 1;
   }
 

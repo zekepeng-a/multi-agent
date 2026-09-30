@@ -65,6 +65,7 @@ export const Collection = Object.freeze({
   POLICY_DECISION: "policy_decision",
   DECISION: "decision",
   MEMORY: "memory",
+  CAPSULE: "context_capsule",
   WORKSPACE: "workspace",
 });
 
@@ -924,6 +925,10 @@ export class ProjectControlStore {
       const replay = this.#replayCommand(commandId, "updateAttempt");
       if (replay) return this.getAttempt(replay);
       const current = this.#required(Collection.ATTEMPT, id, "attempt");
+      if (Object.hasOwn(patch, "capsuleDelivery") || (current.capsuleDelivery &&
+          ["id", "runId", "attemptNumber"].some(key => Object.hasOwn(patch, key) && patch[key] !== current[key]))) {
+        throw new InvariantError("Capsule delivery/binding requires the trusted Capsule boundary");
+      }
       const next = { ...current, ...structuredClone(patch) };
       if (next.status === AttemptStatus.RUNNING && !next.startedAt) next.startedAt = now();
       if ([AttemptStatus.COMPLETED, AttemptStatus.FAILED, AttemptStatus.LOST, AttemptStatus.CANCELLED].includes(next.status)) {

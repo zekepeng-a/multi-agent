@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { acceptCapsuleInput, capsuleReceipt, CapsuleInputRefusedError } from "./capsule-receipt.mjs";
 import {
   RuntimeOutcome,
   RuntimeState,
@@ -35,10 +36,12 @@ export class LocalProcessRuntimeAdapter {
     });
   }
 
-  async start({ run, attempt, contextCapsule = {}, signal = null } = {}) {
-    const spec = contextCapsule?.process ?? contextCapsule;
+  async start({ run, attempt, contextCapsule = {}, capsuleBinding = null, launchConfig = {}, signal = null } = {}) {
+    const accepted = acceptCapsuleInput({ run, attempt, contextCapsule, capsuleBinding });
+    const input = accepted ? launchConfig : contextCapsule;
+    const spec = input?.process ?? input;
     if (typeof spec?.command !== "string" || spec.command.trim() === "") {
-      throw new Error("LocalProcessRuntimeAdapter requires contextCapsule.process.command");
+      throw new (accepted ? CapsuleInputRefusedError : Error)("LocalProcessRuntimeAdapter requires process.command");
     }
     const args = Array.isArray(spec.args) ? spec.args.map(String) : [];
     const externalId = randomUUID();
@@ -63,6 +66,7 @@ export class LocalProcessRuntimeAdapter {
     });
 
     const execution = {
+      ...(accepted ? { capsuleInput: accepted } : {}),
       child,
       runtimeRef,
       state: RuntimeState.STARTING,
@@ -143,6 +147,7 @@ export class LocalProcessRuntimeAdapter {
 
     return {
       runtimeRef: structuredClone(runtimeRef),
+      ...(accepted ? { capsuleReceipt: capsuleReceipt(accepted, runtimeRef) } : {}),
       observation: createRuntimeObservation({
         state: execution.state,
         runtimeRef,
