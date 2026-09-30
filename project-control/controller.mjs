@@ -1,5 +1,7 @@
 import {
   AttemptStatus,
+  EffectObservation,
+  EffectStatus,
   EvidenceStatus,
   GoalStatus,
   InvariantError,
@@ -17,11 +19,12 @@ import {
 import { Collection } from "./store.mjs";
 
 export class Controller {
-  constructor({ store, runtime, verifier, idFactory = defaultIdFactory } = {}) {
+  constructor({ store, runtime, verifier, effectDriver = null, idFactory = defaultIdFactory } = {}) {
     if (!store || !runtime || !verifier) throw new Error("store, runtime and verifier are required");
     this.store = store;
     this.runtime = runtime;
     this.verifier = verifier;
+    this.effectDriver = effectDriver;
     this.idFactory = idFactory;
   }
 
@@ -524,6 +527,93 @@ export class Controller {
       { approvalId },
       { mutationId },
     );
+  }
+
+  // ── External Effect boundary (G3) ───────────────────────────────────────────
+  //
+  // The Effect is durable before this Controller crosses the driver boundary.
+  // A local throw after DISPATCHED becomes UNKNOWN, never "failed/no effect".
+
+  async dispatchEffect(
+    { id, commandId, destination, idempotencyKey = null, projectId = null } = {},
+    { mutationId = null } = {},
+  ) {
+    this.#requireEffectDriver();
+    const effect = this.store.createEffectFromCommand(
+      { id, commandId, destination, idempotencyKey, projectId },
+      { mutationId: mutationId ? `${mutationId}:request` : null },
+    );
+    return this.#dispatchRequestedEffect(effect, mutationId);
+  }
+
+  async retryEffect(effectId, expectedVersion, { mutationId = null } = {}) {
+    this.#requireEffectDriver();
+    const requested = this.store.rerequestEffect(effectId, expectedVersion, {
+      mutationId: mutationId ? `${mutationId}:rerequest` : null,
+    });
+    return this.#dispatchRequestedEffect(requested, mutationId);
+  }
+
+  async reconcileEffect(effectId, expectedVersion, { mutationId = null } = {}) {
+    this.#requireEffectDriver();
+    const current = this.store.getEffect(effectId);
+    if (![EffectStatus.DISPATCHED, EffectStatus.UNKNOWN].includes(current.status)) {
+      throw new InvariantError(
+        `effect ${effectId} is ${current.status}; only DISPATCHED/UNKNOWN effects require reconciliation`,
+      );
+    }
+
+    const reconciling = this.store.beginEffectReconciliation(effectId, expectedVersion, {
+      mutationId: mutationId ? `${mutationId}:begin` : null,
+    });
+
+    let observation;
+    try {
+      observation = await this.effectDriver.reconcile(reconciling);
+    } catch {
+      observation = { outcome: EffectObservation.UNKNOWN };
+    }
+
+    return this.store.applyEffectReconciliation(
+      effectId,
+      reconciling.version,
+      {
+        outcome: observation?.outcome ?? EffectObservation.UNKNOWN,
+        observationRef: observation?.observationRef ?? null,
+        receipt: observation?.receipt ?? null,
+      },
+      { mutationId: mutationId ? `${mutationId}:observe` : null },
+    );
+  }
+
+  async #dispatchRequestedEffect(effect, mutationId) {
+    const dispatched = this.store.markEffectDispatched(effect.id, effect.version, {
+      mutationId: mutationId ? `${mutationId}:dispatch` : null,
+    });
+
+    let observation;
+    try {
+      observation = await this.effectDriver.dispatch(dispatched);
+    } catch {
+      observation = { outcome: EffectObservation.UNKNOWN };
+    }
+
+    return this.store.recordEffectOutcome(
+      dispatched.id,
+      dispatched.version,
+      {
+        outcome: observation?.outcome ?? EffectObservation.UNKNOWN,
+        receipt: observation?.receipt ?? null,
+        observationRef: observation?.observationRef ?? null,
+      },
+      { mutationId: mutationId ? `${mutationId}:outcome` : null },
+    );
+  }
+
+  #requireEffectDriver() {
+    if (!this.effectDriver || typeof this.effectDriver.dispatch !== "function" || typeof this.effectDriver.reconcile !== "function") {
+      throw new InvariantError("G3 effect operation requires an effect driver");
+    }
   }
 
   async reconcileGoal(goalId) {
