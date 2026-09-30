@@ -78,7 +78,7 @@ These labels describe the baseline commit above only.
 | Reconciliation | PARTIAL | LOST Attempt recovery distinguishes `confirmed_no_effect`, `confirmed_completed`, and `unknown`; this is not yet a general reconciliation subsystem for all external effects. |
 | Recovery | PARTIAL | Safe recovery exists for the current LOST-attempt path; typed recovery across Command/Effect/runtime/project boundaries is not complete. |
 | Approval | IMPLEMENTED | Durable scoped human approval lifecycle, target-version pinning, attribution, expiry/revocation, action/capability/scope checks, fail-closed semantics. |
-| Policy | DOCUMENTED_ONLY / G4 READY | ADR-0003 now settles deterministic ALLOW/DENY/REQUIRE_APPROVAL composition, immutable PolicyDecision audit facts, fail-closed default, and Approval interaction. No PolicyDecision store/engine implementation exists yet. |
+| Policy | IMPLEMENTED / PARTIAL | Deterministic StaticPolicyEngine now evaluates stored Command/current-target facts with DENY > REQUIRE_APPROVAL > ALLOW precedence and fail-closed default. Immutable PolicyDecision audit facts persist in MemoryStore/SQLite and survive restart. Controller re-evaluates policy at every authorization attempt; Approval only satisfies REQUIRE_APPROVAL. External policy adapters/management remain future work. |
 | Command | IMPLEMENTED / PARTIAL | Durable Command now exists with immutable stored intent, independent version, MemoryStore/SQLite persistence, CREATED→AUTHORIZED/REJECTED transitions, events, restart proof, and Command-based Controller authorization. DISPATCHED/EXECUTING/SUCCEEDED/FAILED/UNKNOWN remain reserved for G3. Historical store-mutation replay rows remain a separate mechanism. COMMAND-target Approval remains intentionally refused. |
 | Effect | IMPLEMENTED / PARTIAL | Durable Effect ledger now exists with REQUESTED/DISPATCHED/SUCCEEDED/FAILED_NO_EFFECT/UNKNOWN semantics, MemoryStore/SQLite persistence, fake driver seam, idempotency/replay handling, typed reconciliation, and real restart proof for orphaned DISPATCHED state. Real provider/runtime integrations remain future work. |
 | Event | IMPLEMENTED | Append-oriented events are persisted with authoritative mutations and survive SQLite restart. Event is kept distinct from State. |
@@ -174,17 +174,23 @@ Do not describe current command-id replay records as the Command domain, and do 
 
 ### 7.2 Policy
 
-Approval exists, but Policy does not.
+A bounded deterministic Policy layer now exists.
 
-No current Project Control component is authoritative for:
+Current reality includes:
 
-```text
-ALLOW
-DENY
-REQUIRE_APPROVAL
-```
+- StaticPolicyEngine with explicit versioned configuration;
+- normalized request derived from stored Command/current target;
+- ALLOW / DENY / REQUIRE_APPROVAL with deny precedence;
+- immutable PolicyDecision persistence/audit history;
+- per-attempt re-evaluation;
+- Approval used only to satisfy REQUIRE_APPROVAL.
 
-across concrete actions/capabilities/risk.
+Current reality does **not** yet include:
+
+- external OPA/Cedar/enterprise policy adapters;
+- policy authoring/management UI;
+- enterprise identity/role directory;
+- COMMAND-target Approval.
 
 ### 7.3 Runtime replaceability
 
