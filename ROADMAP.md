@@ -434,14 +434,14 @@ Parallel execution now has real isolated writable roots, enforced scopes, confli
 
 # G7 — Long-horizon Project Control objects
 
-**Status: ACTIVE — G7.1 PROJECT ACCEPTANCE D-GATE**
+**Status: ACTIVE — G7.2 DECISION D-GATE**
 
 This phase is intentionally decomposed. See `docs/architecture/G7_DECOMPOSITION.md`.
 
 Current candidate sequence:
 
-1. G7.1 Project-level Acceptance — D, active.
-2. G7.2 Decision — D, queued.
+1. G7.1 Project-level Acceptance — COMPLETE.
+2. G7.2 Decision — D, active.
 3. G7.3 Project-control Memory — D, queued after Decision.
 4. G7.4 Context Capsule — D, queued after Decision/Memory.
 5. G7.5 Roadmap domain — D, queued; distinct from repository `ROADMAP.md`.
@@ -450,20 +450,20 @@ Current candidate sequence:
 
 ## Current gate
 
-G7.1 is the only active design question.
+G7.1 is complete. See `docs/architecture/PROJECT_ACCEPTANCE_G7_1_EVIDENCE.md`.
 
-`PROJECT` already exists as an Acceptance target type, but Project has no pinned
-Acceptance revision and no contract-bound completion flow.
+G7.2 Decision is now the only active design question.
 
-Before code, settle:
+Before Decision code, settle:
 
-- whether Project may optionally pin an Acceptance Contract like Goal/Milestone;
-- whether all Milestones must first be COMPLETED;
-- how aggregate Project Evidence identifies the child snapshot;
-- which Project source states may enter acceptance;
-- whether Project without a contract may continue aggregate completion;
-- stale/superseded Project evidence behavior;
-- exact atomic transition of Project + contract status.
+- who may create a durable Decision fact;
+- HUMAN vs CONTROL_PLANE authority and attribution;
+- whether Decisions are mutable or append/supersede-only;
+- exact ACTIVE / SUPERSEDED / REVOKED semantics;
+- whether a Decision pins source/current-state revisions;
+- how a Decision may become a Memory source without becoming Current Reality;
+- whether runtime/agent proposals can ever be Decisions directly (default: no);
+- optimistic concurrency / idempotency semantics.
 
 Focused source review + ADR required before implementation.
 
@@ -513,7 +513,7 @@ COMPLETE: G3 External Effect + reconciliation boundary
 COMPLETE: G4 Policy / authorization composition
 COMPLETE: G5 Real Runtime Adapter boundary
 COMPLETE: G6 Workspace / Reality / concurrency boundary
-ACTIVE:   G7.1 Project-level Acceptance — D-GATE
+ACTIVE:   G7.2 Decision — D-GATE
 NEXT:     G8 End-to-end dogfood + release convergence
 BLOCKED FROM BUNDLE CODING:
           Roadmap / Decision / Memory / Context Capsule / Project Acceptance /
