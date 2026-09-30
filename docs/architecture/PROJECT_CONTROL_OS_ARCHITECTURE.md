@@ -1106,10 +1106,12 @@ against it, even though the target, version, action name and scope are identical
 It is bound at request time like every other part of the request and is compared
 exactly at authorization time (I-44).
 
-`ApprovalTargetType.COMMAND` is **reserved but unsupported in v0.1**. Command is
-not yet a durable control object, so an approval about one would be a control fact
-claiming support for something the model does not have (I-45). Requesting, seeding
-or consuming a COMMAND approval therefore fails closed with one explicit message.
+`ApprovalTargetType.COMMAND` is **reserved but unsupported in G2**. Command now
+has durable identity, so I-45's object-existence boundary is satisfied; however,
+the architecture has not yet decided whether human approval should target the
+Command itself or the underlying Project/Task action. That belongs to later
+Policy/Approval composition. Requesting, seeding or consuming a COMMAND-target
+approval therefore still fails closed with one explicit message.
 
 ### What an Approval is not
 
