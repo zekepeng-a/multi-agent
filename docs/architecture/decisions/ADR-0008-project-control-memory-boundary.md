@@ -60,10 +60,19 @@ Decision identity. Runtime/model output alone never creates an ACTIVE Memory.
 | Mark Memory STALE | HUMAN or CONTROL_PLANE, recorded through the control boundary | Non-empty attributable reason; no alteration of source objects. |
 | Detect known source invalidity and reconcile it | CONTROL_PLANE | Persist STALE without inventing replacement meaning. |
 
-A REVIEWER is the existing delegated verification role, not an arbitrary worker
-claiming that role. An agent executing a reviewer assignment may produce a
-validation attestation only within that assignment. A worker cannot self-assign
-validation or promotion authority.
+REVIEWER denotes semantic-validation responsibility within the existing trusted
+control boundary, not a new independently authenticated principal or identity
+system. An Agent cannot obtain validation permission by self-reporting a role.
+
+Agent/Reviewer semantic validation is usable only when that boundary establishes
+a traceable validator identity and the existing assignment/task relationship
+(with Run/Attempt refs when applicable) authorizing this exact validation scope.
+The attestation records those identity/assignment references. A role string or
+unattributed model response is insufficient. If the existing boundary cannot
+establish that relationship, Agent/Reviewer validation is not admissible; use
+HUMAN validation or the restricted deterministic CONTROL_PLANE path.
+G7.3 does not build a general role registry, identity provider or authentication
+subsystem.
 
 A candidate input is not a new durable domain or lifecycle. MemoryId is issued
 at promotion; candidates need not be persisted by G7.3.
@@ -77,15 +86,15 @@ new attestation. A rejected or mismatched attestation cannot authorize promotion
 HUMAN/REVIEWER validation records an attributable content judgement.
 CONTROL_PLANE validation is restricted to deterministic literal/structured
 restatements of existing fields; it cannot validate free-form inference.
-Actor identity comes from the trusted control caller/assignment, not an
-untrusted runtime payload. This is attribution/enforcement at the existing
-control boundary, not a new authentication system.
+Actor identity and any reviewer assignment come from the existing trusted control
+caller and traceable task relationship, not an untrusted runtime payload.
+Recording validation provenance does not authenticate the actor by itself.
 
 Rationale: source resolution and semantic fidelity are different checks.
 Recording that a file exists or accepting a model's self-reported confidence
 does not perform the second check.
 
-### 3. Type semantics and allowed confidence
+### 3. Type semantics and type × confidence × source admission
 
 | Type | Meaning | Allowed confidence |
 |---|---|---|
@@ -94,8 +103,25 @@ does not perform the second check.
 | CONSTRAINT | A faithful restatement of an explicit constraint in one identified ACTIVE Project Decision. It does not create a new directive. | ACCEPTED |
 | LESSON | A reusable, explicitly scoped observation about a failure, fix or verification pattern. Generalization beyond demonstrated cases is inference. | VERIFIED, INFERRED |
 
-DECISION/CONSTRAINT require exactly one originating Decision reference.
-Additional corroborating refs are permitted and remain necessary dependencies.
+The admission matrix is closed; all combinations not listed below are refused.
+
+| Type | Confidence | Required supporting source and proof |
+|---|---|---|
+| DECISION | ACCEPTED | Exactly one corresponding ACTIVE Decision, faithfully restated with its identity, authority and pin. |
+| CONSTRAINT | ACCEPTED | Exactly one corresponding ACTIVE Decision containing the explicit constraint being restated. |
+| FACT | ACCEPTED | PROJECT_STATE for the asserted accepted target, bound to its own Acceptance contract id/version and still-current Evidence/Verification proof. Decision is not an admissible supporting source for this combination. |
+| FACT | VERIFIED | Current EVIDENCE and matching VERIFICATION supporting the exact bounded observation/assertion. |
+| FACT | INFERRED | EVIDENCE, VERIFICATION and/or PROJECT_STATE supporting an explicitly scoped interpretation; no claim that the precise conclusion was verified or accepted. |
+| LESSON | VERIFIED | Current EVIDENCE and matching VERIFICATION supporting the exact demonstrated pattern within the stated scope. |
+| LESSON | INFERRED | EVIDENCE, VERIFICATION, PROJECT_STATE and/or DECISION providing the necessary basis for an explicitly scoped generalization, without claiming verification of that generalization. |
+
+Required source families cannot be substituted by a confidence label or a
+validator judgement. In particular, a Decision about a fact does not establish
+contract-bound accepted Project State and cannot justify FACT + ACCEPTED.
+
+Every listed source ref must be necessary to support the complete Memory claim.
+Non-essential corroboration or contextual material stays outside source_refs;
+there are no optional sources, quorum rules or claim graphs in v1.
 A new desired constraint must first follow ADR-0007's Decision boundary; it must
 not be created by labeling Memory as CONSTRAINT.
 
@@ -107,12 +133,13 @@ not be created by labeling Memory as CONSTRAINT.
   failure; it cannot support a claim of successful execution. The verdict and
   verified scope must match the claim. File existence/hash checks alone do not
   justify VERIFIED.
-- **ACCEPTED:** a faithful restatement of an authoritative recorded control fact:
-  either an ACTIVE Decision or a currently supported accepted target state
-  with its own contract-bound Evidence/Verification lineage. This describes
-  source origin. It does not mean the Memory itself passed project Acceptance.
-  A completion aggregate without its own acceptance proof is insufficient for
-  an ACCEPTED FACT in this first boundary.
+- **ACCEPTED:** source-origin support governed by the type/source matrix:
+  DECISION/CONSTRAINT restate the corresponding ACTIVE Decision; FACT restates
+  genuinely contract-bound accepted Project State with current proof.
+  These routes are not interchangeable. A Decision cannot be used to package
+  an ordinary FACT as ACCEPTED. The label does not mean the Memory itself passed
+  project Acceptance. A completion aggregate without its own acceptance proof
+  is insufficient for an ACCEPTED FACT in this first boundary.
 - **INFERRED:** an explicitly identified interpretation or generalization,
   supported by traceable sources but not established by those sources as the
   exact asserted conclusion. Its attestation states assumptions and applicability
@@ -147,15 +174,22 @@ The resolver must prove:
 
 Typed resolver rules:
 - Decision: same project, matching pin, ACTIVE; terminal Decisions are history.
-- Evidence: existing target/execution/workspace lineage remains coherent;
-  rejected, stale or superseded evidence is unusable for current use.
-  Candidate Evidence may support INFERRED content, but Memory never upgrades it.
+- Evidence: existing target/execution/workspace lineage remains coherent.
+  EvidenceStatus is CANDIDATE / VERIFIED / ACCEPTED / STALE / SUPERSEDED;
+  there is no REJECTED Evidence status. STALE/SUPERSEDED Evidence is unusable
+  for current use. CANDIDATE may support only the permitted INFERRED combinations.
+  VERIFIED/ACCEPTED remain subject to current lineage and the matrix's matching
+  Verification requirements; status alone is not proof. Memory never upgrades
+  an Evidence status.
 - Verification: immutable pinned record plus matching underlying Evidence and
   target/contract scope; underlying evidence must still be current. Its verdict
   must support the confidence/claim, not merely exist.
-- Project state: exact target version and, for ACCEPTED content, concrete
+- Project state: exact target version and, for FACT + ACCEPTED, concrete
   Acceptance id/version and current supporting proof. A status string alone
-  is insufficient.
+  is insufficient. Exact-version invalidation is an intentional conservative
+  v1 policy: any target version change makes this source pin invalid, even if
+  some asserted fields appear unchanged. No semantic field-diff exemption or
+  automatic rebinding to the new version is introduced.
 
 Existing acceptance/revision checks are reused; Memory does not invent a second
 Acceptance evaluator. Decision is consumed as an authoritative Decision under
@@ -187,8 +221,16 @@ INVALID and UNRESOLVED both exclude the Memory from current-use queries.
 Transient unavailability is not proof that the content became false.
 
 Explicit reconciliation persists STALE for known INVALID dependencies, with
-reason, responsible actor and observation refs. UNRESOLVED is reported as
-unavailable but does not automatically cause a permanent lifecycle mutation.
+responsible actor and observation refs. Staleness metadata and events distinguish:
+
+- SOURCE_INVALIDATION: the required source/pin/currentness failed, with source
+  identity and concrete failure details;
+- HUMAN_WITHDRAWAL: a Human withdraws the Memory from use, with attributable
+  instruction/reason, without asserting that any source was invalid.
+
+Both use STALE without changing source objects or introducing a new lifecycle
+state. UNRESOLVED is reported as unavailable but does not automatically cause a
+permanent lifecycle mutation.
 
 Historical assertions remain readable with their original scope and sources.
 A past observation may remain historically true even when no longer applicable
@@ -226,7 +268,7 @@ A source's replacement does not itself create a replacement Memory:
 it makes the dependent Memory unavailable/STALE. SUPERSEDED requires an actual
 new Memory record. There is no physical pruning or deletion of Memory history
 in this boundary. A human withdrawal without replacement records STALE with
-reason; no new REVOKED state is introduced.
+HUMAN_WITHDRAWAL and reason; no new REVOKED state is introduced.
 
 Rationale: conservative re-promotion is simpler to audit than restoring old
 meaning in place, and does not pretend partial source repairs preserved a claim.
@@ -267,10 +309,15 @@ Without relevance input, use deterministic MemoryId order.
 No advanced ranking or search infrastructure is required.
 
 Queries never promote, stale, supersede or update timestamps/events.
-They compute current eligibility using one coherent control-store read snapshot
-and trusted current reality observations. A recorded ACTIVE Memory can therefore
-be currently unavailable. Historical/debug reads expose recorded status,
-eligibility and reasons separately; no new durable status is invented.
+Control Store records may be checked using a consistent database read snapshot.
+External Current Reality is checked by separate trusted observations, each with
+its own observation pin/revision and time. The database snapshot and external
+observations are distinct consistency boundaries; no atomic snapshot across
+the Control Store and filesystem/external world is claimed.
+
+A recorded ACTIVE Memory can therefore be currently unavailable. Historical/debug
+reads expose recorded status, eligibility and reasons separately; no new durable
+status is invented.
 
 History reads are explicitly by MemoryId or by ProjectId with requested lifecycle
 statuses. They include original pins/meaning, lineage and reasons and are never
@@ -278,10 +325,11 @@ silently merged into current-use results.
 
 Current-use results retain identity/version, type/confidence, source refs,
 attestation and validity observation context. They are knowledge records, not
-Context Capsules. Validity is guaranteed at the checked snapshot/observation,
-not indefinitely after return; the contract does not claim an atomic transaction
-with the external filesystem. Consumers requiring a later current-use claim must
-re-query. Capsule assembly/freshness/expiry remain G7.4.
+Context Capsules. Store eligibility is evaluated at the consistent read snapshot;
+external revision agreement is established only at each recorded observation.
+These checks do not prove that database and external facts coexisted at one atomic
+instant or remained unchanged until return. Consumers requiring a later
+current-use claim must re-query. Capsule assembly/freshness/expiry remain G7.4.
 
 ### 10. Minimal persistence, concurrency and replay
 
@@ -292,14 +340,17 @@ Keep small structured validation facts with the immutable promoted record.
 Large supporting artifacts remain external under existing Evidence references.
 
 Append events for promotion, staling and supersession with actor/reason,
-aggregate version and source/validation observation references.
+staleness reason kind where applicable, aggregate version and source/validation
+observation references.
 State, event and existing store mutation-replay record commit together.
 Replacement old/new rows and events commit or roll back together.
 
 Updates require expected_version and backend compare-and-set. Failed validation,
 source re-check or conflicts produce no partial Memory/state/event changes.
-Promotion binds the exact validated input; sources are re-checked at the mutation
-snapshot. External reality checks remain observation-bound as in §9.
+Promotion binds the exact validated input; control-source records are re-checked
+inside the store mutation transaction. External Current Reality is checked
+separately with observation pins/times as in §9; it is not part of that database
+transaction or a cross-boundary atomic snapshot.
 
 Use the existing store mutation replay identity, not a new durable Command
 execution lifecycle. An identical replay returns the existing operation result
@@ -423,11 +474,15 @@ Costs and risks:
 - read-only queries may exclude a recorded ACTIVE record before reconciliation;
 - external reality can change after observation; no perpetual validity is claimed;
 - inferred lessons require explicit opt-in and cannot masquerade as verified facts;
-- trusted caller/reviewer assignment remains an integration assumption, not a
-  cryptographic identity guarantee.
+- reviewer permission depends on the existing trusted boundary and traceable
+  identity/task assignment; unsupported self-reported roles are rejected rather
+  than repaired by adding a new authentication subsystem;
+- PROJECT_STATE exact-version invalidation may suppress otherwise unchanged
+  knowledge; this conservative v1 cost is intentional.
 
 Human acceptance must explicitly approve these tradeoffs and the confidence/type
-matrix. They are candidate choices, not unspecified future semantics.
+matrix, including the conservative exact-version strategy. They are candidate
+choices, not unspecified future semantics.
 
 ## Implementation boundary
 
@@ -452,6 +507,7 @@ Non-goals:
 - vector databases, embeddings or advanced ranking;
 - legacy V0.5 Memory migration/refactoring;
 - generic knowledge graphs or external-source resolvers;
+- a new Reviewer identity system, general role registry or authentication subsystem;
 - changes to Decision, Approval, Policy or Acceptance authority;
 - Roadmap domain;
 - distributed locks, leases/fencing or a new top-level architecture layer;
@@ -465,22 +521,28 @@ Implementation is complete only when tests and recorded evidence prove:
    reviewer authority, promote or alter lifecycle.
 2. HUMAN/REVIEWER fidelity attestations and exact deterministic Control Plane
    validation are distinguished; free-form control self-validation is rejected.
+   Agent self-reported roles and missing/untraceable trusted identity/task
+   assignments cannot authorize semantic validation.
 3. Candidate fingerprint, attestation result and all immutable fields match;
    changing content/refs/confidence after validation prevents promotion.
-4. Every type obeys the declared meaning/confidence matrix; invented Decisions
-   or constraints and unsupported VERIFIED/ACCEPTED labels are refused.
+4. Every type obeys the closed type/confidence/source matrix; invented Decisions
+   or constraints and unsupported labels are refused. Decision-backed
+   FACT + ACCEPTED is rejected even when that Decision is ACTIVE.
 5. Missing, unpinned, unsupported and cross-project refs fail closed.
 6. Accepted-state sources require their own current contract/proof; Candidate
    Evidence is not upgraded by Memory; verdict/claim mismatch is rejected.
 7. Any required source invalidity suppresses a multi-source Memory, including
    source deletion, pin change, stale Evidence and terminal Decision.
+   PROJECT_STATE version changes invalidate exact pins even when asserted fields
+   appear unchanged. Non-essential contextual refs are not admitted as support.
 8. UNRESOLVED observations suppress current use without claiming falsity or
    automatically changing recorded lifecycle.
 9. No unrelated-file change or mere elapsed time invents source invalidity.
 10. Source validity is rechecked at promotion and query; changed sources cannot
     pass using only a previously valid attestation or stored ACTIVE flag.
-11. HUMAN/CONTROL_PLANE staling is attributable; STALE never returns to ACTIVE;
-    SUPERSEDED is terminal.
+11. HUMAN/CONTROL_PLANE staling is attributable and distinguishes
+    SOURCE_INVALIDATION from HUMAN_WITHDRAWAL without claiming source invalidity
+    for withdrawal; STALE never returns to ACTIVE; SUPERSEDED is terminal.
 12. Replacement requires new MemoryId, valid independent attestation and the
     same Project; old/new links, events and state commit/roll back atomically.
 13. Meaning/provenance/validation are immutable and historical content remains
@@ -493,6 +555,8 @@ Implementation is complete only when tests and recorded evidence prove:
     history results never leak into current-use queries.
 17. Reads produce no state, timestamp or event writes; unavailable recorded-ACTIVE
     records expose accurate reasons in explicit history/debug results.
+    Control Store snapshot checks and independent external observations retain
+    distinct pins/times and never claim a database/filesystem atomic snapshot.
 18. Stale expected_version conflicts; concurrent replacements cannot both win.
 19. Identical mutation replay produces no duplicate records/events; different
     intent under the same replay identity is refused; replay does not resurrect.
