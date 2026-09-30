@@ -1238,3 +1238,87 @@ workspace revision.
 No new top-level layer is required. G6 is a Reality-layer object + Control-layer
 integration boundary.
 
+---
+
+## 25. G7.2 focused Decision pass — proposal is not authoritative decision
+
+This pass is opened only by the G7.2 D-class gap. Broad archaeology remains closed.
+
+### Agent Harness — human intent and control records are distinct from execution output
+
+Source:
+- Repository: `0xenzyme/agent-harness`
+- `harness/mental-models/01-user-scenario.md`
+- `harness/mental-models/03-control-loop-handoff.md`
+- `harness/mental-models/04-ownership-boundary.md`
+- `harness/mental-models/02-work-unit.md`
+- `plugins/agent-harness/skills/execute/SKILL.md`
+
+Observed contract:
+
+- human owns product direction, judgment, approval, and acceptance;
+- agent owns orientation/execution/verification/state sync only inside approved boundaries;
+- ambiguous product/risk choices pause for user direction rather than being guessed;
+- Route Decision / Gate Result / Result Packet are control-plane records used for handoff and reasoning continuity;
+- worker output stays candidate evidence; only the controller writes accepted durable state;
+- specs record decisions/boundaries before execution and durable artifacts preserve decisions separately from bounded current status;
+- current user instruction has higher precedence than adapter/default state.
+
+Transferable boundaries:
+
+1. a runtime/worker/model may **propose** a choice or return a decision-shaped packet, but that does not make it an authoritative project Decision;
+2. human-direction ambiguity is a stop/ask condition, not permission for model autonomy;
+3. durable Decision facts belong to project-control artifacts/state, not transient execution output;
+4. current human direction must be able to supersede older recorded direction without rewriting history.
+
+### ADR Tools — supersession preserves decision history
+
+Source:
+- Repository: `npryce/adr-tools`
+- `README.md`
+
+Observed implementation contract:
+
+- architecture decisions are stored as numbered durable records;
+- creating a replacement decision with `adr new -s <old>` creates a **new** ADR;
+- the old ADR is updated to indicate that it is superseded by the new ADR;
+- decision evolution is represented as lineage rather than silently editing the old decision into the new one.
+
+Transferable boundary:
+
+> A materially different decision should receive a new identity and supersede the old one. Historical rationale remains attributable and inspectable.
+
+Limitation:
+
+- ADR Tools manages architecture-document records, not Project Control runtime state;
+- it is precedent for supersession/history semantics, not for our exact database schema or human/control-plane authority model.
+
+### G7.2 synthesis
+
+The sources support a bounded Project Decision model:
+
+```text
+proposal / need-user / model recommendation
+        ≠
+durable Decision
+
+authorized HUMAN or CONTROL_PLANE act
+        ↓
+Decision(ACTIVE)
+        ├── superseded by NEW DecisionId
+        └── revoked with attributable reason
+```
+
+The Decision record should be immutable in meaning: title/rationale/alternatives,
+decider/source references are not edited into a different choice. A replacement
+choice is a new Decision that points back to the one it supersedes.
+
+Human-origin direction remains human authority. A runtime/agent cannot promote
+its own proposal into an ACTIVE Decision merely by returning it.
+
+A CONTROL_PLANE Decision must be justified by explicit control facts/source refs
+and may not invent product direction that belongs to the human.
+
+No new top-level layer or invariant was discovered. G7.2 can be settled as a
+Project Control domain object with append/supersede history and attributable
+authority.
