@@ -23,7 +23,8 @@ const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 const same = (a, b) => capsuleFingerprint(a) === capsuleFingerprint(b);
 const demand = (condition, message) => { if (!condition) throw new Error(message); };
 
-export function createDogfoodSlice({ store, root, isolationRoot, mode = "pass", expectedMarker = "G8_READ_ONLY_INSPECTION_V1" }) {
+export function createDogfoodSlice({ store, root, isolationRoot, mode = "pass", expectedMarker = "G8_READ_ONLY_INSPECTION_V1",
+  runtimeClass = LocalProcessRuntimeAdapter, verifierFactory = null }) {
   root = path.resolve(root);
   let sequence = 0;
   const idFactory = prefix => `g8-${prefix}-${++sequence}`;
@@ -79,7 +80,7 @@ export function createDogfoodSlice({ store, root, isolationRoot, mode = "pass", 
     return { command, policy, approvalRequest, ws };
   }
 
-  class ObservedLocalProcess extends LocalProcessRuntimeAdapter {
+  class ObservedLocalProcess extends runtimeClass {
     constructor() { super({ defaultCwd: root }); this.startCalls = 0; this.inputs = []; }
     async start(input) {
       // Last trusted guard before the real adapter, no await/OS effect yet.
@@ -94,12 +95,12 @@ export function createDogfoodSlice({ store, root, isolationRoot, mode = "pass", 
     }
     async collectResult(ref) {
       const result = await super.collectResult(ref);
-      results.set(result.resultRef, structuredClone(result));
+      if (!verifierFactory) results.set(result.resultRef, structuredClone(result));
       return result;
     }
   }
   local = new ObservedLocalProcess();
-  const verifier = { verify({ acceptance, evidence, task }) {
+  let verifier = { verify({ acceptance, evidence, task }) {
     const result = results.get(evidence.contentRef);
     const criterion = acceptance.criteria[0];
     const attempt = store.getAttempt(evidence.attemptId);
@@ -122,6 +123,7 @@ export function createDogfoodSlice({ store, root, isolationRoot, mode = "pass", 
     return createVerification({ id: idFactory("verification"), taskId: task.id, acceptanceId: acceptance.id, acceptanceVersion: acceptance.version,
       evidenceIds: [evidence.id], revision: evidence.revision, verdict });
   } };
+  if (verifierFactory) verifier = verifierFactory({ store, root, verifierFacts });
   const observedAt = () => new Date().toISOString();
   const controller = new Controller({ store, runtime: local, verifier, policyEngine, idFactory,
     capsuleBoundary: { controlActorId: "trusted-g8-slice-1", workspaceId: workspace.id,
