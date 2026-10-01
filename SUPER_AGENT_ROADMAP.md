@@ -15,12 +15,13 @@ Create a durable, source-grounded product constitution and evidence base before 
 
 ### Required outputs
 
-1. `SUPER_AGENT_CONSTITUTION.md` — proposed, challenged, then Human-accepted constitution.
-2. `docs/super-agent/REFERENCE_RESEARCH.md` — external precedents and unresolved questions.
-3. `docs/super-agent/LEGACY_V05_ASSET_AUDIT.md` — KEEP/REBUILD/DEMOTE/RETIRE/EVIDENCE_ONLY.
-4. `SUPER_AGENT_REALITY.md` — current reality only.
-5. benchmark/evaluation design comparing simpler and more complex execution strategies.
-6. contradiction review against Project Control OS invariants and legacy lessons.
+1. `SUPER_AGENT_CONSTITUTION.md` — **PROPOSED R2; round-1 challenge revisions applied; not accepted**.
+2. `docs/super-agent/REFERENCE_RESEARCH.md` — **RECORDED, first pass**.
+3. `docs/super-agent/LEGACY_V05_ASSET_AUDIT.md` — **RECORDED, first-pass static audit**.
+4. `SUPER_AGENT_REALITY.md` — **RECORDED, initial reality map**.
+5. `docs/super-agent/EVALUATION_BASELINE.md` — **RECORDED, proposed baseline protocol; no benchmark results yet**.
+6. `docs/super-agent/CONSTITUTION_CHALLENGE_REVIEW.md` — **ROUND 1 COMPLETE: PASS WITH REQUIRED REVISIONS**.
+7. Project Control compatibility review — **ROUND 1 found no direct I-01..I-45 contradiction after required revisions; second pass still required**.
 
 ### Allowed work
 
@@ -40,10 +41,19 @@ Create a durable, source-grounded product constitution and evidence base before 
 - accepting multi-agent as default without benchmark evidence;
 - modifying Project Control invariants to fit an execution runtime.
 
+### Remaining SA0 work before Human acceptance
+
+1. second-pass adversarial review of Constitution R2;
+2. review the evaluation protocol for confounders/gaming;
+3. optionally recover and inspect historical local GPT↔DSH reports as drift evidence;
+4. decide whether research coverage needs additional precedents;
+5. produce an SA0 acceptance packet summarizing unresolved questions;
+6. obtain explicit Human acceptance before any next-phase design/implementation authorization.
+
 ### Exit gate
 
 SA0 exits only when:
-1. constitution has survived an explicit adversarial/challenge review;
+1. constitution has survived explicit adversarial/challenge review;
 2. legacy audit is sufficiently complete for migration decisions;
 3. external research sources are traceable;
 4. baseline evaluation plan exists;
