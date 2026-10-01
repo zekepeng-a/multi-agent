@@ -639,7 +639,7 @@ export class ProjectControlStore {
    * and takes no part in this query or in any aggregation.
    */
   getMilestonesForProject(projectId) {
-    return this.recordsMatching(Collection.MILESTONE, "projectId", projectId);
+    return this.#validatedChildren(Collection.MILESTONE, "projectId", projectId);
   }
 
   seedGoal(goal) {
@@ -679,7 +679,7 @@ export class ProjectControlStore {
    * consulted to decide membership, and this round does not maintain it.
    */
   getGoalsForMilestone(milestoneId) {
-    return this.recordsMatching(Collection.GOAL, "milestoneId", milestoneId);
+    return this.#validatedChildren(Collection.GOAL, "milestoneId", milestoneId);
   }
 
   /** Goals of a project, read from the child's explicit `projectId` link. */
@@ -695,7 +695,7 @@ export class ProjectControlStore {
    * `taskIds` never hides a task that points at this goal.
    */
   getTasksForGoal(goalId) {
-    return this.recordsMatching(Collection.TASK, "goalId", goalId);
+    return this.#validatedChildren(Collection.TASK, "goalId", goalId);
   }
 
   seedTask(task) {
@@ -2725,7 +2725,7 @@ export class ProjectControlStore {
         ? "milestoneId"
         : "projectId";
     const finishedStatus = ACCEPTED_CHILD_STATUS[collection];
-    const children = this.recordsMatching(childCollection, linkField, target.id)
+    const children = this.#validatedChildren(childCollection, linkField, target.id)
       .map((child) => ({
         refType: CHILD_REF_TYPE[collection],
         collection: childCollection,
@@ -3135,6 +3135,28 @@ export class ProjectControlStore {
    * fails closed instead of quietly becoming an orphan that aggregation can never
    * see; so does a Goal that would land in two projects at once.
    */
+  // Aggregation must not trust legacy/raw rows merely because their parent link
+  // matches. Reuse the write invariant, including descendants of terminal
+  // parents that Controller reconciliation otherwise does not revisit.
+  #validatedChildren(collection, field, parentId) {
+    const children = this.recordsMatching(collection, field, parentId);
+    for (const child of children) {
+      this.#assertRelationship(collection, child);
+      if (collection === Collection.GOAL) this.getTasksForGoal(child.id);
+      if (collection === Collection.MILESTONE) this.getGoalsForMilestone(child.id);
+    }
+    return children;
+  }
+
+  #assertTaskProject(task, goal) {
+    if (goal.projectId !== task.projectId) {
+      throw new InvariantError(
+        `task ${task.id} declares project ${task.projectId} but its goal ${goal.id} ` +
+          `belongs to project ${goal.projectId}`,
+      );
+    }
+  }
+
   #assertRelationship(collection, record) {
     const links = PARENT_LINKS[collection] ?? [];
     for (const link of links) {
@@ -3144,6 +3166,17 @@ export class ProjectControlStore {
         throw new InvariantError(
           `${collection} ${record.id} references ${link.collection} ${parentId} (${link.field}), which does not exist`,
         );
+      }
+    }
+
+    if (collection === Collection.TASK && record.goalId != null) {
+      const goal = this.getRecord(Collection.GOAL, record.goalId);
+      this.#assertTaskProject(record, goal);
+    }
+    // Updating a Goal's project must preserve the same Task→Goal invariant.
+    if (collection === Collection.GOAL) {
+      for (const task of this.recordsMatching(Collection.TASK, "goalId", record.id)) {
+        this.#assertTaskProject(task, record);
       }
     }
 

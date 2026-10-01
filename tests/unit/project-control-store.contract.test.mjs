@@ -707,7 +707,7 @@ for (const backend of BACKENDS) {
     // J: the child link is still the membership fact, derived list or not
     assert.deepEqual(store.getGoal("goal-nested").taskIds, []);
     store.seedTask(createTask({
-      id: "task-1", goalId: "goal-nested", title: "T", acceptanceId: "acceptance-1", acceptanceVersion: 1,
+      id: "task-1", projectId: "project-A", goalId: "goal-nested", title: "T", acceptanceId: "acceptance-1", acceptanceVersion: 1,
     }));
     assert.deepEqual(store.getTasksForGoal("goal-nested").map((task) => task.id), ["task-1"]);
 

@@ -53,6 +53,11 @@ for (const backend of ["MemoryStore", "SQLite"]) {
     store.updateTask("ct", 2, { goalId: "g" });
     assert.throws(() => generate(control), /cross-project hierarchy/);
     assert.equal(runtime.started.length, 0);
+    // Legacy/raw Task ownership must also remain guarded by Capsule itself.
+    store.seedGoal(createGoal({ id: "foreign-goal", projectId: "other", title: "Foreign Goal" }));
+    store.putRecord("task", "ct", { ...store.getTask("ct"), goalId: "foreign-goal" });
+    assert.throws(() => generate(control), /cross-project hierarchy/);
+    assert.equal(runtime.started.length, 0);
   });
   test(`${backend}: exact Task contract pin; newer unbound revision is never substituted`, options, t => {
     const { store, control } = fixture(t);
