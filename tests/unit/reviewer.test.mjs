@@ -60,20 +60,23 @@ test("安全语义: 所有失败分类都不产生 PASS", () => {
 
 // ── 防循环：review-unavailable 不判为计划问题 ────────────────────────────────
 
+// 注：evaluateFailure 的契约与生产调用点一致 —— 传入的是 DAG task，**必带 id**。
+// fixture 缺 id 会让产物落到 .ai/evaluations/undefined.json；`npm test` 下测试文件并行执行，
+// 多个进程争抢同一路径时 Windows 的 rename 会报 EPERM（这不是被测语义问题）。
 test("防循环: review-unavailable（进程失败）→ retry 而非 replan", () => {
-  const task = { failure_reason: "review-unavailable: review_process_exit Reviewer 进程异常退出（exit 1）", failure_history: [], retry_count: 0 };
+  const task = { id: "TASK-RV-1", failure_reason: "review-unavailable: review_process_exit Reviewer 进程异常退出（exit 1）", failure_history: [], retry_count: 0 };
   const ev = evaluateFailure(task, { agents: [] });
   assert.equal(ev.suggested_action, "retry", "基础设施失败应重试，不应触发 replan 循环");
 });
 
 test("防循环: review-unavailable（超时）→ retry", () => {
-  const task = { failure_reason: "review-unavailable: review_timeout Reviewer 超时未产出 verdict", failure_history: [], retry_count: 2 };
+  const task = { id: "TASK-RV-2", failure_reason: "review-unavailable: review_timeout Reviewer 超时未产出 verdict", failure_history: [], retry_count: 2 };
   const ev = evaluateFailure(task, { agents: [] });
   assert.equal(ev.suggested_action, "retry");
 });
 
 test("防循环: review-unavailable（非法 verdict）→ retry", () => {
-  const task = { failure_reason: "review-unavailable: invalid_verdict Reviewer 产出的 verdict 非法", failure_history: [], retry_count: 1 };
+  const task = { id: "TASK-RV-3", failure_reason: "review-unavailable: invalid_verdict Reviewer 产出的 verdict 非法", failure_history: [], retry_count: 1 };
   const ev = evaluateFailure(task, { agents: [] });
   assert.equal(ev.suggested_action, "retry");
 });
@@ -81,20 +84,20 @@ test("防循环: review-unavailable（非法 verdict）→ retry", () => {
 // ── 旧行为保持：真实 review-fail 仍走 replan 链路 ─────────────────────────────
 
 test("旧行为保持: review-fail（真实评审否决）且重试 1 次后 → replan", () => {
-  const task = { failure_reason: "review-fail: 产出缺少 MAGIC_TOKEN", failure_history: ["review-fail: 产出缺少 MAGIC_TOKEN"], retry_count: 1 };
+  const task = { id: "TASK-RV-4", failure_reason: "review-fail: 产出缺少 MAGIC_TOKEN", failure_history: ["review-fail: 产出缺少 MAGIC_TOKEN"], retry_count: 1 };
   const ev = evaluateFailure(task, { agents: [] });
   assert.equal(ev.suggested_action, "replan", "真实 Review FAIL 的既有语义不得改变");
 });
 
 test("旧行为保持: 验收未通过 + 重试耗尽 → replan", () => {
-  const task = { failure_reason: "验收未通过: ✗ file: server.js 缺失", failure_history: ["验收未通过: ✗ file: server.js 缺失"], retry_count: 2 };
+  const task = { id: "TASK-RV-5", failure_reason: "验收未通过: ✗ file: server.js 缺失", failure_history: ["验收未通过: ✗ file: server.js 缺失"], retry_count: 2 };
   const ev = evaluateFailure(task, { agents: [] });
   assert.equal(ev.suggested_action, "replan");
 });
 
 test("旧行为保持: 临时执行失败（timeout/秒退）→ retry", () => {
   for (const reason of ["non_zero_exit: claude 退出码 1，无结果文件", "timeout: worker 超时", "malformed_result: 结果文件非法 JSON"]) {
-    const task = { failure_reason: reason, failure_history: [reason], retry_count: 0 };
+    const task = { id: "TASK-RV-6", failure_reason: reason, failure_history: [reason], retry_count: 0 };
     const ev = evaluateFailure(task, { agents: [] });
     assert.equal(ev.suggested_action, "retry", `${reason} 应重试`);
   }

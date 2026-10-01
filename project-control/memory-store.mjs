@@ -1,0 +1,154 @@
+// In-process reference backend.
+//
+// It implements only the storage primitives from ProjectControlStore; every
+// control rule (validation, lineage, pinning, idempotency, events) lives in
+// ./store.mjs and ./project-memory.mjs. The Maps stay public because this backend is also
+// used as a white-box target by a few tests.
+
+import { ProjectControlStore, Collection } from "./store.mjs";
+
+export class MemoryStore extends ProjectControlStore {
+  constructor() {
+    super();
+    this.projects = new Map();
+    this.milestones = new Map();
+    this.goals = new Map();
+    this.tasks = new Map();
+    // Acceptance contract revisions are keyed by (id, version) so that a task
+    // pinned to v1 can never be silently served the v2 revision.
+    this.acceptances = new Map();
+    this.acceptanceContracts = new Map();
+    this.runs = new Map();
+    this.attempts = new Map();
+    this.evidence = new Map();
+    this.verifications = new Map();
+    // Approvals are keyed by their own id, exactly like every other aggregate:
+    // the decision lifecycle is enforced by Compare-And-Set on the record's
+    // `version` in the shared rules, not by anything here.
+    this.approvals = new Map();
+    // Durable Command domain (G2) is separate from the mutation replay registry.
+    this.controlCommands = new Map();
+    this.effects = new Map();
+    this.policyDecisions = new Map();
+    this.decisions = new Map();
+    this.memories = new Map();
+    this.capsules = new Map();
+    this.workspaces = new Map();
+    this.commands = new Map();
+    this.events = [];
+  }
+
+  #mapFor(collection) {
+    switch (collection) {
+      case Collection.PROJECT: return this.projects;
+      case Collection.MILESTONE: return this.milestones;
+      case Collection.GOAL: return this.goals;
+      case Collection.TASK: return this.tasks;
+      case Collection.ACCEPTANCE: return this.acceptances;
+      case Collection.RUN: return this.runs;
+      case Collection.ATTEMPT: return this.attempts;
+      case Collection.EVIDENCE: return this.evidence;
+      case Collection.VERIFICATION: return this.verifications;
+      case Collection.APPROVAL: return this.approvals;
+      case Collection.COMMAND: return this.controlCommands;
+      case Collection.EFFECT: return this.effects;
+      case Collection.POLICY_DECISION: return this.policyDecisions;
+      case Collection.DECISION: return this.decisions;
+      case Collection.MEMORY: return this.memories;
+      case Collection.CAPSULE: return this.capsules;
+      case Collection.WORKSPACE: return this.workspaces;
+      default: throw new Error(`unknown collection: ${collection}`);
+    }
+  }
+
+  getRecord(collection, key) {
+    const record = this.#mapFor(collection).get(key);
+    return record ? structuredClone(record) : null;
+  }
+
+  putRecord(collection, key, record) {
+    if (collection === Collection.CAPSULE && this.#mapFor(collection).has(key)) throw new Error("Capsule snapshots are immutable");
+    this.#mapFor(collection).set(key, structuredClone(record));
+  }
+
+  insertRecord(collection, key, record) {
+    const map = this.#mapFor(collection);
+    if (map.has(key)) return false;
+    map.set(key, structuredClone(record));
+    return true;
+  }
+
+  updateRecord(collection, key, record, expectedVersion) {
+    if (collection === Collection.CAPSULE) throw new Error("Capsule snapshots are immutable");
+    const map = this.#mapFor(collection);
+    const current = map.get(key);
+    if (!current) return false;
+    if (expectedVersion !== undefined && current.version !== expectedVersion) return false;
+    map.set(key, structuredClone(record));
+    return true;
+  }
+
+  allRecords(collection) {
+    return [...this.#mapFor(collection).values()].map((record) => structuredClone(record));
+  }
+
+  compareRecord(collection, key, record, expectedRecord) {
+    if (collection === Collection.CAPSULE) throw new Error("Capsule snapshots are immutable");
+    const map = this.#mapFor(collection);
+    if (JSON.stringify(map.get(key)) !== JSON.stringify(expectedRecord)) return false;
+    map.set(key, structuredClone(record));
+    return true;
+  }
+
+  recordsMatching(collection, field, value) {
+    return this.allRecords(collection).filter((record) => record[field] === value);
+  }
+
+  getCommand(commandId) {
+    const entry = this.commands.get(commandId);
+    return entry ? structuredClone(entry) : null;
+  }
+
+  putCommand(commandId, entry) {
+    this.commands.set(commandId, structuredClone(entry));
+  }
+
+  getContractFingerprint(key) {
+    return this.acceptanceContracts.get(key) ?? null;
+  }
+
+  putContractFingerprint(key, fingerprint) {
+    this.acceptanceContracts.set(key, fingerprint);
+  }
+
+  appendEvent(event) {
+    const stored = { id: `evt-${this.events.length + 1}`, ...structuredClone(event) };
+    this.events.push(stored);
+    return structuredClone(stored);
+  }
+
+  allEvents() {
+    return structuredClone(this.events);
+  }
+
+  #depth = 0;
+
+  // Synchronous reads cannot interleave in this backend.
+  runInReadSnapshot(fn) { return fn(); }
+
+  // Preserve Map identities for existing white-box users, including rollback
+  // after a failed multi-row Memory replacement/event/replay write.
+  runInTransaction(fn) {
+    if (this.#depth) return fn();
+    const maps = Object.values(this).filter((value) => value instanceof Map);
+    const snapshots = maps.map((map) => structuredClone([...map]));
+    const events = structuredClone(this.events);
+    this.#depth++;
+    try { return fn(); }
+    catch (error) {
+      maps.forEach((map, index) => { map.clear(); for (const [key, value] of snapshots[index]) map.set(key, value); });
+      this.events.splice(0, this.events.length, ...events);
+      throw error;
+    } finally { this.#depth--; }
+  }
+}

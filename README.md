@@ -1,5 +1,8 @@
 # DSH Multi-Agent Runtime
 
+> **Repository direction:** Project Control OS above replaceable runtimes. This README describes the retained **legacy V0.5 runtime**, including its derived memory; that memory is not the G7.3 Project-control Memory domain.
+> For current direction, implemented state and authorized work, read [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md), [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md) and [ROADMAP.md](ROADMAP.md).
+
 A **DSH-powered Multi-Agent Runtime** that turns one goal into a coordinated team of coding agents: it plans, consults experts, builds a task DAG, executes in parallel, reviews, evaluates, replans, and **learns across sessions** through a derived, retrievable project memory.
 
 > **Status**: V0.5 (architecture frozen). This is an open-source hardening pass — docs, reproducible tests, and configuration — not new features.

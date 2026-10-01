@@ -307,6 +307,8 @@ name: string
 description: string
 status: ACTIVE | PAUSED | COMPLETED | ARCHIVED
 current_revision: string?
+acceptance_id: AcceptanceId?
+acceptance_version: integer?
 created_at: timestamp
 updated_at: timestamp
 metadata: object
@@ -346,15 +348,26 @@ Purpose: bounded stage inside a Roadmap.
 ```yaml
 id: MilestoneId
 roadmap_id: RoadmapId
+project_id: ProjectId
 version: integer
 name: string
 description: string
 status: DRAFT | READY | IN_PROGRESS | COMPLETED | BLOCKED | CANCELLED
 goal_ids: GoalId[]
 acceptance_id: AcceptanceId?
+acceptance_version: integer?
 created_at: timestamp
 updated_at: timestamp
 ```
+
+A Milestone that declares an `acceptance_id` also pins `acceptance_version`: the
+pair names one concrete contract revision, exactly as it does for a Task. See
+*Parent acceptance* under Goal (5.4).
+
+In v0.1 the milestone also states its `project_id` explicitly. Roadmap has no
+lifecycle yet, so the project a milestone belongs to is a fact recorded on the
+milestone itself rather than derived through a roadmap — the same
+child-side-link rule every other relationship follows.
 
 ---
 
@@ -374,9 +387,47 @@ description: string
 status: DRAFT | READY | IN_PROGRESS | BLOCKED | ACCEPTED | REJECTED | CANCELLED
 task_ids: TaskId[]
 acceptance_id: AcceptanceId?
+acceptance_version: integer?
 created_at: timestamp
 updated_at: timestamp
 ```
+
+### Parent acceptance (v0.1)
+
+A Goal and a Milestone may carry their own Acceptance Contract. When one does, the
+parent may **not** be accepted by aggregation:
+
+```text
+Task acceptance  →  the children are ACCEPTED  →  parent acceptance
+                                                (its own contract, not the sum)
+```
+
+Child completion is the **input** to the parent's acceptance, never the decision.
+Without a contract, "every child is accepted" is a derived summary and the
+Controller may write it directly. With a contract, the same observation is only a
+claim to be verified, and the flow is the task flow one level up:
+
+```text
+pinned contract revision → Aggregate Evidence → Verification → Acceptance
+```
+
+Consequences recorded for v0.1:
+
+- The pin is a fact about **that** parent: `acceptance_id` names a contract, the
+  `(acceptance_id, acceptance_version)` pair names one revision of it, and the
+  revision must target that record's own type and id. A Goal pinning a Milestone
+  contract, or another Goal's contract, is refused at seed and at update.
+- Both halves of the pin are required. A bare `acceptance_id` is not a revision,
+  and a bare `acceptance_version` names nothing.
+- Project follows the same optional contract rule at the lifecycle root:
+  completed Milestones are aggregate Evidence input; a pinned PROJECT contract
+  requires Verification before Project may become COMPLETED. Without a contract,
+  aggregate completion remains legal.
+- A parent in a terminal state, or in `BLOCKED`, is never accepted by contract —
+  the same source-state whitelist rule as a Task (`READY`, `IN_PROGRESS`).
+- The acceptance write moves the parent's status and the contract's decision in
+  one transaction, recording the lifecycle event for the status reached
+  (`goal.accepted`, `milestone.completed`, `project.completed`).
 
 ---
 
@@ -403,11 +454,23 @@ status:
 priority: LOW | NORMAL | HIGH | CRITICAL
 dependencies: TaskId[]
 acceptance_id: AcceptanceId
+acceptance_version: integer
 current_run_id: RunId?
 latest_evidence_id: EvidenceId?
 created_at: timestamp
 updated_at: timestamp
 ```
+
+A Task does not point at the Acceptance Contract's current head. It pins one
+concrete contract revision:
+
+```text
+(AcceptanceId, AcceptanceVersion)
+```
+
+Changing contract content requires a new revision; an existing Task keeps the
+revision it was created against and never drifts onto a newer one. See
+*Acceptance relationship* below.
 
 A Task can have many Runs:
 
@@ -445,6 +508,22 @@ updated_at: timestamp
 ```
 
 An Acceptance Contract must be testable/verifiable.
+
+Contract identity is the pair `(id, version)`. Contract **content** (`criteria`,
+`required_evidence`, `target_id`, …) changes only by creating a new revision, and
+one identity must never be reused for different content. `status` is the
+acceptance **decision** state, not contract content: `PENDING → PASSED` is not a
+contract revision change.
+
+`target_type` makes a contract unambiguous about what it is about. A Task
+contract is bound at creation; a Goal, Milestone or Project contract is bound by
+the aggregate's own pin, and the revision must target that record's type and id —
+so one contract id can never be read as covering two different targets.
+`TASK`, `GOAL`, `MILESTONE` and `PROJECT` now all have a contract-bound
+acceptance flow.
+
+A content fingerprint is stored beside every revision and re-checked on every
+resolution, so a revision edited in place fails closed instead of being trusted.
 
 ---
 
@@ -559,12 +638,52 @@ type:
 target:
   type: string
   id: string
+acceptance_id: AcceptanceId
+acceptance_version: integer
 revision: string?
 content_ref: string
 sha256: string?
 status: CANDIDATE | VERIFIED | ACCEPTED | STALE | SUPERSEDED
 created_at: timestamp
 ```
+
+Evidence that can influence acceptance identifies the acceptance contract
+revision it is bound to. Evidence created for a different
+`(acceptance_id, acceptance_version)` cannot support a PASS verification for
+this Task.
+
+### Aggregate Evidence
+
+A Goal or a Milestone does not "run", so nothing external can produce evidence
+about it. Its evidence is the Control Plane's **own observation** of the
+authoritative child state, recorded in the same collection:
+
+```text
+Aggregate Evidence
+  target_type / target_id   → the Goal or Milestone observed
+  task_id / run_id / attempt_id = null
+  acceptance_id + acceptance_version → the revision the target pins
+  source_refs               → one ref per child: id, version, status, contract pin
+  revision                  → sha256 of the canonical child snapshot
+```
+
+- Children are found through the **child's own parent link** (`Task.goalId`,
+  `Goal.milestoneId`); the aggregate's cached `task_ids` / `goal_ids` are never
+  consulted. A snapshot taken from a stale cache would be evidence about a list,
+  not about the project.
+- The **revision is the observation's identity**. The same child state always
+  yields the same revision and therefore the same Evidence record: one
+  observation, one record, no duplicate `evidence.recorded` on a repeated
+  reconcile.
+- When the child state moves, the new observation is a **new** record, and the
+  record it replaces is marked `SUPERSEDED` — never deleted. Historical evidence
+  stays readable, so a verification built on it can be seen to be stale.
+- Observation fails closed: an aggregate with no children, or with even one child
+  that has not reached its finished state, has no finished observation to record.
+- Before a parent acceptance is written, the snapshot is re-derived from live
+  records and must still match the evidence revision. **Current Reality outranks
+  Historical Evidence**: a verification may be well-formed and still unable to
+  accept, because the state it describes is gone.
 
 Agent claim:
 
@@ -589,8 +708,12 @@ Purpose: evaluate Evidence against Acceptance criteria.
 
 ```yaml
 id: VerificationId
+target_type: TASK | GOAL | MILESTONE | PROJECT
+target_id: string
+task_id: TaskId?
 evidence_ids: EvidenceId[]
 acceptance_id: AcceptanceId
+acceptance_version: integer
 verifier:
   type: AUTOMATED | AGENT | HUMAN
   agent_id: AgentId?
@@ -606,14 +729,30 @@ created_at: timestamp
 
 Verification produces a verdict; it does not directly replace Project State.
 
+A verification is about one target, and the target decides how it is proved:
+
+- `TASK` verification: `task_id` is required, and the whole
+  `Task ← Run ← Attempt ← Evidence` lineage is re-proved against the task the
+  verification declares — and again against the task actually being accepted.
+- `GOAL` / `MILESTONE` / `PROJECT` verification: no `task_id` at all. What replaces lineage is
+  the snapshot identity: the evidence must belong to that target, must carry no
+  Run or Attempt, must be of the revision the target pins, and must still
+  describe the current child state.
+
+`revision` must equal the revision of the evidence the verification reads, so a
+verdict can never be attached to a different observation than the one it names.
+
 ---
 
 ## 5.12 Decision
 
-Purpose: durable record of why a project direction or constraint was chosen.
+Purpose: durable, attributable project direction or constraint.
+
+ADR-0007 freezes Decision authority and lifecycle.
 
 ```yaml
 id: DecisionId
+version: integer
 project_id: ProjectId
 title: string
 rationale: string
@@ -625,64 +764,281 @@ decided_by:
   actor_id: string
 status: ACTIVE | SUPERSEDED | REVOKED
 source_refs:
-  - type: string
+  - type: HUMAN_INSTRUCTION | PROJECT_STATE | EVIDENCE |
+          VERIFICATION | POLICY_DECISION | DECISION | EXTERNAL_REFERENCE
     id: string
+    revision: string?
+supersedes_decision_id: DecisionId?
+superseded_by_decision_id: DecisionId?
+revocation:
+  revoked_by:
+    type: HUMAN | CONTROL_PLANE
+    actor_id: string
+  revoked_at: timestamp
+  reason: string
 created_at: timestamp
+updated_at: timestamp
 ```
+
+### Authority
+
+A runtime/model/worker may propose a choice but cannot create an authoritative
+Decision merely by returning it.
+
+Only:
+
+- `HUMAN`;
+- `CONTROL_PLANE`
+
+may author a Decision.
+
+Human direction is stronger than derived control-plane direction:
+
+- HUMAN Decision may be superseded/revoked only by HUMAN;
+- CONTROL_PLANE Decision may be superseded/revoked by HUMAN;
+- CONTROL_PLANE may replace its own derived Decision only from explicit current
+  authoritative provenance.
+
+### Immutable meaning
+
+The chosen meaning is immutable after creation:
+
+```text
+project_id
+title
+rationale
+alternatives
+decided_by
+source_refs
+supersedes_decision_id
+```
+
+A materially different choice receives a new DecisionId.
+
+### Lifecycle
+
+```text
+ACTIVE
+  ├──→ SUPERSEDED  (by a new DecisionId)
+  └──→ REVOKED     (attributable terminal withdrawal)
+```
+
+Supersession atomically links old and new records. Historical rationale remains
+readable; there is no resurrection.
+
+### Provenance
+
+Every Decision has non-empty `source_refs`.
+
+- HUMAN decisions preserve human-instruction provenance.
+- CONTROL_PLANE decisions require authoritative control/evidence provenance; a
+  model recommendation alone is insufficient.
+
+Decision remains below current reality/evidence in the truth hierarchy and is
+not Approval, PolicyDecision, Event or Memory.
+
+See `docs/architecture/decisions/ADR-0007-decision-authority-lifecycle.md`.
 
 ---
 
 ## 5.13 Memory
 
-Purpose: promoted project knowledge, not chat history.
+**Architecture boundary: ACCEPTED — ADR-0008.**
+**Implementation: COMPLETE (G7.3), independently reviewed within ADR-0008.**
+Evidence: `docs/architecture/MEMORY_G7_3_EVIDENCE.md`; reviewed HEAD
+`973f77e2d231ee6eaa4e9b348ebf2424da41f674`, CI `36724720686` success
+(Node 22: 592 passed, zero failures/skips).
 
-Types:
+Purpose: promoted, project-scoped knowledge, not chat history, accepted state or
+permission authority. The truth hierarchy and I-20/I-21 remain unchanged.
 
-```text
-FACT
-DECISION
-CONSTRAINT
-LESSON
-```
-
-Schema:
+Core record vocabulary:
 
 ```yaml
 id: MemoryId
+version: integer
 project_id: ProjectId
 type: FACT | DECISION | CONSTRAINT | LESSON
 content: string
-source_refs: object[]
+source_refs: object[]  # necessary support only, project-bound and pinned
 confidence: VERIFIED | ACCEPTED | INFERRED
 status: ACTIVE | STALE | SUPERSEDED
+applicability: object
+validation_attestation: object
+promoted_by: object
+supersedes_memory_id: MemoryId?
+superseded_by_memory_id: MemoryId?
+staleness: object?  # SOURCE_INVALIDATION | HUMAN_WITHDRAWAL, actor/reason/observations
 created_at: timestamp
 updated_at: timestamp
 ```
 
-Memory requires provenance.
+### Authority and admission
+
+HUMAN, CONTROL_PLANE or Runtime/Agent may propose; only CONTROL_PLANE promotes
+after current source checks and an exact, attributable validation attestation.
+Semantic validation uses HUMAN or a Reviewer assignment established by the
+existing trusted control boundary and traceable identity/task relationship.
+Self-reported roles do not confer permission. CONTROL_PLANE may validate only
+deterministic exact field renderings, not free-form inference.
+No Reviewer identity/authentication subsystem is added.
+
+| Type | Confidence | Required source meaning |
+|---|---|---|
+| DECISION | ACCEPTED | Faithful restatement of exactly one corresponding ACTIVE Decision. |
+| CONSTRAINT | ACCEPTED | Explicit constraint in exactly one corresponding ACTIVE Decision; no new direction. |
+| FACT | ACCEPTED | Contract-bound accepted PROJECT_STATE with current Evidence/Verification proof; Decision is not an admissible supporting source. |
+| FACT | VERIFIED | Current Evidence and matching Verification support the exact scoped assertion. |
+| FACT | INFERRED | Explicit interpretation from Evidence, Verification and/or Project State; not verified/accepted conclusion. |
+| LESSON | VERIFIED | Current Evidence and matching Verification support the exact demonstrated pattern. |
+| LESSON | INFERRED | Explicit scoped generalization supported by necessary control sources. |
+
+Other combinations are refused. Confidence denotes source support, not project
+Acceptance or increased authority. Decision summarized in Memory retains its
+original authority; it cannot be revoked, superseded or upgraded through Memory.
+
+### Sources and lifecycle
+
+Only DECISION, EVIDENCE, VERIFICATION and PROJECT_STATE are direct source families.
+Refs require same-project ownership, concrete version/revision or immutable
+fingerprint, claimed scope and current lineage. All refs are necessary support;
+optional/contextual refs, quorum rules and claim graphs are excluded.
+PROJECT_STATE exact-version invalidation is deliberately conservative in v1.
+Evidence uses CANDIDATE/VERIFIED/ACCEPTED/STALE/SUPERSEDED, not REJECTED;
+Candidate Evidence cannot acquire stronger status through Memory.
+
+Source resolver results CURRENT/INVALID/UNRESOLVED are separate from Memory status.
+INVALID/UNRESOLVED exclude current use; only known INVALID is reconciled to STALE.
+Human withdrawal is separately attributable and does not assert source invalidity.
+
+Meaning, sources, confidence and validation/promotion provenance are immutable.
+
+```text
+promotion → ACTIVE
+ACTIVE → STALE
+ACTIVE or STALE → SUPERSEDED + new ACTIVE MemoryId, atomically
+```
+
+STALE never returns to ACTIVE; re-validation creates a new MemoryId.
+Source replacement alone does not manufacture replacement Memory.
+Historical meaning and replacement lineage remain readable.
+
+### Queries and persistence
+
+Current-use reads require ProjectId, recorded ACTIVE status and all sources CURRENT
+before type/confidence selection, relevance ordering and result limiting.
+INFERRED is excluded unless explicitly opted in. History reads are explicit and
+never merged into current results. Reads do not change lifecycle/events/timestamps.
+
+Control Store may provide a consistent database snapshot; Current Reality is a
+separate observation with its own pin/time. No database/filesystem atomic snapshot
+or persistent validity after observation is claimed.
+
+Small versioned Memory records and validation provenance use existing shared-store
+semantics, optimistic CAS and mutation replay. State/events/replay commit together;
+new-id replacement links commit atomically. SQLite restart must preserve history
+and recompute eligibility from current sources. Large artifacts stay external.
+No new durable Command execution lifecycle, event sourcing or distributed lock
+is introduced.
+
+ADR-0008 is the precise accepted contract and implementation exit checklist.
+ROADMAP records G7.3 COMPLETE after implementation evidence, independent review
+and explicit human closeout authorization. This changes implementation/completion
+status only; ADR-0008's authority and semantics remain unchanged.
+G7.4 Context Capsule independently completed its accepted ADR-0009 boundary after
+implementation, repairs and review #3. Human authorized governance closure on
+2026-10-01; see `CONTEXT_CAPSULE_G7_4_EVIDENCE.md`. Memory completion itself did not
+resolve Capsule; each candidate has its own gate.
 
 ---
 
 ## 5.14 ContextCapsule
 
-Purpose: minimal task-relevant context supplied to a runtime.
+**Architecture: ACCEPTED — ADR-0009. Implementation: COMPLETE — bounded G7.4.**
+Human accepted this bounded G7.4 contract on 2026-09-30. This section summarizes
+ADR-0009; its full source admission, delivery/recovery and 25 exit criteria govern.
+Completion now has separate implementation and independent-review evidence:
+reviewed HEAD `1f9f208d8eef9fabcba02ac93772ff5713612f24`, final CI `36815496417`
+success (Node 22 SQLite/full tests and Node 20 compatibility), targeted 77/77 and
+full local regression 669/669. Review #1 failed on three defects; review #2 closed
+them but found Attempt bookkeeping regression; after repair, review #3 passed all
+25 exit criteria with no new D/E issue. Human authorized closure on 2026-10-01.
+See `CONTEXT_CAPSULE_G7_4_EVIDENCE.md`; this status update changes no ADR semantics.
 
-```yaml
-id: ContextCapsuleId
-task_id: TaskId
-task_ref: TaskId
-acceptance_ref: AcceptanceId
-project_state_ref: string
-decision_ids: DecisionId[]
-memory_ids: MemoryId[]
-evidence_ids: EvidenceId[]
-workspace_id: WorkspaceId
-agent_id: AgentId
-capabilities: string[]
-policy_context_ref: string
-generated_at: timestamp
-expires_at: timestamp?
-```
+Capsule is a derived, bounded execution input assembled at the trusted Control
+Plane boundary. It is not a second Project State, Acceptance or permission token.
+It preserves source authority, identity, ownership, provenance and exact pins.
+The complete formal snapshot is immutable from generation; fresh observations
+and delivery facts are separate.
+
+Binding is ProjectId → TaskId → RunId → AttemptId → ContextCapsuleId. One Capsule
+belongs to one Attempt and cannot be reused by another. Run-level references are
+history/navigation, never a mutable current-context replacement for Attempt input.
+Multiple pre-dispatch snapshots may exist; one Attempt has at most one logical
+dispatch binding, which cannot be replaced after reservation.
+
+The bounded payload retains its execution binding, schema/assembler/profile
+versions, source manifest/pins/roles, generated_at and observations, selected
+content, budget and explicit Memory inference policy. V1 archives the complete
+canonical JSON UTF-8 bytes inline, with SHA-256 metadata outside the hashed bytes.
+Immutable artifact ref/hash is a permitted future representation only if complete
+bytes remain available and integrity checked; source IDs alone cannot prove input.
+
+Admitted sources are relevant Task/Goal/Milestone/Project State, pinned Acceptance
+Contracts, ACTIVE Decision/Constraint, current-use Project-control Memory,
+Evidence/Verification, Workspace/Reality, Policy/Approval and trusted Runtime
+capability/context. Real versions, fingerprints, contract/reality revisions and
+observations remain distinct; no universal source resolver is added. Runtime
+configuration may be execution-bound shared infrastructure, not fictitious
+project-owned state. Live handles, credentials and session internals stay outside
+Capsule serialization.
+
+The versioned trusted assembler classifies REQUIRED before relevance/budget:
+Task identity/objective, exact pinned contract, applicable directions/constraints,
+Workspace access/write scope, mandatory Policy/Approval restrictions, Runtime
+restrictions/forbidden actions and all other indispensable sources. Default v1
+includes all project ACTIVE Decisions; narrowing requires explicit deterministic,
+versioned applicability. Selection checkpoints detect newly applicable constraints.
+
+SUPPLEMENTAL eligible Memory, extra Evidence, explicitly labeled historical
+Evidence/Verification background and nonessential explanations may be selected in
+deterministic priority/relevance/source-identity order and trimmed as whole items.
+Historical/debug Memory and inactive Decision directives cannot enter current
+execution. Necessary content cannot be demoted or silently deleted.
+
+Budget measures the final canonical JSON UTF-8 bytes, including envelope,
+manifest/pins and observation overhead. Required input/completeness exceeding
+capacity fails closed; truncation, automatic summary or path substitution cannot
+bypass it. This byte contract does not guarantee final model token capacity.
+
+Before dispatch, recheck binding, archived integrity/budget, required pins and
+selection completeness in consistent Store reads and dispatch reservation.
+Reality/capability/policy observations are separately pinned/timed; no atomic
+database/filesystem snapshot or future validity is claimed. Invalid/unconfirmed
+required dependencies refuse dispatch. Included supplemental pin/eligibility drift
+also refuses the old snapshot: regenerate under a new CapsuleId and omit/refetch
+supplemental items. No in-place partial refresh, fixed v1 TTL or history cleanup.
+
+Memory follows ADR-0008 project-scoped eligibility-before-ranking current-use
+queries. INFERRED defaults off and requires recorded trusted assembler opt-in.
+Inclusion never upgrades Memory, Decision, Evidence, Approval or Acceptance.
+
+The Adapter receives a detached copy plus CapsuleId/hash and execution binding;
+a matching trusted receipt establishes acceptance at its input boundary only.
+It does not prove final model tokens, execution success or Acceptance. Runtime
+cannot edit the formal snapshot or write authoritative source state from output.
+
+Small Attempt delivery observations distinguish PREPARED, DISPATCHING, RECEIVED,
+NOT_RECEIVED and UNKNOWN. A pre-call durable reservation is intent, not invocation
+or receipt. Missing/mismatched receipt and crash ambiguity preserve UNKNOWN,
+Run BLOCKED / Attempt LOST and existing capability-gated recovery, without blind
+resend or substitution. No new Effect/dispatch subsystem or leases/fencing.
+
+Snapshot/binding/events/replay use the existing transactional Store rules and CAS.
+Restart retains exact bytes/hash, manifest, Attempt binding and receipt/unknown
+facts; it cannot regenerate the past or restore cached freshness. History is
+readable but never direct permission to execute. ADR-0009 defines parity,
+independent-writer, crash-window and restart proof before completion.
 
 Do not inject the entire project history into every agent context.
 
@@ -690,55 +1046,135 @@ Do not inject the entire project history into every agent context.
 
 ## 5.15 Effect
 
-Purpose: represent an external side effect and its reconciliation.
+Purpose: represent one durable logical external mutation and its uncertainty.
 
-Examples:
+ADR-0002 freezes the G3 safety boundary:
 
-- deploy
-- create GitHub PR
-- send message
-- modify external database
-- delete external resource
-- external API mutation
+```text
+AUTHORIZED Command
+  ↓
+Effect REQUESTED persisted
+  ↓
+Effect DISPATCHED persisted
+  ↓
+cross external-call boundary
+  ↓
+SUCCEEDED | FAILED_NO_EFFECT | UNKNOWN
+```
+
+Target schema:
 
 ```yaml
 id: EffectId
-project_id: ProjectId
-run_id: RunId
-requested_by: string
-capability: string
+version: integer
+project_id: ProjectId?
+command_id: CommandId
 action: string
+capability: string
 destination: string
 idempotency_key: string
 status:
   - REQUESTED
-  - AUTHORIZED
   - DISPATCHED
-  - UNKNOWN
   - SUCCEEDED
-  - FAILED
+  - FAILED_NO_EFFECT
+  - UNKNOWN
+dispatch_count: integer
 external_receipt:
   provider: string?
   receipt_id: string?
+  result_ref: string?
 reconciliation:
   status: NOT_REQUIRED | REQUIRED | IN_PROGRESS | RESOLVED
+  last_observation: CONFIRMED_SUCCEEDED | CONFIRMED_NO_EFFECT | UNKNOWN | null
+  observation_ref: string?
+  reconciled_at: timestamp?
 created_at: timestamp
 updated_at: timestamp
 ```
 
-UNKNOWN is a first-class state.
+### Meaning of DISPATCHED
+
+`DISPATCHED` does not mean success. It means Project Control has crossed (or
+committed to crossing) the external-call boundary and may no longer assume that
+nothing happened.
+
+If a process restarts with an Effect still DISPATCHED and no terminal observation,
+the safe interpretation is reconciliation-required, not retry.
+
+### Terminal meanings
+
+- `SUCCEEDED` — external success was positively observed.
+- `FAILED_NO_EFFECT` — non-occurrence was positively established.
+- `UNKNOWN` — the system cannot establish whether the mutation happened.
+
+There is deliberately no ambiguous terminal `FAILED` in G3.
+
+### Reconciliation
+
+UNKNOWN (and orphaned DISPATCHED after recovery) may only proceed through
+observation/reconciliation:
+
+```text
+CONFIRMED_SUCCEEDED → SUCCEEDED
+CONFIRMED_NO_EFFECT → FAILED_NO_EFFECT
+UNKNOWN             → UNKNOWN
+```
+
+Resolving uncertainty requires an observation reference. The reference is not
+automatically Acceptance Evidence: Effect ≠ Evidence (I-18).
+
+### Idempotency
+
+Every managed Effect carries an idempotency key and should present it to providers
+that support idempotency. The key reduces duplicate-effect risk; it is not proof
+of exactly-once behavior.
+
+### Driver seam
+
+G3 uses an abstract external-effect seam conceptually equivalent to:
+
+```text
+dispatch(effect)
+reconcile(effect)
+```
+
+This is narrower than the real Runtime Adapter planned later. G3 may use a fake
+driver for deterministic safety/restart tests.
+
+### Relationship to Command
+
+An Effect may be created only from a durable AUTHORIZED Command, and its
+action/capability come from stored Command intent.
+
+G3 does not infer overall Command success from one Effect. Command completion
+aggregation remains outside this boundary.
+
+See `docs/architecture/decisions/ADR-0002-effect-reconciliation-boundary.md`.
 
 ---
 
 ## 5.16 Command
 
-Purpose: requested action issued by a controller.
+Purpose: one durable, concrete action requested by the Control Plane.
+
+ADR-0001 freezes the boundary between **durable intent/authorization** and later
+external execution. A Command is not the current replay-row mechanism and is not
+an Effect.
+
+Target schema:
 
 ```yaml
 id: CommandId
-command_type: string
-target_type: string
+version: integer
+project_id: ProjectId?
+target_type: PROJECT | MILESTONE | GOAL | TASK
 target_id: string
+target_version: integer
+action: string
+capability: string
+scope: string
+risk_level: LOW | MODERATE | HIGH | CRITICAL
 requested_by: string
 expected_version: integer?
 parameters: object
@@ -746,14 +1182,116 @@ idempotency_key: string
 status:
   - CREATED
   - AUTHORIZED
-  - DISPATCHED
-  - EXECUTING
-  - SUCCEEDED
-  - FAILED
   - REJECTED
-  - UNKNOWN
+  - DISPATCHED      # reserved: overall Command execution is not implemented
+  - EXECUTING       # reserved; G3 implements Effect outcomes separately
+  - SUCCEEDED       # reserved
+  - FAILED          # reserved
+  - UNKNOWN         # reserved
+authorization:
+  approval_id: ApprovalId?
+  authorized_at: timestamp?
+  rejected_at: timestamp?
+  reason: string?
+  approval_reason: string?
 created_at: timestamp
+updated_at: timestamp
 ```
+
+### G2 supported lifecycle
+
+G2 implements only the lifecycle whose semantics do not require an Effect ledger:
+
+```text
+CREATED
+   ├──→ AUTHORIZED
+   └──→ REJECTED
+```
+
+`DISPATCHED / EXECUTING / SUCCEEDED / FAILED / UNKNOWN` remain canonical future
+Command states and are currently **reserved and non-writable**. G3 implements
+external Effect outcomes separately; it does not aggregate overall Command
+completion.
+
+### Durable intent
+
+The Command binds its target/action at creation. These facts do not change in place:
+
+```text
+target type/id/version
+action
+capability
+scope
+risk level
+requested_by
+expected_version
+parameters
+idempotency_key
+```
+
+The Control Plane reads `target_version` from current authoritative state when
+creating the Command; a caller does not get to claim an arbitrary current version.
+
+A materially different action is represented by a new Command.
+
+### Authorization
+
+Authorization operates on the stored Command, not on a new caller-presented copy
+of its intent:
+
+```text
+Command(CREATED)
+  ↓
+read current target
+  ↓
+target_version + expected_version still current?
+  ↓
+Approval gate for stored target/action/capability/scope
+  ↓
+AUTHORIZED
+```
+
+A missing/pending permission returns WAIT and leaves the Command `CREATED`.
+A definite fail-closed refusal may move the concrete Command to `REJECTED`
+according to the implementation's explicit reason table.
+
+`AUTHORIZED` means only:
+
+> this exact stored Command passed the control gate against the authoritative
+> state observed at authorization time.
+
+It does **not** mean dispatch, runtime receipt, external effect, success, Evidence,
+Verification, or Acceptance.
+
+The authorization transition may therefore be recorded durably without claiming
+Effect knowledge.
+
+### Existing replay rows are not Commands
+
+The current store-level replay registry:
+
+```text
+command_id → { operation, result_id }
+```
+
+is an idempotency mechanism for authoritative store mutations. It must not be
+reinterpreted as the Command domain.
+
+A durable Command uses a separate collection/storage shape.
+
+`CommandId`, Command `idempotency_key`, and the existing store-mutation
+`commandId` are separate identities with separate meanings.
+
+### COMMAND-target Approval
+
+Even after Command gains durable identity, G2 does not automatically enable
+`ApprovalTargetType.COMMAND`.
+
+Whether approval should target a Command or the underlying Project/Task action is
+a later Policy/Approval-composition question. The current COMMAND-target Approval
+boundary therefore remains fail closed in G2.
+
+See `docs/architecture/decisions/ADR-0001-durable-command-boundary.md`.
 
 ---
 
@@ -784,40 +1322,224 @@ Events are history, not commands.
 
 ## 5.18 Policy
 
-Purpose: runtime-enforced authorization.
+Purpose: deterministic runtime-enforced authorization before Command execution.
 
-Conceptual authorization tuple:
+ADR-0003 freezes the Policy/Approval composition boundary.
 
-```text
-Actor
-+ Capability
-+ Resource
-+ Action
-+ Context
-```
-
-Schema:
+Normalized request:
 
 ```yaml
-id: PolicyId
-actor:
-  type: string
+subject:
   id: string
-capability: string
-resource:
-  type: string
-  id: string
-action: string
-context:
-  environment: string
+command:
+  id: CommandId
+  version: integer
+  target_type: string
+  target_id: string
+  target_version: integer
+  action: string
+  capability: string
+  scope: string
   risk_level: string
-  approval_state: string
-decision: ALLOW | DENY | REQUIRE_APPROVAL
-reason: string
+resource:
+  current_version: integer
+context: object
+policy_version: string
+```
+
+Decision effects are exactly:
+
+```text
+ALLOW
+DENY
+REQUIRE_APPROVAL
+```
+
+Composition precedence:
+
+```text
+DENY > REQUIRE_APPROVAL > ALLOW
+```
+
+Policy fields are read from the durable Command/current target at the enforcement
+point. A caller cannot restate action/capability/scope to change the decision.
+
+### PolicyDecision audit fact
+
+Each evaluation may be persisted as an immutable PolicyDecision:
+
+```yaml
+id: PolicyDecisionId
+command_id: CommandId
+command_version: integer
+target_version: integer
+effect: ALLOW | DENY | REQUIRE_APPROVAL
+policy_version: string
+subject_id: string
+context: object
+reasons: string[]
+matched_rule_ids: string[]
 created_at: timestamp
 ```
 
+Multiple PolicyDecisions for one still-CREATED Command are allowed because Policy
+is re-evaluated on each authorization attempt.
+
+### Composition with Approval
+
+```text
+Policy = DENY
+  → Command REJECTED
+  → Approval cannot override
+
+Policy = ALLOW
+  → Command may AUTHORIZED
+  → no Approval is manufactured
+
+Policy = REQUIRE_APPROVAL
+  → existing durable Approval gate
+  → WAIT | AUTHORIZED | REJECTED
+```
+
+An AUTHORIZED Command records the PolicyDecision that allowed it. An Approval id
+is required only when the decision effect was REQUIRE_APPROVAL.
+
+### G4 implementation strategy
+
+G4 uses a small deterministic versioned in-process policy engine and persists the
+evaluated PolicyDecision, not mutable Project-level policy documents.
+
+The reference engine is fail closed: no matching rule means DENY.
+
+A later OPA/Cedar/enterprise policy adapter may replace the evaluator without
+changing Command/Approval semantics.
+
 Policy is enforcement, not prompt text.
+
+See `docs/architecture/decisions/ADR-0003-policy-approval-composition.md`.
+
+---
+
+## 5.19 Approval
+
+Purpose: a durable **permission** fact.
+
+An Approval records that a named subject decided, within a stated scope, that one
+specific action on one specific target version may proceed.
+
+```yaml
+id: ApprovalId
+version: integer
+request:
+  target_type: PROJECT | MILESTONE | GOAL | TASK | COMMAND
+  target_id: string
+  target_version: integer?      # null for a COMMAND target
+  action: string
+  capability: string
+  scope: string
+  risk_level: LOW | MODERATE | HIGH | CRITICAL
+requested_by: string
+decision:
+  status: PENDING | APPROVED | REJECTED | EXPIRED | REVOKED
+  decided_by: string?
+  decided_at: timestamp?
+  reason: string?
+revocation:                     # only ever set by a revocation
+  revoked_by: string
+  revoked_at: timestamp
+  reason: string
+command_id: string?             # the Command this permission is about
+expires_at: timestamp?
+created_at: timestamp
+updated_at: timestamp
+```
+
+`capability` is part of the authorized action, not decoration: an approval for
+`deploy.production` on `task-1` is not an approval to run `delete.production`
+against it, even though the target, version, action name and scope are identical.
+It is bound at request time like every other part of the request and is compared
+exactly at authorization time (I-44).
+
+`ApprovalTargetType.COMMAND` is **reserved but unsupported in G2**. Command now
+has durable identity, so I-45's object-existence boundary is satisfied; however,
+the architecture has not yet decided whether human approval should target the
+Command itself or the underlying Project/Task action. That belongs to later
+Policy/Approval composition. Requesting, seeding or consuming a COMMAND-target
+approval therefore still fails closed with one explicit message.
+
+### What an Approval is not
+
+| Neighbour | The distinction |
+|---|---|
+| Evidence | Evidence is what happened; an Approval is what is permitted to happen |
+| Verification | Verification judges evidence; an Approval is not a judgement about work |
+| **Acceptance** | **Approval = permission fact · Acceptance = correctness/completion fact.** Neither implies the other: an approved deploy does not accept a Task, and an accepted Task produces no Approval |
+| Policy | Policy decides whether approval is *required* (`ALLOW / DENY / REQUIRE_APPROVAL`); an Approval is the fact that satisfies `REQUIRE_APPROVAL` |
+| Command | A Command is a requested action and its result; an Approval only lets one pass a control gate |
+| Effect | Approving an effect is not performing it, and not knowing its outcome |
+
+### Binding: what was approved
+
+There is no shape of an Approval that means "the project is approved". Five
+things are bound at request time and can never be edited afterwards:
+
+```text
+target     (target_type, target_id)  →  WHICH thing
+version    (target_version)          →  WHICH state of it
+action     (action)                  →  WHICH operation
+capability (capability)              →  WHICH ability it exercises
+scope      (scope)                   →  WHERE / HOW FAR
+```
+
+The target version is **read from the target**, not supplied by the requester: an
+approval that merely claims to be about v3 while the target is already at v4 would
+be a permission for a state that does not exist. `scope` and `capability` are
+compared exactly in v0.1 — there is no wildcard, prefix, or hierarchy algebra, so
+an approval for `production` is not an approval for `production-eu`, and an
+approval to exercise `deploy.production` is not one to exercise
+`delete.production`.
+
+A `COMMAND` target is identified by its command id and has no version; the
+approval binds that command and can be consumed by no other.
+
+### Lifecycle
+
+```text
+PENDING ──► APPROVED ──► REVOKED
+   │            │
+   ├──► REJECTED│
+   └──► EXPIRED ┘
+```
+
+- Every transition not drawn is refused: no re-decision (`APPROVED → APPROVED`),
+  no resurrection (`REJECTED / EXPIRED / REVOKED → APPROVED`).
+- A decision must be **attributable**: no named decider, no `APPROVED`.
+- `REVOKED` means the permission no longer stands — not that the operation failed.
+  It records who revoked it, when and why, and preserves the decision it
+  superseded.
+- `EXPIRED` is an observation about the clock, not a decision. Expiry is evaluated
+  on every read; recording it durably (with an `approval.expired` event) is a
+  separate explicit act. No scheduler exists anywhere in v0.1.
+- Re-requesting is a NEW Approval, never an edit of the old one.
+
+### Consumption
+
+An Approval is consumed through one read-only proof
+(`assertApprovalUsable`), which re-checks existence, effective status,
+attributability, target type, target id, action, **capability**, scope, the bound
+command, the deadline, and — the check that matters most — the target's **current**
+version. A consumption must also SAY which capability it exercises: an unnamed
+capability is not a wildcard, it is a request that cannot be authorized. Any
+failure is a refusal with a machine-readable reason
+(`MISSING`, `PENDING`, `REJECTED`, `REVOKED`, `EXPIRED`, `UNKNOWN`, `UNATTRIBUTED`,
+`TARGET_TYPE_MISMATCH`, `TARGET_ID_MISMATCH`, `TARGET_MISSING`, `STALE`,
+`ACTION_MISMATCH`, `CAPABILITY_MISMATCH`, `SCOPE_MISMATCH`, `COMMAND_MISMATCH`), so
+a caller never has to parse a message to learn why. A status this version cannot
+reason about is `UNKNOWN`, not "probably fine".
+
+Approval consumption is not modeled as a "used" flag. Command authorization is
+recorded with its PolicyDecision and, when required, Approval; G3 separately
+records Effect outcomes. Authorization is still not proof of external execution.
 
 ---
 
@@ -884,6 +1606,27 @@ Policy
 ```
 
 and causes the state transition through the Control Plane.
+
+## Approver — Permission Authority
+
+A human (or a named external authority) is the only subject that can grant,
+refuse, or withdraw an Approval.
+
+Can:
+
+- approve or reject a named action on a named target state
+- revoke a permission that still stands, with a reason
+- see exactly what was asked (`target`, `version`, `action`, `scope`, `risk`)
+
+Cannot:
+
+- approve without being named — an unattributed `APPROVED` is refused
+- approve an action, scope, or target version other than the one requested
+- extend a grant to a newer version of the target
+- make work correct: approving is not accepting, and not executing
+
+The Control Plane records and enforces the decision, but it never manufactures
+one: with no named approver there is no Approval, and the gate fails closed.
 
 ---
 
@@ -965,25 +1708,87 @@ VERIFYING → REJECTED
 
 Accepted results can later become STALE / INVALIDATED if their basis is no longer valid.
 
+### Parent acceptance (Goal / Milestone)
+
+```text
+children finished
+  ↓
+Aggregate Evidence (snapshot revision = identity)
+  ↓
+Verification of that observation
+  ↓
+PASS → ACCEPTED (Goal) / COMPLETED (Milestone)
+  └ not PASS → no transition; the parent stays open and the case is reported
+```
+
+The parent's decision and its contract revision move in one transaction. Without
+a contract there is no acceptance decision at all: the parent's status is simply
+synchronised from its children.
+
+## Approval
+
+```text
+PENDING ──► APPROVED ──► REVOKED
+   │            │
+   │            └──► EXPIRED
+   ├──► REJECTED
+   └──► EXPIRED
+```
+
+- `REVOKED` withdraws a permission that still stood. It is not "the operation
+  failed", and it is not a re-decision: the decision it superseded stays in the
+  record and in the event history.
+- `EXPIRED` is reached by the clock, not by a person, and is the only transition
+  available from an already-granted approval.
+- Rejection, expiry and revocation are terminal. A new attempt is a new Approval.
+
+## Command authorization
+
+G2 implements durable Command authorization; G4 composes Policy and Approval:
+
+```text
+stored CREATED Command + current target
+  ↓
+Policy evaluation → persisted PolicyDecision
+  ├── DENY             → REJECTED
+  ├── ALLOW            → AUTHORIZED
+  └── REQUIRE_APPROVAL → Approval check → WAIT / AUTHORIZED / REJECTED
+```
+
+- Authorization is recorded but is not dispatch or success. G3's Effect ledger
+  records external outcomes separately (§5.15).
+- An Approval never waives the Command's own `expectedVersion`. A permission is
+  not an exemption from optimistic concurrency.
+- Policy decides whether Approval is required; Approval satisfies only
+  REQUIRE_APPROVAL and cannot override DENY.
+
 ## Effect
 
 ```text
-REQUESTED
+AUTHORIZED Command
   ↓
-AUTHORIZED
+Effect REQUESTED
   ↓
 DISPATCHED
   ↓
-SUCCEEDED / FAILED
-       or
-     UNKNOWN
-       ↓
-   RECONCILIATION
+SUCCEEDED / FAILED_NO_EFFECT / UNKNOWN
+                              ↓
+                         RECONCILIATION
 ```
 
 ---
 
 # 8. Hard Architectural Invariants
+
+**Numbering decision (recorded).** The archaeology track froze I-27…I-31 for
+acceptance-bound, revision-lineage, and approval-boundary semantics
+(`ARCHAEOLOGY_CLOSURE.md`, `FINAL_ARCHAEOLOGY.md`). Canonical numbering yields to
+that frozen record: those five numbers are adopted here, and the four invariant
+statements this document previously held at I-27…I-30 are **retained unchanged**
+as I-32…I-35. No invariant statement was deleted or reinterpreted — only the
+numbers of the four displaced statements moved. `FINAL_ARCHAEOLOGY.md` is a
+research conclusion and is not implementation authority; its numbering is
+adopted because the closure record already claimed it.
 
 ```text
 I-01 Task/Goal is project acceptance authority.
@@ -1012,10 +1817,25 @@ I-23 Large artifacts are externalized; durable core state stores references/hash
 I-24 Runtime can be replaced without changing the Project Model.
 I-25 Human retains final authority for project direction/high-risk operations.
 I-26 Exactly-once external side effects must never be assumed by default.
-I-27 A Run may have multiple Attempts without becoming multiple Tasks.
-I-28 Verification evaluates evidence; it does not itself become Project State.
-I-29 A command must not silently overwrite a newer authoritative version.
-I-30 Historical Events are not rewritten to repair current state.
+I-27 Acceptance is contract-bound and evidence-bound.
+I-28 Acceptance/evidence lineage must bind to a concrete revision identity.
+I-29 Approval does not equal Acceptance.
+I-30 Approval is scoped, attributable, and subject to its declared terminal/revocation semantics.
+I-31 Human approval cannot manufacture missing evidence.
+I-32 A Run may have multiple Attempts without becoming multiple Tasks.
+I-33 Verification evaluates evidence; it does not itself become Project State.
+I-34 A command must not silently overwrite a newer authoritative version.
+I-35 Historical Events are not rewritten to repair current state.
+I-36 Child completion is not parent acceptance; a parent with its own contract is accepted only through that contract.
+I-37 Aggregate Evidence is an observation with an identity: one snapshot, one record, and a superseded record is history, never garbage.
+I-38 Evidence that no longer describes current reality cannot carry an acceptance.
+I-39 A parent's contract pin is a fact about that parent: the revision must target its own type and id, and both halves of the pin are required.
+I-40 Approval authorizes a specific action on a specific target and scope; it is not a generic permission over an object.
+I-41 An Approval is bound to a concrete target version and cannot authorize a newer authoritative version.
+I-42 Approval does not imply execution success or Acceptance.
+I-43 A revoked, expired, rejected, or stale Approval cannot authorize a Command.
+I-44 An Approval's capability is part of the authorized action and must match the capability presented at authorization time.
+I-45 A control fact must not claim support for a target type whose authoritative control object does not exist in the current Project Control model.
 ```
 
 ---
@@ -1351,13 +2171,18 @@ This is why UNKNOWN is necessary.
 | Evidence | Runtime | Immutable after creation | Reviewer | Acceptance | Control | Re-verify |
 | Verification | Reviewer/Verifier | Append-only | — | Acceptance | Control | Re-run |
 | Decision | Human | Human | — | Human | Human | Human |
-| Memory | Control/Promotion | Control | Source verification | Control | Control | Re-promote |
-| ContextCapsule | Controller | Regenerate | — | — | Controller | Regenerate |
+| Memory | Control Plane after validation | Lifecycle only | ADR-0008 validation + source checks | Promotion, not project Acceptance | HUMAN/Control: STALE | New validated MemoryId |
+| ContextCapsule | Trusted Control Plane | Immutable snapshot; new ID to regenerate | Pre-dispatch source/integrity checks | —; receipt is not Acceptance | Refuse current use; preserve history | New per-Attempt snapshot; UNKNOWN reconciles existing Attempt |
 | Effect | Controller | Effect Controller | Reconciler | — | Controller | Reconcile |
 | Command | Controller | Controller | Runtime result | — | Controller | Controller |
 | DomainEvent | Runtime/Control | Append-only | — | — | Never rewrite | Compensating event |
 
-This matrix is **PROPOSED**, not yet frozen.
+This matrix is **PROPOSED**, not yet frozen. Its historical Human-only Decision
+row is superseded by the accepted authority rules in §5.12 and ADR-0007:
+HUMAN and CONTROL_PLANE may author Decisions within the stated authority limits.
+The Memory row is governed by accepted §5.13 and ADR-0008. The ContextCapsule row
+is governed by accepted §5.14 and ADR-0009; neither acceptance freezes the remaining
+proposed rows.
 
 ---
 
@@ -1381,6 +2206,19 @@ Project
  ├── Memory
  └── ContextCapsule
 ```
+
+The same chain exists one and two levels up, with aggregate evidence standing in
+for the runtime product a parent never has:
+
+```text
+Task  → Evidence(run/attempt)      → Verification → Task.accepted
+Goal  → Evidence(child snapshot)   → Verification → Goal.accepted
+Milestone → Evidence(goal snapshot) → Verification → Milestone.completed
+```
+
+`Goal` and `Milestone` may each carry their own Acceptance Contract. A parent that
+declares none is still a derived summary of its children; a parent that declares
+one is a decision that has to be proved.
 
 Control path:
 
@@ -1437,6 +2275,10 @@ Small, queryable, versioned records:
 - Verification records
 - Evidence metadata
 - Effect receipts
+- immutable bounded Capsule input archives and append-oriented delivery facts
+  under ADR-0009; small mutable delivery observations live on the existing Attempt,
+  not as accepted Project State. V1 archives full payload bytes inline, with hash,
+  manifest/pins, generation information and dispatch binding. Persistence is not receipt.
 
 ### Externalized artifacts
 
@@ -1493,6 +2335,25 @@ REQUIRE_APPROVAL
 ```
 
 Policy must be runtime-enforced rather than merely expressed in prompts.
+
+### Policy and Approval
+
+`REQUIRE_APPROVAL` is a Policy decision; an **Approval** (§5.19) is the durable
+fact that satisfies it. Keeping them apart is what makes each auditable:
+
+```text
+Policy:    should this action be allowed, denied, or gated on a human decision?
+Approval:  a named human decided, for THIS action, on THIS target version,
+           within THIS scope — and the decision is still current.
+```
+
+`context.approval_state` in the policy schema is therefore backed by a real,
+queryable fact rather than a string nobody owns.
+
+G4 implements a bounded deterministic StaticPolicyEngine and durable
+PolicyDecision facts (§5.18, ADR-0003). ALLOW needs no Approval; DENY cannot be
+overridden; REQUIRE_APPROVAL uses the durable Approval gate. Broader external
+policy adapters and policy management remain outside this implementation.
 
 ---
 
@@ -1662,6 +2523,8 @@ The following are currently CONFIRMED:
 - Command, Event, and State are separate.
 - External effects require UNKNOWN/reconciliation semantics.
 - Capability and Permission are separate.
+- Approval and Acceptance are separate: permission is not correctness.
+- A durable Approval binds one target version, one action and one scope, and must be attributable to a named decider.
 - Current Reality outranks Memory.
 - Parallel writes require isolation or proven non-overlap.
 - Runtime should be replaceable behind an adapter boundary.
@@ -1681,7 +2544,15 @@ The following are currently CONFIRMED:
 - Exact DSH integration mechanism.
 - Exact Team/Workflow mapping.
 - Exact Agent Bridge implementation.
-- Exact Policy Engine.
+- Production/external Policy adapters and management; the bounded G4 evaluator
+  and composition semantics are implemented (§5.18).
+- Overall Command execution/completion states beyond the implemented durable
+  CREATED / AUTHORIZED / REJECTED lifecycle.
+- The COMMAND approval target: still unsupported. Durable Command exists, but
+  ADR-0003 binds Approval to the underlying Project/Task action.
+- Approval scope algebra (v0.1 compares `scope` exactly; no wildcards, prefixes,
+  or containment).
+- Whether approval consumption is recorded (that is an Effect-ledger question).
 - Exact schema serialization format.
 - Exact Controller/Reconciler implementation.
 - Whether all mutable objects use identical version semantics.
@@ -1744,11 +2615,16 @@ Never silently reinterpret a confirmed concept.
 
 ---
 
-# 26. Current Next Step
+# 26. Initial architecture next-step plan — historical
 
-Do NOT jump directly into implementation.
+The sequence below records the early design plan, not the current work boundary.
+Current work is defined by `ROADMAP.md`: G7 is COMPLETE by G7.1–G7.4's independently evidenced boundaries plus explicit deferral. G7.5 remains MISSING / D, DEFERRED — no demonstrated control-loop or G8 dependency; reactivate only on a concrete requirement or G8 failure scenario. G7.6 is DEFERRED — reactivate only on demonstrated G8 auditability need, not COMPLETE. Leases/fencing remain NOT CURRENTLY REQUIRED. G8 is COMPLETE after Final G8 Exit Review PASS and explicit Human completion authorization, closing only the bounded prototype/control-plane milestone. No subsequent phase is authorized. This status does not claim full Blueprint/canonical implementation or resolve the Roadmap D-GATE.
 
-The next architecture artifact should be:
+**Historical readiness annotation before Slice 1–4:** Readiness audit and repair closure are recorded in `ROADMAP.md`: hierarchy ownership A repair `198ba74e26e6f1d4cb42ce612d37dde2947ac863` passed independent review and CI `36820265823`. The audit supports bounded G8 integration validation but does not prove the full control loop. Authorization/execution binding, real Effect, durable/readable results, meaningful Verification, whole-chain restart and adapter substitution remain G8 proof gaps. No accepted ADR, authority or frozen invariant is changed by convergence.
+
+**Current implementation/status annotation (2026-10-01):** Reviewed test/Evidence HEAD `7dad1894f802bdd6076a9320731c918a7a765e0a`, CI `36857097373`, records independent PASS for Slice 1–4 and CLOSED stability A1/A2. Real filesystem Effect UNKNOWN restart, provider-owned completed-result process reproof and LocalProcess/DSH public-contract substitution are evidenced without production architecture expansion. Live DSH, arbitrary substitution, whole-chain in-flight and whole-project recovery remain unproven. Real LocalProcess/DSH in-flight reconciliation is unsupported (resume/reconcile=false), DEFERRED / provider-specific D candidate, not a current G8 blocker under Human-authorized reviewed bounded scope; future activation requires separate Human authorization and focused research/ADR. No provider observation semantics are settled here. G8 is COMPLETE after Final G8 Exit Review PASS — EXIT AUTHORIZED and explicit Human authorization. Completion does not claim full Blueprint implementation or production 1.0 readiness, and does not activate deferred candidates. See ROADMAP final exit closure and retained Slice Evidence review history. No accepted meaning, domain/state, source authority or invariant changes.
+
+At that design stage, the next architecture artifact was:
 
 **Authority + Relationship Matrix v0.1**
 
@@ -1785,9 +2661,11 @@ This matrix defines who may create, modify, execute, verify, and accept the cano
 | Workspace | approve scope | lifecycle | use within permission | inspect | read |
 | Evidence | read/approve | record/retain | produce | inspect | consume |
 | Verification | read | record | produce proposal | authoritative verdict | consume |
+| Approval | **authoritative decision** | record/enforce, never manufacture | request only | read | read |
 | Acceptance | direct high-level override | authoritative transition | cannot accept | verify | evaluate |
 | Decision | authoritative direction | record | propose | advise | read |
-| Memory | curate | maintain | propose with provenance | validate | consume |
+| Memory | validate/withdraw through control | source-check/promote/lifecycle | propose; cannot self-authorize validation | validate only through trusted assignment | read; Memory cannot authorize Acceptance |
+| ContextCapsule | accept architecture; read | assemble/archive/check/bind/reconcile delivery | consume detached input; matching Adapter receipt only | no new authority | read; Capsule cannot authorize Acceptance |
 | Effect | approve high-risk | authorize/reconcile | request/execute | verify result | read |
 | Command | approve where required | issue/authorize | execute | read | read |
 | Event | read | append/project | emit runtime facts | read | read |
@@ -1798,7 +2676,7 @@ This matrix defines who may create, modify, execute, verify, and accept the cano
 - Roadmap contains Milestones.
 - Milestone contains Goals.
 - Goal contains Tasks.
-- Task owns Acceptance and may have many Runs.
+- Task references one Acceptance Contract revision and may have many Runs.
 - Run contains Attempts and references Workspace and Runtime.
 - Attempt may produce Evidence.
 - Evidence is evaluated by Verification.
@@ -1814,10 +2692,136 @@ The causal chain is:
 
 Evidence → Verification → Acceptance evaluation → Control Plane state transition.
 
+A Task references **one specific Acceptance Contract revision**:
+
+```text
+Contract identity = (AcceptanceId, AcceptanceVersion)
+
+Task.acceptance_id + Task.acceptance_version                  →  that revision
+Evidence.acceptance_id + Evidence.acceptance_version          →  the same revision
+Verification.acceptance_id + Verification.acceptance_version  →  the same revision
+```
+
+- Changing contract content requires a new revision.
+- Changing Acceptance `status` (`PENDING → PASSED`) is **not** a contract revision
+  change.
+- An existing Task does not drift with the Acceptance head revision: it stays
+  bound to the revision it was created against.
+- Acceptance is evaluated against that pinned revision, never against the newest
+  one.
+
+A Goal or a Milestone pins a contract revision the same way, and its evidence is
+an observation of its own children rather than a Runtime product:
+
+```text
+Goal.acceptance_id + Goal.acceptance_version        →  that revision
+Milestone.acceptance_id + Milestone.acceptance_version →  that revision
+Evidence.source_refs (child snapshot)               →  the observed children
+```
+
+- A parent contract revision must target that parent's own type and id.
+- A revised contract does not re-open an accepted decision, and a newer revision
+  does not move an existing pin.
+
+### Approval relationship
+
+An Approval is about a target, not owned by it:
+
+```text
+Approval.request.target_type + target_id + target_version  →  what it authorizes
+Approval.action + capability + scope                       →  how far it reaches
+Approval.command_id                                        →  the command it is for
+Approval.decision.decided_by                               →  who decided (required)
+```
+
+- It does not become part of the target's state: a Task with an approved deploy is
+  still a READY Task, and no approval is created by accepting anything.
+- It does not follow the target: when the target's version moves, the approval is
+  STALE and authorizes nothing.
+- It does not widen: matching target, version, action and scope with a different
+  **capability** is a different authorization, and `CAPABILITY_MISMATCH` is its own
+  refusal — the capability is not a label on the action, it is part of it.
+- Project membership and approval scope are unrelated mechanisms: `scope` is an
+  opaque, exactly-compared label in v0.1, not a tree of project resources.
+
 ### Project State authority boundary
 
 Only the Control Plane may mutate authoritative project state. Agents and runtimes may emit execution facts, results, evidence, and proposals.
 
 ### Matrix status
 
-This matrix remains PROPOSED until validated against executable prototypes and external implementations.
+This matrix remains PROPOSED until validated against executable prototypes and external implementations. Its Memory row is refined by accepted §5.13 / ADR-0008; its ContextCapsule row is governed by accepted §5.14 / ADR-0009. These acceptances do not freeze the remaining proposed matrix.
+
+
+---
+
+# 6. Workspace / Reality Boundary
+
+ADR-0005 defines Workspace as a durable Reality-layer object.
+
+Core semantics:
+
+```text
+parallel readers → may share one observed SHARED revision
+single writer    → may use SHARED with exclusive ownership
+parallel writers → MUST use distinct ISOLATED workspaces
+```
+
+An ISOLATED workspace reads overlay-over-shared and writes only to its own root.
+`write_scopes` are enforced by the WorkspaceManager, not treated as advisory.
+
+Workspace `version` is control-record concurrency. Workspace `revision` is a
+deterministic identity for observed file reality. They are different concepts.
+
+Integration is a Control Plane action. It re-observes every touched path against
+the base observation and fails closed on conflict before claiming integration.
+An isolated patch revision is not authoritative shared reality.
+
+Workspace-bound Evidence may carry `workspace_id` +
+`workspace_revision`; acceptance-relevant code/file evidence must bind to a
+current integrated shared revision.
+
+See `docs/architecture/decisions/ADR-0005-workspace-isolation-boundary.md`.
+
+---
+
+# 7. Runtime Adapter
+
+ADR-0004 defines the Project Control execution seam.
+
+Mandatory semantics:
+
+```text
+capabilities()
+start()
+observe()
+collectResult()
+cancel()
+```
+
+Optional operations are capability-gated and fail loud when unsupported:
+
+```text
+resume()
+sendMessage()
+subscribeEvents()
+reconcile()
+pause()
+```
+
+Project Control owns RunId/AttemptId. Runtime-specific SessionId/WorkflowId/
+TeamId/process ids are carried only in an opaque RuntimeRef and never become
+Project State identity.
+
+Normalized RuntimeObservation is observation only. Normalized RuntimeResult is
+candidate execution output only. A COMPLETED result may feed Candidate Evidence
+through the Controller; runtime success does not itself produce Verification or
+Acceptance.
+
+G5 implementation targets:
+
+- LocalProcessRuntimeAdapter — real OS-process execution proof in CI;
+- DshWorkflowRuntimeAdapter — adapter over DSH `workflowEngine.start()`,
+  WorkflowRun.result/cancel/dispose, with resume/pause reported unsupported.
+
+See `docs/architecture/decisions/ADR-0004-runtime-adapter-boundary.md`.

@@ -1,5 +1,7 @@
 # Limitations & Known Issues
 
+> **Scope:** legacy V0.5 runtime notes, not the Project Control OS feature inventory. Some stability notes predate later fixes: current `orchestrator.mjs` supports configurable Reviewer attempts (`DSH_ORCH_REVIEW_ATTEMPTS`, default 2). For current Project Control boundaries, read `PROJECT_ARCHITECTURE.md` and `ROADMAP.md`.
+
 Honest list. Future plans are **not** described as current capabilities.
 
 ## Stability

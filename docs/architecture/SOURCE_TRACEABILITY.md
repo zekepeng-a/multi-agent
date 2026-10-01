@@ -896,3 +896,429 @@ Only three questions remain worth targeted archaeology:
    - How approval, rejection, cancellation, and manual override are represented without allowing UI/runtime code to mutate authoritative state directly.
 
 If these three passes do not reveal a new authority boundary, invariant, failure mode, or materially different recovery model, archaeology stops and architecture convergence begins.
+
+---
+
+## 22. G4 focused policy pass — enforcement before execution
+
+This pass was opened by the G4 D-class gap only. It is not a new broad archaeology pass.
+
+### Agent Execution Harness — command-policy.ts
+
+Source:
+- Repository: `lordaeternus/agent-execution-harness`
+- `src/core/command-policy.ts`
+- `src/core/command-execution.ts`
+
+Observed implementation:
+
+- dangerous-command classification is evaluated before normal allow/deny configuration;
+- explicit deny rules fail closed;
+- when an allow list exists, commands outside it are refused;
+- strict task mode can require a command to match a task-level allowed-command list;
+- execution is a separate module called only after policy checks;
+- strict execution can refuse shell mode and require direct executable + arguments.
+
+Transferable boundary:
+
+> Policy evaluation is a deterministic gate before execution, and execution does not get to reinterpret the policy result.
+
+Limitation:
+
+- this implementation returns only allowed/denied; it is not evidence for our durable Approval semantics or Project Control target/version model.
+
+### AgentLedger — normalized policy request and composed decision
+
+Source:
+- Repository: `yaogdu/AgentLedger`
+- `src/agentledger/policy.py`
+- `src/agentledger/tools.py`
+- `src/agentledger/approval.py`
+
+Observed implementation:
+
+- `PolicyRequest` normalizes subject, action, resource, context, signals, runtime state, and policy version;
+- `PolicyDecision` is separate from the request and has an explicit effect;
+- supported decision effects are `allow`, `deny`, and `require_approval`;
+- multiple evaluators produce findings which are composed deterministically;
+- deny takes precedence over require-approval, which takes precedence over allow;
+- the decision carries policy version, reasons, findings and required controls;
+- the ToolGateway evaluates policy before the managed side-effect ledger/external call;
+- a deny stops execution;
+- require-approval creates/returns an Approval requirement and stops execution;
+- only allow proceeds to budget/sandbox/side-effect execution;
+- Approval is represented separately from policy and is read back into runtime state for a later policy evaluation.
+
+Transferable boundaries:
+
+1. Policy request/decision should be normalized and deterministic, not prompt text.
+2. Policy decision is not Approval.
+3. A human Approval satisfies only a `REQUIRE_APPROVAL` path; it must not override `DENY`.
+4. The gate is re-evaluated at the enforcement point with current runtime/control facts.
+5. Policy/version/reasons are useful audit facts even when no execution occurs.
+
+Limitation:
+
+- AgentLedger's policy subject is runtime/tool oriented and its Approval lifecycle is simpler than this repository's durable target-version-bound Approval.
+- We should borrow the request/decision/enforcement boundary, not its exact policy schema.
+
+### G4 research consequence
+
+The Project Control G4 gate has enough implementation-backed precedent to settle a bounded design:
+
+```text
+stored Command + current target + actor/context
+        ↓
+PolicyRequest
+        ↓
+PolicyEngine
+        ↓
+ALLOW | DENY | REQUIRE_APPROVAL
+        ↓
+DENY             → reject Command
+REQUIRE_APPROVAL → existing durable Approval gate
+ALLOW            → authorize without manufacturing Approval
+```
+
+A Policy decision must be bound to the durable Command/current target snapshot and recorded separately from Approval.
+
+No new top-level layer or invariant was discovered. Broad archaeology remains closed.
+
+---
+
+## 23. G5 focused runtime-adapter pass — capability-shaped execution seams
+
+This pass is opened only by the G5 D-class gap. Broad archaeology remains closed.
+
+### DeepSeek Harness Workflow — live run seam is narrower than the old conceptual adapter
+
+Source:
+- Repository: `deepseek-ai/deepseek-harness`
+- `docs/subsystems/workflow.md`
+- `packages/workflow/workflow/src/types.ts`
+- `packages/workflow/workflow/src/runtime-types.ts`
+
+Observed current contract:
+
+- `ctx.workflowEngine.start(request)` returns one holder-owned live `WorkflowRun`.
+- `WorkflowRun` exposes a stable run id, validated metadata, a terminal `result` Promise, `cancel()`, and `dispose()`.
+- `WorkflowResult.stopReason` is closed: `completed | cancelled | error`.
+- the result Promise resolves rather than rejecting for normal run failure/cancellation;
+- workflow lifecycle events are observe-only snapshots; subscribers do not receive the live run handle;
+- top-level workflow chat records are durable presentation/history facts, but Workflow itself is foreground execution and not a Project Control state machine;
+- the seam does **not** expose generic pause/resume/getStatus/getEvents methods.
+
+Transferable boundary:
+
+> A Project Control Runtime Adapter must normalize the capabilities a runtime actually has. It must not invent universal pause/resume/status operations because an older architecture sketch listed them.
+
+### DeepSeek Harness Subagent — multiple providers + capability discovery
+
+Source:
+- Repository: `deepseek-ai/deepseek-harness`
+- `docs/subsystems/subagent.md`
+
+Observed current contract:
+
+- multiple named subagent providers coexist in one context;
+- start-time capabilities are explicit and checked before execution;
+- unsupported capabilities fail loudly rather than being silently ignored;
+- cancellation is carried by `AbortSignal`;
+- continuable children use a different capability path from one-shot children;
+- `interrupt()` is a public stop request for live continuable children, but interruption does not delete durable Session identity or pending inbox state;
+- cold resume and live activation are runtime/session concerns, not Project Task/Run state.
+
+Transferable boundaries:
+
+1. runtime capabilities must be discoverable per adapter/provider;
+2. "unsupported" is a typed/fail-loud outcome, not silent degradation;
+3. runtime Session/Activation/child identity must remain runtime identity rather than Project Control authority.
+
+### DeepSeek Harness Agent Team — durable runtime identity is still runtime identity
+
+Source:
+- Repository: `deepseek-ai/deepseek-harness`
+- `docs/subsystems/agent-team.md`
+
+Observed current contract:
+
+- TeamId / TeamTaskId / TeamMessageId and teammate SessionId are durable runtime-domain identities;
+- roster/message/task snapshots have their own lifecycle and revision rules;
+- mailbox delivery and Team task DAG state are durable inside DSH;
+- write scopes are advisory overlap warnings, not Project Control workspace locks.
+
+Transferable boundary:
+
+> Durability inside the runtime does not promote Team Task/Session state into Project/Task authority. The adapter may preserve runtime refs and observations, but Project Control remains the accepted-state owner.
+
+### Codingns4DSH — heterogeneous external Agents prove capability variance
+
+Source:
+- Repository: `jingyi0605/Codingns4DSH`
+- current `README.md`
+
+Observed current behavior:
+
+- Claude Code, Codex, Kimi, Gemini, Pi, OpenCode, Grok Build and others are launched/resumed as DSH-managed external Agent sessions;
+- supported capabilities differ by Agent/protocol: resume, interrupt, permissions, questions, interjection, model selection, tool streaming and usage are not universal;
+- external Agent processes/credentials remain outside DSH while event streams are projected into DSH-native sessions;
+- runtime identity/session presentation stays in the host/runtime layer.
+
+Transferable boundary:
+
+> Adapter capability variance is not theoretical. A stable Project Control adapter contract needs a small mandatory core plus optional capabilities rather than one maximal universal interface.
+
+### G5 synthesis
+
+The prior conceptual contract:
+
+```text
+createRun()
+start()
+pause()
+resume()
+cancel()
+getStatus()
+getEvents()
+collectResult()
+```
+
+is too prescriptive as a universal runtime interface.
+
+The implementation-backed sources support a narrower architecture:
+
+```text
+mandatory:
+  capabilities()
+  start()
+  observe()
+  collectResult()
+  cancel()
+
+optional/capability-gated:
+  resume()
+  sendMessage()
+  subscribeEvents()
+  reconcile()
+```
+
+The adapter returns normalized runtime observations/results plus opaque runtime
+references. Project Control decides how those observations affect Run/Attempt,
+Evidence and Acceptance.
+
+No new top-level layer is needed. G5 can be resolved by a capability-shaped
+Runtime Adapter boundary.
+
+---
+
+## 24. G6 focused workspace/concurrency pass — isolation is the safety boundary
+
+This pass is opened only by the G6 D-class gap. Broad archaeology remains closed.
+
+### Agent Harness — isolation or sequential writers
+
+Source:
+- Repository: `0xenzyme/agent-harness`
+- `plugins/agent-harness/hosts/cursor/execution.md`
+
+Observed host contract:
+
+- isolation maps to a locked worktree or separate agent cwd;
+- when isolation is unavailable, the fallback is **sequential writers only**;
+- authorization to delegate a worker does not imply authorization to create a
+  workspace/worktree.
+
+Transferable boundary:
+
+> Parallel execution is not equivalent to parallel writing. Parallel writers need a concrete isolation boundary; without one, write work is sequential.
+
+### DeepSeek Harness Agent Team — writeScopes are advisory, not authority
+
+Source:
+- Repository: `deepseek-ai/deepseek-harness`
+- `docs/subsystems/agent-team.md`
+- `packages/experimental/agent-team/README.md`
+
+Observed implementation:
+
+- Team tasks persist normalized workspace-relative `writeScopes`;
+- views warn when in-progress tasks overlap;
+- overlap warnings do **not** block claim and do **not** authorize writes;
+- Team task revision protects Team task state, not filesystem writes.
+
+Transferable boundary:
+
+> Runtime write-scope metadata can be useful planning information, but advisory overlap warnings are not a concurrency-control proof.
+
+Therefore Project Control must not treat DSH Team `writeScopes` as satisfying
+I-22 by themselves.
+
+### ExcelManus — fail before publishing conflicting parallel mutation
+
+Source:
+- Repository: `kilolonion/excelmanus`
+- `tests/test_subagent_runtime.py`
+
+Observed tests:
+
+- parallel mutating subagents are rejected with `PARALLEL_CONFLICT` before
+  publication;
+- a mixed write + read-only parallel request is rejected by the conservative
+  scheduler in the tested configuration;
+- multiple read-only explorers may read the same file concurrently.
+
+Transferable boundary:
+
+> A safe scheduler may conservatively reject a parallel plan before work begins; "we will notice later" is not the only valid conflict policy.
+
+### Earthwalker Agent OS — isolated overlays + deterministic integration
+
+Source:
+- Repository: `earthwalker17/agent-os`
+- `README.md`
+- `ARCHITECTURE.md`
+- `backend/execution/patch_workspace.py`
+- `backend/execution/integration.py`
+
+Observed implementation:
+
+- each parallel write task gets a private patch workspace;
+- reads fall through to the shared repo while writes land only in the overlay;
+- shell/Git/global executors are blocked inside the patch workspace;
+- after the wave settles, one deterministic integration path applies overlays to
+  the shared repo;
+- identical same-path output can de-duplicate;
+- different same-path output is surfaced as a conflict rather than silently
+  overwritten;
+- the losing patch remains inspectable;
+- the coordinator is the sole writer of shared run/plan artifacts.
+
+Transferable boundaries:
+
+1. private write workspaces can make parallel writers safe without pretending paths never overlap;
+2. integration is a distinct authority step after execution;
+3. conflicts are durable/reportable outcomes, not prompt advice;
+4. shared/global executors should not be freely available from isolated write sandboxes.
+
+### G6 synthesis
+
+The evidence supports a conservative first Project Control rule:
+
+```text
+parallel readers
+    → may share one observed revision
+
+single writer
+    → may use the authoritative shared workspace
+
+parallel writers
+    → each MUST receive a distinct isolated workspace
+       and integration MUST occur through one control-plane owner
+```
+
+Declared `writeScopes` are not enough to prove non-overlap unless the workspace
+boundary actually enforces those scopes.
+
+The Workspace object must therefore carry:
+
+- durable WorkspaceId;
+- base reality revision;
+- current/produced revision;
+- isolation kind;
+- owner Run/Attempt;
+- enforced write scopes;
+- lifecycle/integration state;
+- integration/conflict result.
+
+Candidate execution output from an isolated workspace is not proof that the
+authoritative shared workspace changed. Acceptance of a code/file outcome must
+bind to the revision that is current **after integration**, not merely to a patch
+workspace revision.
+
+No new top-level layer is required. G6 is a Reality-layer object + Control-layer
+integration boundary.
+
+---
+
+## 25. G7.2 focused Decision pass — proposal is not authoritative decision
+
+This pass is opened only by the G7.2 D-class gap. Broad archaeology remains closed.
+
+### Agent Harness — human intent and control records are distinct from execution output
+
+Source:
+- Repository: `0xenzyme/agent-harness`
+- `harness/mental-models/01-user-scenario.md`
+- `harness/mental-models/03-control-loop-handoff.md`
+- `harness/mental-models/04-ownership-boundary.md`
+- `harness/mental-models/02-work-unit.md`
+- `plugins/agent-harness/skills/execute/SKILL.md`
+
+Observed contract:
+
+- human owns product direction, judgment, approval, and acceptance;
+- agent owns orientation/execution/verification/state sync only inside approved boundaries;
+- ambiguous product/risk choices pause for user direction rather than being guessed;
+- Route Decision / Gate Result / Result Packet are control-plane records used for handoff and reasoning continuity;
+- worker output stays candidate evidence; only the controller writes accepted durable state;
+- specs record decisions/boundaries before execution and durable artifacts preserve decisions separately from bounded current status;
+- current user instruction has higher precedence than adapter/default state.
+
+Transferable boundaries:
+
+1. a runtime/worker/model may **propose** a choice or return a decision-shaped packet, but that does not make it an authoritative project Decision;
+2. human-direction ambiguity is a stop/ask condition, not permission for model autonomy;
+3. durable Decision facts belong to project-control artifacts/state, not transient execution output;
+4. current human direction must be able to supersede older recorded direction without rewriting history.
+
+### ADR Tools — supersession preserves decision history
+
+Source:
+- Repository: `npryce/adr-tools`
+- `README.md`
+
+Observed implementation contract:
+
+- architecture decisions are stored as numbered durable records;
+- creating a replacement decision with `adr new -s <old>` creates a **new** ADR;
+- the old ADR is updated to indicate that it is superseded by the new ADR;
+- decision evolution is represented as lineage rather than silently editing the old decision into the new one.
+
+Transferable boundary:
+
+> A materially different decision should receive a new identity and supersede the old one. Historical rationale remains attributable and inspectable.
+
+Limitation:
+
+- ADR Tools manages architecture-document records, not Project Control runtime state;
+- it is precedent for supersession/history semantics, not for our exact database schema or human/control-plane authority model.
+
+### G7.2 synthesis
+
+The sources support a bounded Project Decision model:
+
+```text
+proposal / need-user / model recommendation
+        ≠
+durable Decision
+
+authorized HUMAN or CONTROL_PLANE act
+        ↓
+Decision(ACTIVE)
+        ├── superseded by NEW DecisionId
+        └── revoked with attributable reason
+```
+
+The Decision record should be immutable in meaning: title/rationale/alternatives,
+decider/source references are not edited into a different choice. A replacement
+choice is a new Decision that points back to the one it supersedes.
+
+Human-origin direction remains human authority. A runtime/agent cannot promote
+its own proposal into an ACTIVE Decision merely by returning it.
+
+A CONTROL_PLANE Decision must be justified by explicit control facts/source refs
+and may not invent product direction that belongs to the human.
+
+No new top-level layer or invariant was discovered. G7.2 can be settled as a
+Project Control domain object with append/supersede history and attributable
+authority.

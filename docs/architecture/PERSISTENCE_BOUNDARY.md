@@ -1,7 +1,9 @@
 # Project Control OS — Persistence Boundary v0.1
 
-**Status:** PROPOSED
+**Status:** PROTOTYPE VALIDATED (v0.1 spike — see §18). **Not production ready.**
 **Purpose:** define what must be durable, what is authoritative, what is append-oriented, and what may remain externalized before choosing a storage technology.
+
+> **Historical spike scope:** prototype observations and next-step/engine-declaration notes below describe the spike when recorded. G1 later established the Node 20 package floor versus Node 22 SQLite baseline (`BASELINE_EVIDENCE.md`); current implementation and phase status are in `PROJECT_ARCHITECTURE.md` and `ROADMAP.md`. Historical results and limitations are not a current feature inventory.
 
 ---
 
@@ -13,7 +15,7 @@ The persistence boundary has four categories:
 3. External Artifacts — large payloads referenced by metadata and hashes.
 4. Ephemeral Runtime State — process/session details that may disappear without changing accepted project state.
 
-Storage technology remains OPEN.
+Storage technology remains OPEN for production. The v0.1 prototype validates SQLite through Node's built-in `node:sqlite` module (§18).
 
 ## 2. Authoritative State
 
@@ -128,7 +130,9 @@ The prototype must demonstrate:
 
 ## 14. Technology Selection Criteria
 
-The architecture does not currently choose SQLite, PostgreSQL, event sourcing, or another database.
+The architecture does not currently choose SQLite, PostgreSQL, event sourcing, or another database for production.
+
+**Prototype decision (v0.1).** SQLite through Node's built-in `node:sqlite` module: synchronous (it matches the store's synchronous contract), transactional, zero dependencies, no native build step, WAL available. It requires Node ≥ 22.5 — `package.json` still declares `engines.node: ">=20"`, which is now inaccurate for the persistent store; changing that is an explicit decision and was deliberately not done as a side effect of this spike. `better-sqlite3` was the alternative and was rejected for the prototype: it keeps `>=20` but adds a native dependency, an install step and an ABI/prebuild burden for the same synchronous API surface.
 
 The eventual store must support transactions, optimistic concurrency, durable identifiers, indexed queries, append-oriented records, idempotency constraints, crash recovery, backup/export, and migrations.
 
@@ -147,7 +151,9 @@ These are evidence for the boundary, not dependencies.
 ## 16. Open Questions
 
 P-01 Should authoritative state and append-only history use one physical database or separate stores?
+→ *v0.1 prototype: one SQLite database, separate tables.*
 P-02 Should DomainEvent drive projections, or should the first prototype use direct transactional state updates plus an event log?
+→ *v0.1 prototype: direct transactional state updates plus an append-only event log. Not event sourcing: the tables are authority, the log is history.*
 P-03 Which artifacts need content-addressed storage from day one?
 P-04 Which Run fields are authoritative versus derived projections?
 P-05 How should schema migrations be versioned?
@@ -156,9 +162,50 @@ P-07 When does a local prototype need a transaction boundary across state + even
 
 ## 17. Status
 
-**PROPOSED — not frozen.**
+**PROTOTYPE VALIDATED — not frozen, not production ready.**
 
-This document deliberately defines the persistence boundary without selecting a database or rebuilding a runtime.
+The boundary above is now exercised by an executable prototype (§18). The storage technology is still open for production, and nothing here should be read as production readiness.
 
-Next architectural problem: **Minimum Controller/Reconciler v0.1**.
-Before implementation, validate that controller behavior can be expressed using this persistence boundary without creating a second workflow engine.
+Next architectural problem after the persistence spike: the first **Goal/Milestone** lifecycle, or human approval as a first-class durable control fact.
+
+---
+
+## 18. Prototype validation — Persistence Spike v0.1
+
+One question: **do the Project Control semantics that were already verified survive a process restart?**
+
+All of the following are covered by `tests/integration/persistence.test.mjs` and
+`tests/unit/project-control-store.contract.test.mjs`:
+
+| Decision / property | v0.1 prototype |
+|---|---|
+| Storage | SQLite, one database file, through the built-in `node:sqlite` module — no dependency, no native build |
+| Objects persisted | Project, Task, Acceptance Contract revision, Run, Attempt, Evidence, Verification, Approval, Command, DomainEvent |
+| Write model | **Direct transactional state updates + an append-only domain event log.** Not event sourcing: the tables are authority, the log is history |
+| Transaction boundary | one transaction per authoritative mutation: the state row, its domain event and its command/idempotency row commit or fail **together** (`BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK`) |
+| Schema | primary keys on every identity; `PRIMARY KEY (id, version)` for contract revisions so they cannot overwrite each other; unique event ids; foreign keys wherever the rules already prove the reference (verification → task, verification and contract fingerprint → acceptance revision); indexes for the lookups the store performs |
+| Domain events | event id, event type, derived aggregate type, aggregate id, aggregate version where the aggregate has one, command id, payload, occurred_at |
+| Optimistic concurrency | the record's own `version`, checked by the rules **and** enforced by SQL compare-and-set (`UPDATE … WHERE key = ? AND version = ?`), so two writers cannot silently overwrite each other |
+| Command idempotency | durable `commands(command_id, operation, result_id)`: a replayed command returns the recorded result and performs no second mutation — including after a restart |
+| Contract revision pinning | `acceptance_revisions` is keyed by `(id, version)`, so both revisions coexist; a Task keeps the revision it was created with; content fingerprints live in a separate table, so contract content edited in place fails closed on read |
+| Evidence lineage | Run / Attempt / Evidence / Verification rows keep the identity the rules re-prove on every use, and the lineage is re-provable from durable rows alone |
+| Parent acceptance on disk | Evidence and Verification carry `target_type` / `target_id` beside nullable `task_id` / `run_id` / `attempt_id`, so an **aggregate observation** is a first-class durable row with no Runtime lineage. The child snapshot and its `sha256` revision live in the record, so the same observation is re-derived identically in a later process, and a parent acceptance replayed there performs no second mutation |
+| Approval durability | An Approval is its own table, not a flag on what it authorizes. The request, the decision and any revocation survive a restart, the decision command replays there without a second `approval.approved`, and the permission is re-proved against the target's **current** version in the new process — so a permission can never be carried forward onto state nobody approved |
+| Adding a table is not a migration | The approvals table was added by `CREATE TABLE IF NOT EXISTS` with no schema guard: a file written before it simply gains the table and keeps working. The guard exists only for an incompatible change to an EXISTING table (nullable `task_id` / new `target_id` on evidence and verifications), where SQLite cannot alter in place |
+| Reconciliation history | a blocked Run and its LOST Attempt remain as history after recovery, across restarts |
+| Restart proof | a test writes state in **process A**, lets it exit, and reads it back in **process B** — not a second store object inside one process |
+| Backend contract | one behaviour suite runs against MemoryStore and SqliteStore, so a future backend must satisfy the same contract without touching the Controller tests |
+| Test isolation | every test opens its own temporary directory and database; the fixture closes its stores before deleting the directory; nothing is written into the repository, a real project folder, or a shared `.ai/` state folder |
+
+Explicitly **not** proven by this spike:
+
+- distributed deployment (one writer per database file is the working assumption)
+- high availability, failover, or replication
+- multi-host locking — WAL plus `busy_timeout` only orders writers on one host
+- production backup, restore, or point-in-time recovery strategy
+- operational recovery: runbooks, on-call procedures, disaster recovery
+- a migration system: the schema is `CREATE TABLE IF NOT EXISTS`, so a schema change is currently a manual step. Parent acceptance made that concrete — `task_id` / `run_id` / `attempt_id` became nullable and `target_type` / `target_id` were added, which SQLite cannot apply in place. A database file written by the earlier shape is therefore **refused at open time** with an explicit message, rather than failing later with a confusing `no such column: target_id`. That is a loud boundary, not a migration path
+- high-volume performance: state rows carry a JSON `body`, so a growing table is scanned rather than queried by index
+- artifact metadata (`sha256` / `size` / `media_type`): artifact **payloads** never enter SQLite — only references inside the records — but those metadata columns are not yet part of the domain model
+- the engine declaration: `node:sqlite` needs Node ≥ 22.5, so `package.json`'s `>=20` is inaccurate for the persistent store. It was deliberately left unchanged rather than adjusted as a side effect of this spike
+- `updateAttempt` carries no concurrency version of its own, so concurrent attempt updates are an unconditional upsert — unchanged from the in-process reference
