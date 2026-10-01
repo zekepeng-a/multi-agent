@@ -4,6 +4,7 @@
 **Baseline branch:** `project-control/controller-v0.1`  
 **Initial baseline commit when written:** `c9d365a0d66100327951602dcdfe4d4f6a676731`
 **Latest reviewed evidence:** `7dad1894f802bdd6076a9320731c918a7a765e0a`; Slice 1–4 independently reviewed PASS, stability A1/A2 CLOSED. Final CI `36857097373`: Node 22 810 pass / 0 fail / 0 skip; Node 20 481 pass / 0 fail / 329 expected SQLite capability skips. This test/Evidence HEAD is not a production-code expansion. Earlier hierarchy repair/G7 evidence remains historical.
+**Latest governance status:** G8 COMPLETE after Final G8 Exit Review PASS — EXIT AUTHORIZED and explicit Human completion authorization; G8 completion governance commit — this commit. Phase exit does not mean full Blueprint implementation or production 1.0 readiness. No subsequent phase is authorized.
 **Purpose:** describe what this repository actually implements now. This file is not a target design and must not promote documented intentions into implemented reality.
 
 ## 1. Authority and read order
@@ -247,7 +248,7 @@ authorized governance closure on 2026-10-01.
 Receipt proves only Runtime Adapter input receipt, not the final model token
 sequence. There is no fixed TTL, history pruning, leases/fencing, new Effect
 subsystem or authority upgrade. Legacy runtimeContextFactory remains a separate
-compatibility interface. G7 is COMPLETE by evidenced implemented boundaries and explicit deferral: G7.5 remains MISSING / D and DEFERRED — no demonstrated control-loop or G8 dependency; G7.6 is DEFERRED pending demonstrated G8 auditability need. Leases/fencing remain NOT CURRENTLY REQUIRED. G8 is FINAL CONVERGENCE REVIEW READY; final exit review and separate Human completion decision remain required. This does not claim full Blueprint implementation.
+compatibility interface. G7 is COMPLETE by evidenced implemented boundaries and explicit deferral: G7.5 remains MISSING / D and DEFERRED — no demonstrated control-loop or G8 dependency; G7.6 is DEFERRED pending demonstrated G8 auditability need. Leases/fencing remain NOT CURRENTLY REQUIRED. G8 is COMPLETE after final exit review PASS and explicit Human authorization; no subsequent phase is authorized. This does not claim full Blueprint implementation.
 
 ### 7.6 G8 readiness and hierarchy repair — historical before Slice 1–4
 
@@ -261,7 +262,7 @@ Slice 1–4 independently reviewed PASS; stability A1/A2 CLOSED. Slice 1/4 prove
 
 Real G8 Workspace proof is READ_ONLY; G6 WRITE/overlay/integration remains separate. Existing LOST outcomes are implemented, but ordinary non-BLOCKED RUNNING reconciliation returns WAIT; fresh adapters cannot rebind live executions. Real in-flight recovery remains DEFERRED / D candidate, not a current exit blocker under reviewed bounded scope; whole-project recovery is unproven. Live DSH installation/host/Agent/model, isolation and result durability remain future dogfood. No new Roadmap/Observability/leases dependency was demonstrated.
 
-G8 is FINAL CONVERGENCE REVIEW READY, not COMPLETE. See ROADMAP's reviewed bounded evidence matrix and Slice 1–4 Evidence review closures. Final exit review and separate Human governance completion are still required.
+G8 phase status: COMPLETE after Final G8 Exit Review PASS — EXIT AUTHORIZED and explicit Human authorization. See ROADMAP's retained bounded evidence matrix, final exit closure and Slice 1–4 Evidence review closures. This closes only the prototype/control-plane milestone; all PARTIAL implementation labels and deferred limitations remain. No subsequent phase is authorized; future work requires a new Human direction/roadmap decision.
 
 ## 8. Current conflicts and documentation drift
 
