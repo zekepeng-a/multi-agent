@@ -1,6 +1,6 @@
 # G7 Long-horizon Project Control — Decomposition
 
-**Status:** ACTIVE — G7.1–G7.3 COMPLETE; G7.4 architecture ACCEPTED / B — Missing Implementation
+**Status:** ACTIVE — G7.1–G7.4 COMPLETE; G7.5 D / queued
 **Roadmap phase:** G7  
 **Purpose:** prevent "long-horizon objects" from becoming one architecture-completion bundle.
 
@@ -13,7 +13,7 @@ G7 candidates must be classified and advanced independently.
 | Project-level Acceptance | D → B → COMPLETE (G7.1) | Optional pinned PROJECT contracts and aggregate Evidence/Verification are implemented. | ADR-0006; `PROJECT_ACCEPTANCE_G7_1_EVIDENCE.md`. |
 | Decision | D → B → COMPLETE (G7.2) | Durable authority, provenance, immutable meaning and supersede/revoke lifecycle are implemented. | ADR-0007; `DECISION_G7_2_EVIDENCE.md`. |
 | Project-control Memory | D → B → COMPLETE (G7.3) | ADR-0008 promotion, closed source admission, validity, confidence, immutable meaning, STALE/no-resurrection, new-id supersession, current/history queries and persistence are implemented and independently reviewed. | `MEMORY_G7_3_EVIDENCE.md`; reviewed HEAD `973f77e2d231ee6eaa4e9b348ebf2424da41f674`, CI `36724720686` success (Node 22: 592 pass, zero failures/skips). |
-| Context Capsule | D → B — Missing Implementation (G7.4) | Human accepted ADR-0009: immutable single-Attempt input snapshot, exact source pins/authority, required/supplemental byte budget, dispatch freshness, receipt/UNKNOWN, persistence/replay and restart contract. | Architecture implementation boundary is authorized; implementation execution requires a separate task. Not implemented or COMPLETE; all 25 ADR exit criteria still require Evidence and independent review. |
+| Context Capsule | D → B → COMPLETE (G7.4) | ADR-0009's bounded snapshot, source/budget/freshness, receipt/UNKNOWN, transactional persistence and restart semantics are implemented; all 25 exit criteria passed independent review #3. | `CONTEXT_CAPSULE_G7_4_EVIDENCE.md`; reviewed HEAD `1f9f208d8eef9fabcba02ac93772ff5713612f24`, final CI `36815496417` success; targeted 77/77, full local regression 669/669. Human authorized governance closure on 2026-10-01. |
 | Roadmap domain | D | Basic object schema exists, but human authority, activation, Milestone membership, competing roadmaps and lifecycle reconciliation are underspecified. | Focused ADR; do not confuse this domain object with repository `ROADMAP.md`. |
 | Observability identity | D / hardening | Trace/Span/Correlation/Causation IDs are named, but propagation and persistence semantics are not defined. | Resolve only when needed for G8 auditability. |
 | Leases / fencing | NOT CURRENTLY REQUIRED | Blueprint says "where necessary"; G6 explicitly found no multi-coordinator requirement. | Do not implement until a concrete concurrent-ownership problem appears. |
@@ -36,10 +36,13 @@ G7.5 Roadmap domain
 G7.6 Observability hardening (only to G8 need)
 ```
 
-G7.1–G7.3 are complete. G7.4's architecture is ACCEPTED under ADR-0009 and its
-bounded work is B — Missing Implementation. This governance task authorizes the
-architecture boundary only, not implementation execution or completion. G7 remains
-active; G7.5/G7.6 and leases/fencing are not advanced by Capsule acceptance.
+G7.1–G7.4 are complete. G7.4's architecture is ACCEPTED under ADR-0009, its
+implementation passed independent review #3 after two failed reviews and repairs,
+and Human authorized this governance closeout. Failed reviews and repair proof
+remain in Evidence. G7 remains active: G7.5 is D / queued with no research or
+implementation authorization; G7.6 is decided only by demonstrated G8 need.
+Leases/fencing remain NOT CURRENTLY REQUIRED. Capsule completion advances none of
+these remaining candidates.
 
 This order is dependency-driven, not a claim that every item must ship before dogfood.
 

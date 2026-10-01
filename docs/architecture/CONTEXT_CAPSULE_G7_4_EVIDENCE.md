@@ -1,12 +1,15 @@
 # G7.4 Context Capsule implementation Evidence
 
-## Scope and baseline
+**Current gate:** G7.4 COMPLETE after independent review #3 PASSED and Human-authorized governance closure on 2026-10-01. The historical implementation, failed reviews and repairs below are retained; the closure record at the end is the current status.
+
+## Historical implementation scope and baseline
 
 - Architecture: ACCEPTED ADR-0009; implementation authorized by Human.
 - Baseline: `3593b161b69885b36658bbb757367c8d1fd112f6`, branch
   `project-control/controller-v0.1`.
-- This is implementation evidence, not independent review or stage completion.
-  G7.4 is not marked COMPLETE; G7.5/G7.6 and governance boundaries are unchanged.
+- At the original implementation-report stage this was implementation evidence,
+  not independent review or stage completion; G7.4 was not marked COMPLETE.
+  G7.5/G7.6 and governance boundaries were unchanged. Current closure is recorded below.
 
 ## Implemented boundary
 
@@ -213,5 +216,38 @@ or prevent filesystem changes after observation. SQLite transactions cannot make
 external calls exactly-once: ambiguous windows remain UNKNOWN and are never blindly
 replayed. No fixed TTL, history cleanup, leases/fencing or new Effect layer was added.
 
-No new D/E issue was discovered within this bounded implementation. Independent
-review and separately authorized governance closure remain necessary.
+No new D/E issue was discovered within this bounded implementation. At the time of
+the implementation reports, independent review and separately authorized governance
+closure remained necessary; the following record closes those gates.
+
+## Independent review #3 and authorized governance closure
+
+- Architecture gate: ADR-0009 ACCEPTED; its decision semantics are unchanged.
+- Reviewed implementation HEAD: `1f9f208d8eef9fabcba02ac93772ff5713612f24` on
+  `project-control/controller-v0.1`.
+- Final implementation CI [36815496417](https://github.com/zekepeng-a/multi-agent/actions/runs/36815496417):
+  success; Node 22 mandatory SQLite check and full npm test succeeded; Node 20
+  compatibility npm test succeeded with its existing capability-gated SQLite skips.
+- Targeted tests: **77/77**. Full local Node 24.19.0 regression: **669/669**, zero
+  failures/skips. These local counts remain distinct from Node 22 CI proof.
+
+| Independent review | Reviewed HEAD | Outcome and retained history |
+|---|---|---|
+| #1 | `7fb33dadb3e86bf7ffb00999700814a6ee7a26f2` | FAILED: no-effect incorrectly implied non-receipt; refusal had a split-commit crash window; SQLite Capsule putRecord could overwrite through UPSERT competition. First repair and proof remain above. |
+| #2 | `ffb70029a4f92a2b961704c5e5a5560044d3fdad` | Original three CLOSED; review FAILED on new Attempt terminal bookkeeping P2 (missing endedAt and normal FAILED event). Second repair and proof remain above. |
+| #3 | `1f9f208d8eef9fabcba02ac93772ff5713612f24` | PASSED: Attempt bookkeeping P2 CLOSED, original three still CLOSED, no new P0/P1/P2 or D/E; all 25 ADR-0009 exit criteria independently confirmed satisfied. |
+
+Review #3 directly checked the code/Store transaction boundary, test and real
+process-restart call chains; it independently ran the no-disk backend unit cases
+and an additional late replay-write failure probe on both backends, confirming
+full rollback, event cardinality, terminal replay stability and ordinary API guards.
+It verified final HEAD CI rather than treating Evidence/test counts as acceptance.
+Its explicit conclusion was: "第三轮独立复审通过，可以进入 G7.4 COMPLETE 治理收尾。"
+
+The G7.4 exit gate is satisfied. Human explicitly authorized this governance
+closure on 2026-10-01; **G7.4 may now be marked COMPLETE**, and ROADMAP plus current
+boundary documents record that status. This does not rewrite the two failed reviews.
+G7.1–G7.4 are COMPLETE; G7 overall remains ACTIVE. G7.5 remains D / queued, with
+no research or implementation authorization. G7.6 is decided only by actual G8
+need; leases/fencing remain NOT CURRENTLY REQUIRED. No implementation, ADR decision
+body, frozen authority/invariant or subsequent-stage work changes in this closeout.

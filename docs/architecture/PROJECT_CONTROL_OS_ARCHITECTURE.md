@@ -945,19 +945,25 @@ ADR-0008 is the precise accepted contract and implementation exit checklist.
 ROADMAP records G7.3 COMPLETE after implementation evidence, independent review
 and explicit human closeout authorization. This changes implementation/completion
 status only; ADR-0008's authority and semantics remain unchanged.
-G7.4 Context Capsule's independent architecture gate is now resolved by accepted
-ADR-0009. It is B — Missing Implementation; separate task authorization is required
-to execute implementation. Memory completion itself did not resolve Capsule.
+G7.4 Context Capsule independently completed its accepted ADR-0009 boundary after
+implementation, repairs and review #3. Human authorized governance closure on
+2026-10-01; see `CONTEXT_CAPSULE_G7_4_EVIDENCE.md`. Memory completion itself did not
+resolve Capsule; each candidate has its own gate.
 
 ---
 
 ## 5.14 ContextCapsule
 
-**Architecture: ACCEPTED — ADR-0009. Implementation: B / Missing Implementation.**
+**Architecture: ACCEPTED — ADR-0009. Implementation: COMPLETE — bounded G7.4.**
 Human accepted this bounded G7.4 contract on 2026-09-30. This section summarizes
 ADR-0009; its full source admission, delivery/recovery and 25 exit criteria govern.
-Architecture acceptance is not implementation or completion evidence; execution
-of implementation requires a separate authorized task.
+Completion now has separate implementation and independent-review evidence:
+reviewed HEAD `1f9f208d8eef9fabcba02ac93772ff5713612f24`, final CI `36815496417`
+success (Node 22 SQLite/full tests and Node 20 compatibility), targeted 77/77 and
+full local regression 669/669. Review #1 failed on three defects; review #2 closed
+them but found Attempt bookkeeping regression; after repair, review #3 passed all
+25 exit criteria with no new D/E issue. Human authorized closure on 2026-10-01.
+See `CONTEXT_CAPSULE_G7_4_EVIDENCE.md`; this status update changes no ADR semantics.
 
 Capsule is a derived, bounded execution input assembled at the trusted Control
 Plane boundary. It is not a second Project State, Acceptance or permission token.
@@ -2612,9 +2618,10 @@ Never silently reinterpret a confirmed concept.
 # 26. Initial architecture next-step plan — historical
 
 The sequence below records the early design plan, not the current work boundary.
-Current work is defined by `ROADMAP.md`: G7.3 Memory is COMPLETE after independent
-implementation review; G7.4 Context Capsule is B — Missing Implementation under
-accepted ADR-0009. This governance acceptance does not start Capsule implementation.
+Current work is defined by `ROADMAP.md`: G7.1–G7.4 are COMPLETE within their
+independently evidenced boundaries. G7.5 Roadmap domain remains D / queued with no
+research or implementation authorization. G7.6 depends on demonstrated G8 need;
+leases/fencing remain NOT CURRENTLY REQUIRED. G7 remains active.
 
 At that design stage, the next architecture artifact was:
 

@@ -6,6 +6,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 
 ### Governance
 
+- **G7.4 Context Capsule governance closeout (2026-10-01):** Human authorized COMPLETE after review #3 passed all 25 accepted ADR-0009 exit criteria at implementation HEAD `1f9f208d8eef9fabcba02ac93772ff5713612f24`. Final CI [36815496417](https://github.com/zekepeng-a/multi-agent/actions/runs/36815496417) succeeded for Node 22 SQLite/full tests and Node 20 compatibility; targeted 77/77, full local regression 669/669. Review #1 failed on three implementation defects; review #2 closed them but found Attempt bookkeeping P2; after repair, review #3 passed with no new D/E issue. Failure and repair history remains in `CONTEXT_CAPSULE_G7_4_EVIDENCE.md`. G7.1–G7.4 are COMPLETE; G7 remains active. G7.5 is D / queued and not authorized for research or implementation; G7.6 depends on G8 need, leases/fencing remain NOT CURRENTLY REQUIRED. This commit changes governance only.
+
 - **G7.4 Context Capsule architecture gate resolved:** Human accepted ADR-0009 on 2026-09-30 after bounded inventory and source/test research. G7.4 moves D → B — Missing Implementation. Accepted v1 choices include immutable single-Attempt full input snapshots, all ACTIVE project Decisions by default, required-content byte-budget failure, supplemental-drift regeneration, Adapter-boundary receipt only, UNKNOWN without blind resend, and no fixed TTL/history cleanup/leases/new Effect subsystem. This commit changes governance only; Capsule remains unimplemented and implementation execution requires a separate authorized task. G7.5 is not advanced.
 
 - **G7.3 Memory governance closeout:** independent implementation review accepted HEAD `973f77e2d231ee6eaa4e9b348ebf2424da41f674`, found no new D/E issue or ADR-0008 authority/lifecycle violation, and confirmed CI run `36724720686` success. With explicit human authorization, ROADMAP now records G7.3 COMPLETE. G7 remains active; G7.4 Context Capsule is the next candidate with its own unresolved D-GATE. This closeout authorizes no Capsule research or coding.
@@ -35,6 +37,8 @@ This changelog records meaningful architectural and governance evolution. It is 
 - Established `docs/architecture/decisions/` as the location for durable ADRs resolving D-class architectural gaps.
 
 ### Project Control prototype
+
+- **G7.4 Context Capsule implemented within ADR-0009.** Immutable per-Attempt canonical payload/hash and typed source manifest, required/supplemental UTF-8 budget, dispatch freshness/selection completeness, current-use Memory, receipt/UNKNOWN, transactional terminal bookkeeping, CAS/replay, MemoryStore/SQLite parity, real restart and independent-writer protection are evidenced. LocalProcess/DSH receipt proves only Adapter input, not final model tokens. No fixed TTL, history pruning, leases/fencing, new Effect subsystem or authority upgrade.
 
 - **G7.3 Project-control Memory completed within ADR-0008.** Added trusted validation/Control Plane promotion, closed type/confidence/source admission, pinned source resolution and CURRENT/INVALID/UNRESOLVED validity, attributable staling, no STALE resurrection, atomic new-id supersession, eligibility-before-ranking queries, INFERRED opt-in and separate history. MemoryStore/SQLite parity, optimistic concurrency, events, intent-bound replay and real process restart/concurrent-writer proof are recorded in `docs/architecture/MEMORY_G7_3_EVIDENCE.md`. Verified final implementation CI: 592 passed, 0 failed, 0 skipped on Node 22. Legacy runtime and Decision/Approval/Policy/Acceptance authority remain unchanged; G7.4 is not implemented.
 
@@ -77,7 +81,7 @@ Commit `e7a0a7d07356980d5ba9c49be5ebfa06a1bebad8`:
 
 ### Known current gaps
 
-Current architecture/reality gaps are tracked in `PROJECT_ARCHITECTURE.md` and ordered in `ROADMAP.md`. G0–G6 and G7.1–G7.3 have completed their bounded gates. Project-control Memory is implemented within ADR-0008 and independently reviewed. G7 remains active; G7.4 Context Capsule's architecture is accepted under ADR-0009 and is B — Missing Implementation; implementation execution requires a separate task, and no Capsule implementation/completion is claimed. The Roadmap domain remains queued D-class work. Broader production/provider/distributed capabilities are not implied by those completions.
+Current architecture/reality gaps are tracked in `PROJECT_ARCHITECTURE.md` and ordered in `ROADMAP.md`. G0–G6 and G7.1–G7.4 have completed their bounded gates. Memory and Context Capsule are independently reviewed within accepted ADR-0008/ADR-0009. G7 remains active; the Roadmap domain is D / queued with no research or implementation authorization. G7.6 depends on actual G8 need; leases/fencing remain NOT CURRENTLY REQUIRED. Broader production/provider/distributed capabilities are not implied by those completions. Earlier changelog entries retain their milestone-time status and test counts.
 
 ## V0.5 — Legacy DSH Multi-Agent Runtime
 

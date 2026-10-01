@@ -436,7 +436,7 @@ Parallel execution now has real isolated writable roots, enforced scopes, confli
 
 # G7 — Long-horizon Project Control objects
 
-**Status: ACTIVE — G7.1–G7.3 COMPLETE; G7.4 B / Missing Implementation**
+**Status: ACTIVE — G7.1–G7.4 COMPLETE; G7.5 D / queued**
 
 This phase is intentionally decomposed. See `docs/architecture/G7_DECOMPOSITION.md`.
 
@@ -445,14 +445,14 @@ Current candidate sequence:
 1. G7.1 Project-level Acceptance — COMPLETE.
 2. G7.2 Decision — COMPLETE.
 3. G7.3 Project-control Memory — D → B → COMPLETE.
-4. G7.4 Context Capsule — D → B, ADR-0009 ACCEPTED; implementation execution reserved for a separate authorized task.
+4. G7.4 Context Capsule — D → B → COMPLETE; ADR-0009 ACCEPTED, independent review #3 PASSED.
 5. G7.5 Roadmap domain — D, queued; distinct from repository `ROADMAP.md`.
 6. G7.6 Observability hardening — only to demonstrated G8 need.
 7. leases/fencing — not currently required; do not implement without a concrete ownership problem.
 
 ## Current gate
 
-G7.1 Project Acceptance, G7.2 Decision and G7.3 Project-control Memory are complete.
+G7.1 Project Acceptance, G7.2 Decision, G7.3 Project-control Memory and G7.4 Context Capsule are complete. G7.5 remains D / queued; no research or implementation is authorized by this closeout.
 
 G7.2 evidence: `docs/architecture/DECISION_G7_2_EVIDENCE.md`.
 
@@ -487,10 +487,11 @@ Completion proof:
 - independent review found no new D/E issue, authority leak or lifecycle defect;
 - this authorized governance update records satisfaction of G7.3's exit gate.
 
-**G7.4 Context Capsule — B / Missing Implementation.**
+**G7.4 Context Capsule — COMPLETE.**
 Human explicitly accepted `docs/architecture/decisions/ADR-0009-context-capsule-boundary.md`
-on 2026-09-30 after the bounded inventory and external research. Its architecture
-gate is resolved; this governance update does not implement or complete Capsule.
+on 2026-09-30 after the bounded inventory and external research. Implementation
+was separately authorized, repaired and independently reviewed. Human authorized
+this governance closeout on 2026-10-01; it records completion without code changes.
 
 The accepted v1 boundary includes:
 
@@ -510,12 +511,18 @@ The accepted v1 boundary includes:
 - inline v1 persistence, CAS, events, intent-bound replay, backend parity and restart;
 - no fixed TTL, history cleanup, leases/fencing or new Effect/dispatch subsystem.
 
-Architecture-level implementation authorization is limited to ADR-0009's
-Implementation boundary. Implementation execution requires a separately authorized
-task; no code is written by this acceptance task. Completion still requires all
-25 ADR exit criteria, implementation Evidence, independent review and an explicitly
-authorized ROADMAP closeout. G7.1–G7.3 Evidence/history is retained unchanged.
-G7.5 Roadmap domain remains queued D-class work.
+Completion proof:
+
+- architecture gate: ADR-0009 ACCEPTED;
+- independently reviewed implementation HEAD: `1f9f208d8eef9fabcba02ac93772ff5713612f24`;
+- final implementation CI [36815496417](https://github.com/zekepeng-a/multi-agent/actions/runs/36815496417): success; Node 22 SQLite/full tests and Node 20 compatibility succeeded;
+- targeted tests: 77/77; full local Node 24.19.0 regression: 669/669, zero failures/skips;
+- review #1 FAILED on three implementation defects; review #2 closed those defects but found Attempt terminal bookkeeping P2; after repair, review #3 PASSED;
+- all 25 ADR-0009 exit criteria independently confirmed satisfied; no new D/E issue;
+- retained implementation/repair/review Evidence: `docs/architecture/CONTEXT_CAPSULE_G7_4_EVIDENCE.md`.
+
+G7.1–G7.3 Evidence/history is retained unchanged. G7.5 Roadmap domain remains
+queued D-class work; this closeout authorizes neither its research nor implementation.
 No bundle implementation, runtime-memory migration or broader research is authorized.
 
 ## Exit gate
@@ -568,8 +575,8 @@ COMPLETE: G7.1 Project-level Acceptance
 COMPLETE: G7.2 Project Decision
 COMPLETE: G7.3 Project-control Memory — ADR-0008 implementation reviewed
 ACTIVE:   G7 convergence; not all candidates are complete
-NEXT:     G7.4 Context Capsule — B / Missing Implementation; ADR-0009 ACCEPTED
-          architecture boundary authorized; implementation needs a separate task
+COMPLETE: G7.4 Context Capsule — ADR-0009; independent review #3 PASSED
+NEXT:     G7.5 Roadmap domain — D / queued; research and implementation not authorized
 AFTER G7 CONVERGENCE:
           G8 End-to-end dogfood + release convergence
 BLOCKED FROM BUNDLE CODING:

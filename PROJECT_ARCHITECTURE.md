@@ -85,7 +85,7 @@ These labels describe the initial baseline plus the evidenced updates recorded b
 | Event | IMPLEMENTED | Append-oriented events are persisted with authoritative mutations and survive SQLite restart. Event is kept distinct from State. |
 | Decision | IMPLEMENTED | Durable Project Decision exists with HUMAN/CONTROL_PLANE authority, mandatory provenance, immutable meaning, ACTIVE→SUPERSEDED/REVOKED lifecycle, atomic supersession lineage, attributable revocation, optimistic concurrency, MemoryStore/SQLite persistence and restart proof. Runtime/model proposals are not Decision authority. |
 | Project-control Memory | IMPLEMENTED (G7.3 COMPLETE) | ADR-0008 is implemented: trusted validation and Control Plane promotion, closed type/confidence/source admission, four pinned same-project source families, CURRENT/INVALID/UNRESOLVED validity, STALE/no-resurrection, atomic new-id supersession, read-only eligibility-before-ranking queries, INFERRED opt-in and separate history. MemoryStore/SQLite parity, CAS, events, intent-bound replay, restart and independent-writer concurrency are evidenced. Legacy derived memory remains separate; no Capsule assembly or authority upgrade is included. |
-| Context Capsule | MISSING / B — G7.4 architecture ACCEPTED | ADR-0009 freezes immutable per-Attempt snapshots, source pins/authority, required/supplemental UTF-8 budgets, pre-dispatch freshness, receipt versus persistence, UNKNOWN recovery and persistence/replay. No implementation yet assembles, persists or delivers these Capsules; the existing arbitrary runtimeContextFactory input is not this contract. Implementation execution requires separate task authorization. |
+| Context Capsule | IMPLEMENTED (G7.4 COMPLETE) | Accepted ADR-0009 is implemented: immutable per-Attempt canonical JSON/hash snapshot, typed source manifest, required/supplemental UTF-8 budget, freshness/selection completeness, ADR-0008 current-use Memory, Adapter receipt, PREPARED/DISPATCHING/RECEIVED/NOT_RECEIVED/UNKNOWN, recovery/replay/CAS, MemoryStore/SQLite parity, real restart and independent-writer protection. LocalProcess/DSH integration proves Adapter input receipt, not final model tokens or source authority upgrade. See `CONTEXT_CAPSULE_G7_4_EVIDENCE.md`. |
 | Runtime Adapter | IMPLEMENTED / PARTIAL | Normalized capability-shaped Runtime Adapter contract now exists. FakeRuntime migrated, LocalProcessRuntimeAdapter executes real child processes in CI, and DshWorkflowRuntimeAdapter binds the current DSH Workflow seam through injected workflowEngine. RuntimeRef persists on Attempt and survives restart while remaining distinct from Run/Attempt identity. G6 separately implements bounded local Workspace/isolation semantics; runtime-adapter capability alone does not establish write isolation. |
 | Workspace | IMPLEMENTED / PARTIAL | Durable Workspace identity now exists with SHARED/ISOLATED kind, READ_ONLY/WRITE access, MemoryStore/SQLite persistence, optimistic versioning, deterministic revision digests, enforced write scopes, conflict-safe local overlay integration, deterministic integration order and restart proof. Git-worktree/container providers and distributed coordination remain outside current scope. |
 | Workspace isolation | IMPLEMENTED / PARTIAL | Local WorkspaceManager gives parallel writers distinct roots, overlays reads over SHARED reality, records touched-path base digests, rejects out-of-scope/read-only/path-traversal writes, and detects integration conflicts before patch application. DSH Team writeScopes remain non-authoritative unless projected through this boundary. |
@@ -226,12 +226,29 @@ backend primitives, and are optionally exposed through trusted `Controller.memor
 composition. The retained `MEMORY_G7_3_EVIDENCE.md` maps all 23 ADR-0008 exit criteria
 to tests, including real restart and independent SQLite writer competition.
 
-Context Capsule remains unimplemented. Human acceptance of ADR-0009 resolves its
-architecture gap: G7.4 is B — Missing Implementation, not COMPLETE. The accepted
-boundary covers generation, immutable per-Attempt input archives, freshness,
-budget and delivery/recovery; no code or tests implement it in this governance
-update. A separate task must authorize implementation execution. Roadmap domain
-remains queued D-class work; G7 as a whole is active, with G8 still future.
+Context Capsule (G7.4) is implemented and COMPLETE within accepted ADR-0009.
+`project-control/context-capsule.mjs` composes the trusted assembler and existing
+Store/runtime boundaries. It archives immutable per-Attempt full canonical JSON
+UTF-8 payload/hash, typed source manifest/pins and versioned profile; separates
+required/supplemental budget; rechecks freshness and selection completeness before
+dispatch; and consumes only ADR-0008 current-use Memory. LocalProcess and DSH
+Adapters integrate input-bound receipts. PREPARED / DISPATCHING / RECEIVED /
+NOT_RECEIVED / UNKNOWN remain separate from execution status; CAS, events and
+intent-bound replay preserve recovery and terminal Attempt bookkeeping atomically.
+MemoryStore/SQLite parity, actual process restart and independent writer protection
+are evidenced in `CONTEXT_CAPSULE_G7_4_EVIDENCE.md`.
+
+Independent review #3 passed reviewed HEAD `1f9f208d8eef9fabcba02ac93772ff5713612f24`
+after two failed reviews and repairs. Final CI `36815496417` succeeded for Node 22
+SQLite/full tests and Node 20 compatibility; targeted 77/77, full local regression
+669/669. All 25 exit criteria were confirmed, no new D/E issue was found, and Human
+authorized governance closure on 2026-10-01.
+
+Receipt proves only Runtime Adapter input receipt, not the final model token
+sequence. There is no fixed TTL, history pruning, leases/fencing, new Effect
+subsystem or authority upgrade. Legacy runtimeContextFactory remains a separate
+compatibility interface. G7 remains active; G7.5 Roadmap domain is D / queued and
+not authorized for research or implementation; G7.6 depends on actual G8 need.
 
 ## 8. Current conflicts and documentation drift
 
@@ -293,7 +310,7 @@ This file does not claim:
 - that the current persistence schema is production-migration-ready;
 - that fake runtime tests prove real external-runtime behavior;
 - that a live DSH Workflow smoke test or DSH Agent Team integration has been proven; the bounded Workflow adapter itself exists;
-- that Roadmap or Context Capsule are implemented because they appear in architecture documents; Decision and Project-control Memory are separately evidenced by G7.2/G7.3;
+- that the Roadmap domain is implemented because it appears in architecture documents; Decision, Project-control Memory and Context Capsule are separately evidenced by G7.2/G7.3/G7.4;
 - that current local Workspace isolation proves distributed multi-coordinator safety.
 
 ## 11. Change rule
