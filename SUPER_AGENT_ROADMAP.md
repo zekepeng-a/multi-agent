@@ -1,6 +1,6 @@
 # SUPER_AGENT_ROADMAP.md
 
-**Status:** ACTIVE — SA0 RESEARCH / CONSTITUTION ONLY  
+**Status:** SA0 HUMAN DECISION READY — IMPLEMENTATION NOT AUTHORIZED  
 **Human direction:** 2026-10-01 — pursue a Super Agent for large complex projects while preventing model drift and avoiding further sunk-cost investment in legacy V0.5.
 
 This roadmap is deliberately narrow. It does not authorize implementation of an Execution Engine.
@@ -43,12 +43,16 @@ Create a durable, source-grounded product constitution and evidence base before 
 
 ### Remaining SA0 work before Human acceptance
 
+Completed:
 1. second-pass adversarial review of Constitution R2;
-2. review the evaluation protocol for confounders/gaming;
-3. optionally recover and inspect historical local GPT↔DSH reports as drift evidence;
-4. decide whether research coverage needs additional precedents;
-5. produce an SA0 acceptance packet summarizing unresolved questions;
-6. obtain explicit Human acceptance before any next-phase design/implementation authorization.
+2. evaluation protocol review for confounders/gaming;
+3. SA0 acceptance packet.
+
+Optional/non-blocking:
+- recover and inspect historical local GPT↔DSH reports as drift evidence;
+- expand external precedents if a concrete unresolved architecture question needs it.
+
+**Current gate:** explicit Human ACCEPT / REVISE / REJECT decision. No implementation is authorized.
 
 ### Exit gate
 
