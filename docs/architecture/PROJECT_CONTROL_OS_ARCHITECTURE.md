@@ -2618,10 +2618,9 @@ Never silently reinterpret a confirmed concept.
 # 26. Initial architecture next-step plan — historical
 
 The sequence below records the early design plan, not the current work boundary.
-Current work is defined by `ROADMAP.md`: G7.1–G7.4 are COMPLETE within their
-independently evidenced boundaries. G7.5 Roadmap domain remains D / queued with no
-research or implementation authorization. G7.6 depends on demonstrated G8 need;
-leases/fencing remain NOT CURRENTLY REQUIRED. G7 remains active.
+Current work is defined by `ROADMAP.md`: G7 is COMPLETE by G7.1–G7.4's independently evidenced boundaries plus explicit deferral. G7.5 remains MISSING / D, DEFERRED — no demonstrated control-loop or G8 dependency; reactivate only on a concrete requirement or G8 failure scenario. G7.6 is DEFERRED — reactivate only on demonstrated G8 auditability need, not COMPLETE. Leases/fencing remain NOT CURRENTLY REQUIRED. G8 is NEXT, with actual dogfood requiring separate Human authorization. This status does not claim full Blueprint/canonical implementation or resolve the Roadmap D-GATE.
+
+Readiness audit and repair closure are recorded in `ROADMAP.md`: hierarchy ownership A repair `198ba74e26e6f1d4cb42ce612d37dde2947ac863` passed independent review and CI `36820265823`. The audit supports bounded G8 integration validation but does not prove the full control loop. Authorization/execution binding, real Effect, durable/readable results, meaningful Verification, whole-chain restart and adapter substitution remain G8 proof gaps. No accepted ADR, authority or frozen invariant is changed by convergence.
 
 At that design stage, the next architecture artifact was:
 

@@ -436,7 +436,7 @@ Parallel execution now has real isolated writable roots, enforced scopes, confli
 
 # G7 — Long-horizon Project Control objects
 
-**Status: ACTIVE — G7.1–G7.4 COMPLETE; G7.5 D / queued**
+**Status: COMPLETE — converged by implemented boundaries + explicit deferral of unproven candidates**
 
 This phase is intentionally decomposed. See `docs/architecture/G7_DECOMPOSITION.md`.
 
@@ -446,13 +446,13 @@ Current candidate sequence:
 2. G7.2 Decision — COMPLETE.
 3. G7.3 Project-control Memory — D → B → COMPLETE.
 4. G7.4 Context Capsule — D → B → COMPLETE; ADR-0009 ACCEPTED, independent review #3 PASSED.
-5. G7.5 Roadmap domain — D, queued; distinct from repository `ROADMAP.md`.
-6. G7.6 Observability hardening — only to demonstrated G8 need.
+5. G7.5 Roadmap domain — DEFERRED — no demonstrated control-loop or G8 dependency; its D-class architectural gap remains unresolved.
+6. G7.6 Observability hardening — DEFERRED — reactivate only on demonstrated G8 auditability need; not COMPLETE.
 7. leases/fencing — not currently required; do not implement without a concrete ownership problem.
 
 ## Current gate
 
-G7.1 Project Acceptance, G7.2 Decision, G7.3 Project-control Memory and G7.4 Context Capsule are complete. G7.5 remains D / queued; no research or implementation is authorized by this closeout.
+G7.1 Project Acceptance, G7.2 Decision, G7.3 Project-control Memory and G7.4 Context Capsule are complete within their separately evidenced boundaries. Human authorized G7 convergence on 2026-10-01 by explicitly deferring candidates without demonstrated need. Roadmap remains MISSING / D, not B; reactivate only for a concrete requirement or G8 failure scenario. Observability remains unimplemented and deferred pending demonstrated G8 auditability need. Leases/fencing remain NOT CURRENTLY REQUIRED. G7 COMPLETE does not claim that every Blueprint concept is implemented.
 
 G7.2 evidence: `docs/architecture/DECISION_G7_2_EVIDENCE.md`.
 
@@ -521,9 +521,7 @@ Completion proof:
 - all 25 ADR-0009 exit criteria independently confirmed satisfied; no new D/E issue;
 - retained implementation/repair/review Evidence: `docs/architecture/CONTEXT_CAPSULE_G7_4_EVIDENCE.md`.
 
-G7.1–G7.3 Evidence/history is retained unchanged. G7.5 Roadmap domain remains
-queued D-class work; this closeout authorizes neither its research nor implementation.
-No bundle implementation, runtime-memory migration or broader research is authorized.
+G7.1–G7.4 Evidence/history, including failed Capsule reviews and repairs, is retained unchanged. G7.5's D-class gap remains unresolved and deferred; this convergence authorizes neither its research nor implementation. No bundle implementation, runtime-memory migration or broader research is authorized.
 
 ## Exit gate
 
@@ -531,11 +529,21 @@ G7 is complete only when each implemented candidate has its own evidenced bounda
 and candidates without demonstrated need are explicitly deferred rather than added
 for completeness.
 
+This gate is satisfied by G7.1–G7.4's evidenced boundaries and the explicit deferrals above. Human authorized this governance-only closure; it changes no accepted ADR or frozen invariant.
+
+## G8 readiness audit and hierarchy repair closure
+
+The read-only audit found a foundation for bounded G8 integration validation, not proof of a complete G8 control loop. Roadmap, a new Observability identity system and leases/fencing are not known blockers. Existing Event / Command / Run / Attempt / Effect / Capsule / RuntimeRef identities suffice to begin bounded dogfood; no multi-coordinator ownership need was demonstrated.
+
+The audit found an A-class implementation bug: cross-project Task→Goal links could pollute another Project's Goal/Milestone/Project aggregation. Reviewed repair HEAD `198ba74e26e6f1d4cb42ce612d37dde2947ac863` adds shared Task→Goal project ownership, create/update/re-parent and Goal project mutation protection, defensive aggregation validation, MemoryStore/SQLite parity and retained Capsule guards. Independent review confirmed CLOSED. Repair CI [36820265823](https://github.com/zekepeng-a/multi-agent/actions/runs/36820265823) succeeded: Node 22 680 passed / 0 failed / 0 skipped; Node 20 424 passed / 0 failed / 256 expected SQLite capability skips. This closes an implementation bug, not a new architecture domain.
+
+Remaining G8 composition proof gaps are authorization ↔ actual execution binding, real Effect, durable/readable results, meaningful Verification, whole-chain restart and adapter substitution. They are not resolved by this governance task and do not justify architectural completeness work.
+
 ---
 
 # G8 — End-to-end dogfood and release convergence
 
-**Status: FUTURE**
+**Status: NEXT — End-to-end dogfood and release convergence; execution requires a separately authorized task**
 
 ## Goal
 
@@ -574,11 +582,13 @@ COMPLETE: G6 Workspace / Reality / concurrency boundary
 COMPLETE: G7.1 Project-level Acceptance
 COMPLETE: G7.2 Project Decision
 COMPLETE: G7.3 Project-control Memory — ADR-0008 implementation reviewed
-ACTIVE:   G7 convergence; not all candidates are complete
+COMPLETE: G7 convergence — implemented boundaries + explicit deferral
 COMPLETE: G7.4 Context Capsule — ADR-0009; independent review #3 PASSED
-NEXT:     G7.5 Roadmap domain — D / queued; research and implementation not authorized
-AFTER G7 CONVERGENCE:
-          G8 End-to-end dogfood + release convergence
+DEFERRED: G7.5 Roadmap domain — unresolved D; no demonstrated control-loop or G8 dependency
+DEFERRED: G7.6 Observability — reactivate only on demonstrated G8 auditability need
+NOT CURRENTLY REQUIRED: leases/fencing
+NEXT:     G8 End-to-end dogfood + release convergence
+          Actual dogfood execution requires a separate Human-authorized task.
 BLOCKED FROM BUNDLE CODING:
           Roadmap / Decision / Memory / Context Capsule / Project Acceptance /
           Observability / leases-fencing may not be implemented as one

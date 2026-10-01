@@ -3,7 +3,7 @@
 **Status:** CURRENT REALITY MAP  
 **Baseline branch:** `project-control/controller-v0.1`  
 **Initial baseline commit when written:** `c9d365a0d66100327951602dcdfe4d4f6a676731`
-**Latest implementation evidence:** G7.3 at reviewed HEAD `973f77e2d231ee6eaa4e9b348ebf2424da41f674`; see `docs/architecture/MEMORY_G7_3_EVIDENCE.md`. Independent review accepted the bounded implementation; CI `36724720686` succeeded (Node 22: 592 passed, zero failures/skips).
+**Latest reviewed implementation:** hierarchy ownership A repair at `198ba74e26e6f1d4cb42ce612d37dde2947ac863`, independently reviewed CLOSED. CI `36820265823` succeeded: Node 22 680 pass / 0 fail / 0 skip; Node 20 424 pass / 0 fail / 256 expected SQLite capability skips. G7.1–G7.4 Evidence remains historical proof for each bounded implementation.
 **Purpose:** describe what this repository actually implements now. This file is not a target design and must not promote documented intentions into implemented reality.
 
 ## 1. Authority and read order
@@ -66,7 +66,7 @@ These labels describe the initial baseline plus the evidenced updates recorded b
 | Concept | Status | Current reality |
 |---|---|---|
 | Project | IMPLEMENTED | Durable project record, versioned lifecycle state, persistence, controller aggregation to completion. |
-| Roadmap | MISSING | Mentioned in architecture and `Milestone.roadmapId` is future-facing, but there is no Roadmap control object/lifecycle/store collection/controller. |
+| Roadmap | MISSING / D / DEFERRED | `Milestone.roadmapId` remains future-facing; no Roadmap control object/lifecycle/store/controller exists. Its architectural gap is unresolved, with no demonstrated control-loop or G8 dependency. |
 | Milestone | IMPLEMENTED | Durable/versioned object, child-side project relationship, aggregation from Goals, optional pinned Acceptance. |
 | Goal | IMPLEMENTED | Durable/versioned object, project/milestone relationship, aggregation from Tasks, optional pinned Acceptance. |
 | Task | IMPLEMENTED | Durable/versioned object, pinned Acceptance revision, Run linkage, lifecycle and acceptance flow. |
@@ -95,8 +95,8 @@ These labels describe the initial baseline plus the evidenced updates recorded b
 | Goal/Milestone parent Acceptance | IMPLEMENTED | Aggregate child snapshots become identified Evidence and flow through Verification/Acceptance. |
 | Project Acceptance | IMPLEMENTED | Project may optionally pin a PROJECT Acceptance revision. Contract-free projects still complete by Milestone aggregation; contract-bound projects require current Milestone aggregate Evidence + PASS Verification, with atomic Project COMPLETED + contract PASSED and restart proof. |
 | Durable persistence | IMPLEMENTED | Memory and SQLite backends share control semantics; SQLite restart/transaction behavior is tested. |
-| Observability identity | MISSING | Canonical TraceId/SpanId/CorrelationId/CausationId domain is not implemented. |
-| Leases/fencing | MISSING | No durable ownership lease/fencing model exists. |
+| Observability identity | MISSING / DEFERRED | TraceId/SpanId/CorrelationId/CausationId domain is not implemented; reactivate only on demonstrated G8 auditability need. |
+| Leases/fencing | MISSING / NOT CURRENTLY REQUIRED | No durable ownership lease/fencing model exists; no concrete multi-coordinator ownership need has been demonstrated. |
 
 ## 5. Implemented control-plane core
 
@@ -247,8 +247,13 @@ authorized governance closure on 2026-10-01.
 Receipt proves only Runtime Adapter input receipt, not the final model token
 sequence. There is no fixed TTL, history pruning, leases/fencing, new Effect
 subsystem or authority upgrade. Legacy runtimeContextFactory remains a separate
-compatibility interface. G7 remains active; G7.5 Roadmap domain is D / queued and
-not authorized for research or implementation; G7.6 depends on actual G8 need.
+compatibility interface. G7 is COMPLETE by evidenced implemented boundaries and explicit deferral: G7.5 remains MISSING / D and DEFERRED — no demonstrated control-loop or G8 dependency; G7.6 is DEFERRED pending demonstrated G8 auditability need. Leases/fencing remain NOT CURRENTLY REQUIRED. G8 is NEXT; actual dogfood execution requires separate Human authorization. This does not claim full Blueprint implementation.
+
+### 7.6 G8 readiness and hierarchy repair
+
+The read-only readiness audit found a basis for bounded G8 integration validation, not a proven complete control loop. It found an A-class bug allowing cross-project Task→Goal links to pollute another Project's aggregation. Repair `198ba74e26e6f1d4cb42ce612d37dde2947ac863` is independently reviewed CLOSED: shared Task→Goal ownership on create/update/re-parent, Goal project mutation protection, defensive aggregation validation (including terminal ancestors), MemoryStore/SQLite parity and retained Capsule guards. Repair CI `36820265823` succeeded with the Node 22/20 counts recorded above. No new architecture domain was added.
+
+Remaining G8 proof gaps are authorization ↔ actual execution binding, real Effect, durable/readable result, meaningful verifier, whole-chain restart and adapter substitution. Roadmap, a new Observability system and leases/fencing are not known blockers; existing Event/Command/Run/Attempt/Effect/Capsule/RuntimeRef identities suffice to begin bounded dogfood. This governance update resolves none of these composition proof gaps.
 
 ## 8. Current conflicts and documentation drift
 
