@@ -68,14 +68,14 @@ Targeted command:
 node --test tests/unit/context-capsule.test.mjs tests/integration/context-capsule-restart.test.mjs
 ```
 
-After the review repairs below, local Node 24.19.0: **75 passed, 0 failed,
+After the review repairs below, local Node 24.19.0: **77 passed, 0 failed,
 0 skipped**. Full regression:
 
 ```sh
 node --test tests/unit/*.test.mjs tests/integration/*.test.mjs
 ```
 
-After the review repairs, local Node 24.19.0: **667 passed, 0 failed, 0 skipped**. This is additional local
+After the review repairs, local Node 24.19.0: **669 passed, 0 failed, 0 skipped**. This is additional local
 validation; Node 22 CI remains the authoritative SQLite baseline. The existing CI
 matrix retains Node 20 compatibility and mandatory Node 22 SQLite availability.
 
@@ -109,7 +109,7 @@ independent SQLite writer race; it does not simulate restart by reopening an obj
 | 21 | U intent-bound replay adds no events or external starts; R restarted replay |
 | 22 | R exact archive/receipt and UNKNOWN after true restart; corruption/missing record fails closed |
 | 23 | U shared backend suite; R SQLite durability, reservation race, and separate putRecord/insertRecord immutable creation races |
-| 24 | Full regression includes Decision, Memory, Acceptance, Policy, Approval, Workspace, Runtime Adapter and legacy runtime; U Controller integration |
+| 24 | Full regression includes Decision, Memory, Acceptance, Policy, Approval, Workspace, Runtime Adapter and legacy runtime; U Controller integration and refusal Store terminal bookkeeping; R terminal timestamp/event restart preservation |
 | 25 | Node 22 SQLite availability and full npm test, plus Node 20 compatibility, passed in the immutable CI proof below; independent review and separate governance closure remain required |
 
 ## Original implementation CI proof (historical, before review repairs)
@@ -166,6 +166,38 @@ This Evidence-only follow-up records that observed run; its own final HEAD CI mu
 also be checked. All 25 exit criteria have implementation/test mappings, but this
 repair self-check does not supply the separately required independent re-review
 or authorize a COMPLETE governance update.
+
+## Second-review repair — Attempt terminal bookkeeping
+
+Baseline: `ffb70029a4f92a2b961704c5e5a5560044d3fdad`. The second independent review
+closed the original three defects but found an A-class regression: the Capsule CAS
+wrote Attempt FAILED without Store terminal bookkeeping, leaving endedAt null and
+omitting the normal attempt.updated event. Completion remained rejected.
+
+The trusted Capsule CAS now changes only delivery metadata. Within that same outer
+mutation transaction, the existing store.updateAttempt(attemptId, {status: FAILED})
+performs the terminal transition, endedAt bookkeeping and normal event append;
+Run FAILED, Capsule observation and mutation replay share the commit. No lifecycle
+rules were copied into Capsule, no Store API permissions were expanded, and the
+Capsule-bound delivery/binding guard remains unchanged.
+
+- U `refusal preserves Store terminal bookkeeping exactly once across recovery and
+  replay` runs on MemoryStore and SQLite: NOT_RECEIVED/FAILED/FAILED, non-null valid
+  endedAt, exactly one corresponding FAILED attempt.updated and delivery event,
+  replay persisted, one Runtime invocation; repeated recovery/dispatch replay
+  preserves complete Attempt/Run/event/replay records.
+- U terminal-write failure occurs after the normal Attempt bookkeeping has run;
+  it proves endedAt/status/delivery/events/replay all roll back together.
+- R process death before Run termination proves no partial terminal history,
+  timestamp or replay survives. R committed-refusal restart proves endedAt and the
+  normal FAILED event persist, and two fresh-process dispatch replays plus repeated
+  recovery neither invoke Runtime nor change timestamps, events or replay rows.
+
+Observed local Node 24.19.0: targeted **77/77**, full regression **669/669**, zero
+failures/skips. These include actual child-process restart and independent SQLite
+writer tests. Node 22/20 CI for this repair is pending and must be observed before
+claiming its CI proof. Exit criterion 24 has a concrete regression test mapping;
+independent re-review is still required. ADR-0009, ROADMAP and phase status unchanged.
 
 ## Review limits
 

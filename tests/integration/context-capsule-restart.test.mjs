@@ -66,6 +66,9 @@ test("refusal transaction process death rolls back the old partial-commit window
   assert.equal(interrupted.attempt.capsuleDelivery.status, "DISPATCHING");
   assert.equal(interrupted.attempt.capsuleDelivery.observations?.length ?? 0, 0);
   assert.equal(interrupted.run.status, "RUNNING");
+  assert.equal(interrupted.attempt.endedAt, null);
+  assert.equal(interrupted.observationReplay, null);
+  assert.equal(interrupted.events.filter(e => e.type === "attempt.updated" && e.aggregateId === "cat" && e.payload.status === "FAILED").length, 0);
   assert.equal(interrupted.events.filter(e => e.type === "capsule.delivery-observed").length, 0);
   child("recover", f);
   const recovered = child("read", f);
@@ -80,8 +83,15 @@ test("committed refusal survives lost response/restart with terminal execution a
   const refused = child("read", f);
   assert.equal(refused.attempt.capsuleDelivery.status, "NOT_RECEIVED");
   assert.equal(refused.attempt.status, "FAILED"); assert.equal(refused.run.status, "FAILED");
+  assert.ok(refused.attempt.endedAt && !Number.isNaN(Date.parse(refused.attempt.endedAt)));
+  assert.ok(refused.observationReplay);
+  assert.equal(refused.events.filter(e => e.type === "attempt.updated" && e.aggregateId === "cat" && e.payload.status === "FAILED").length, 1);
   assert.equal(refused.events.filter(e => e.type === "capsule.delivery-observed").length, 1);
   child("recover", f); assert.deepEqual(child("read", f), refused);
+  child("recover", f);
+  assert.deepEqual(child("replay-dispatch", f), { replay: true, calls: 0 });
+  assert.deepEqual(child("replay-dispatch", f), { replay: true, calls: 0 });
+  assert.deepEqual(child("read", f), refused); // timestamps/events/replay are unchanged.
   assert.equal(child("try-dispatch", f).calls, 0);
   assert.equal(fs.readFileSync(`${f.artifact}.refusal-calls`, "utf8"), "call\n");
 });

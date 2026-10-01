@@ -15,7 +15,8 @@ try {
   if (mode === "read") {
     const before = store.allEvents().length;
     const record = generate(control); // Exact persisted replay, even if no longer usable.
-    console.log(JSON.stringify({ record, attempt: store.getAttempt("cat"), run: store.getRun("cr"), events: store.allEvents(), replayAddedEvents: store.allEvents().length - before }));
+    console.log(JSON.stringify({ record, attempt: store.getAttempt("cat"), run: store.getRun("cr"), events: store.allEvents(),
+      observationReplay: store.getCommand("dispatch-1:observation"), replayAddedEvents: store.allEvents().length - before }));
   }
   if (["refuse-crash", "refuse-commit"].includes(mode)) {
     store.updateAttempt("cat", { status: "RUNNING" });
@@ -54,6 +55,10 @@ try {
   if (mode === "try-dispatch") {
     let error = null; try { reserve(control); } catch (e) { error = e.message; }
     console.log(JSON.stringify({ error, calls: control.runtime.started.length }));
+  }
+  if (mode === "replay-dispatch") {
+    const result = await dispatch(control);
+    console.log(JSON.stringify({ replay: result.replay, calls: control.runtime.started.length }));
   }
   if (mode === "race") {
     // Both writers start only when the parent opens this barrier.

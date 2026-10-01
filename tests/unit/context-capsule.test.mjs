@@ -326,19 +326,48 @@ for (const backend of ["MemoryStore", "SQLite"]) {
     assert.deepEqual(store.getAttempt("cat").capsuleDelivery, delivery);
     assert.equal(store.allEvents().filter(e => e.type === "capsule.delivery-observed" && e.payload.status === "NOT_RECEIVED").length, 0);
   });
+  test(`${backend}: refusal preserves Store terminal bookkeeping exactly once across recovery and replay`, options, async t => {
+    const { store, control, runtime } = fixture(t);
+    store.updateAttempt("cat", { status: "RUNNING" }); generate(control);
+    let calls = 0;
+    runtime.start = async () => { calls++; throw new CapsuleInputRefusedError("explicit input refusal"); };
+    await dispatch(control);
+    const attempt = store.getAttempt("cat"), run = store.getRun("cr"), events = store.allEvents();
+    assert.equal(attempt.status, "FAILED"); assert.equal(attempt.capsuleDelivery.status, "NOT_RECEIVED");
+    assert.ok(attempt.endedAt && !Number.isNaN(Date.parse(attempt.endedAt)));
+    assert.equal(run.status, "FAILED");
+    assert.equal(events.filter(e => e.type === "attempt.updated" && e.aggregateId === "cat" && e.payload.status === "FAILED").length, 1);
+    assert.equal(events.filter(e => e.type === "capsule.delivery-observed" && e.payload.attemptId === "cat" && e.payload.status === "NOT_RECEIVED").length, 1);
+    const replay = store.getCommand("dispatch-1:observation"); assert.ok(replay);
+    control.recoverInterruptedDispatch("cat", { commandId: "terminal-recovery" });
+    control.recoverInterruptedDispatch("cat", { commandId: "terminal-recovery" });
+    assert.equal((await dispatch(control)).replay, true);
+    assert.deepEqual(store.getAttempt("cat"), attempt); assert.deepEqual(store.getRun("cr"), run);
+    assert.deepEqual(store.allEvents(), events); assert.deepEqual(store.getCommand("dispatch-1:observation"), replay);
+    assert.equal(calls, 1);
+  });
   test(`${backend}: refusal delivery, terminal execution, event and replay roll back together`, options, async t => {
     const { store, control, runtime } = fixture(t);
     store.updateAttempt("cat", { status: "RUNNING" }); generate(control);
     runtime.start = async () => { throw new CapsuleInputRefusedError("explicit input refusal"); };
     const updateRun = store.updateRun.bind(store);
-    store.updateRun = (...args) => { if (args[2]?.status === "FAILED") throw new Error("terminal write interrupted"); return updateRun(...args); };
+    store.updateRun = (...args) => {
+      if (args[2]?.status === "FAILED") {
+        assert.ok(store.getAttempt("cat").endedAt);
+        assert.equal(store.allEvents().filter(e => e.type === "attempt.updated" && e.aggregateId === "cat" && e.payload.status === "FAILED").length, 1);
+        throw new Error("terminal write interrupted");
+      }
+      return updateRun(...args);
+    };
     await assert.rejects(dispatch(control), /terminal write interrupted/);
     store.updateRun = updateRun;
     assert.equal(store.getAttempt("cat").capsuleDelivery.status, "DISPATCHING");
     assert.equal(store.getAttempt("cat").status, "RUNNING");
+    assert.equal(store.getAttempt("cat").endedAt, null);
     assert.equal(store.getRun("cr").status, "RUNNING");
     assert.equal(store.getCommand("dispatch-1:observation"), null);
     assert.equal(store.allEvents().filter(e => e.type === "capsule.delivery-observed").length, 0);
+    assert.equal(store.allEvents().filter(e => e.type === "attempt.updated" && e.payload.status === "FAILED").length, 0);
     control.recoverInterruptedDispatch("cat", { commandId: "recover-refusal-interruption" });
     assert.equal(store.getAttempt("cat").capsuleDelivery.status, "UNKNOWN");
     assert.equal(store.getAttempt("cat").status, "LOST");

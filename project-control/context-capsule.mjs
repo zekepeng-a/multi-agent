@@ -367,13 +367,15 @@ export class ContextCapsuleControl {
       const updated = this.#delivery(attempt, { ...delivery, status, observations: [...(delivery.observations ?? []), { status, ...facts,
         observer: { type: "CONTROL_PLANE", actorId: this.controlActorId }, observedAt: this.clock() }] }, {
           ...(facts.runtimeRef ? { runtimeRef: structuredClone(facts.runtimeRef) } : {}),
-          ...(status === "NOT_RECEIVED" ? { status: "FAILED" } : {}),
         });
       this.#event("delivery-observed", record.id, { attemptId, status, facts }, commandId);
       // Refusal history, execution termination, event and replay commit together.
       // A crash before commit leaves the dispatch intent uncertain, not a partial
       // terminal delivery attached to a RUNNING execution.
       if (status === "NOT_RECEIVED") {
+        // Nested Store bookkeeping joins this mutation's transaction; only the
+        // trusted Capsule CAS above changes delivery, not the ordinary Store API.
+        this.store.updateAttempt(attemptId, { status: "FAILED" });
         const run = this.store.getRun(attempt.runId);
         this.store.updateRun(run.id, run.version, { status: "FAILED" });
       }
