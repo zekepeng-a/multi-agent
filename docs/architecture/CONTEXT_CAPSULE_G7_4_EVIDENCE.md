@@ -195,8 +195,13 @@ Capsule-bound delivery/binding guard remains unchanged.
 
 Observed local Node 24.19.0: targeted **77/77**, full regression **669/669**, zero
 failures/skips. These include actual child-process restart and independent SQLite
-writer tests. Node 22/20 CI for this repair is pending and must be observed before
-claiming its CI proof. Exit criterion 24 has a concrete regression test mapping;
+writer tests. Repair commit: `fc501d85ed8547b8423a3742f450c1dcd80c6e25`.
+[Terminal-bookkeeping repair CI 36815386896](https://github.com/zekepeng-a/multi-agent/actions/runs/36815386896)
+passed both jobs: Node 22's mandatory SQLite check and full npm test succeeded;
+Node 20's compatibility npm test succeeded with its existing SQLite skips. These
+job/step results were directly observed. This Evidence-only follow-up records that
+run; final HEAD CI is verified separately. Exit criterion 24 has concrete
+implementation and regression proof;
 independent re-review is still required. ADR-0009, ROADMAP and phase status unchanged.
 
 ## Review limits
