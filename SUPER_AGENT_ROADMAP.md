@@ -7,7 +7,7 @@ This roadmap is deliberately narrow. It does not authorize implementation of an 
 
 ## SA0 — Constitution & Architecture Archaeology
 
-**Status:** ACTIVE
+**Status:** HUMAN DECISION GATE
 
 ### Goal
 
@@ -21,7 +21,7 @@ Create a durable, source-grounded product constitution and evidence base before 
 4. `SUPER_AGENT_REALITY.md` — **RECORDED, initial reality map**.
 5. `docs/super-agent/EVALUATION_BASELINE.md` — **RECORDED, proposed baseline protocol; no benchmark results yet**.
 6. `docs/super-agent/CONSTITUTION_CHALLENGE_REVIEW.md` — **ROUND 1 COMPLETE: PASS WITH REQUIRED REVISIONS**.
-7. Project Control compatibility review — **ROUND 1 found no direct I-01..I-45 contradiction after required revisions; second pass still required**.
+7. Project Control compatibility review — **ROUND 2 COMPLETE; no direct I-01..I-45 contradiction identified for Constitution R2**.
 
 ### Allowed work
 
