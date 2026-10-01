@@ -496,13 +496,22 @@ export class SqliteStore extends ProjectControlStore {
 
   constructor(file, { busyTimeoutMs = 5000 } = {}) {
     super();
+    // SQLite's busy_timeout is a signed 32-bit millisecond count. Accept an
+    // integer or decimal integer string, never interpolate arbitrary input.
+    const timeout = typeof busyTimeoutMs === "number" ? busyTimeoutMs
+      : typeof busyTimeoutMs === "string" && /^\d+$/.test(busyTimeoutMs.trim()) ? Number(busyTimeoutMs.trim()) : NaN;
+    if (!Number.isSafeInteger(timeout) || timeout < 0 || timeout > 2147483647) {
+      throw new RangeError("busyTimeoutMs must be an integer from 0 to 2147483647");
+    }
     const sqlite = sqliteDriver();
     if (!sqlite) throw new Error(`SqliteStore unavailable: ${SQLITE_REQUIREMENT}`);
     const db = new sqlite.DatabaseSync(file);
     try {
+      // Configure waiting before WAL/schema initialization can contend. This
+      // bounds lock waiting, not a promise that every concurrent open succeeds.
+      db.exec(`PRAGMA busy_timeout = ${timeout}`);
       db.exec("PRAGMA journal_mode = WAL");
       db.exec("PRAGMA foreign_keys = ON");
-      db.exec(`PRAGMA busy_timeout = ${Number(busyTimeoutMs)}`);
       // Checked BEFORE the schema is applied: on a file written by the earlier
       // shape, `CREATE INDEX ... ON evidence (target_id)` would otherwise fail
       // first, with a message about a column instead of about the file.

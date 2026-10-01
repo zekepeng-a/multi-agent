@@ -4,7 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
+import { runCapsuleCompetition } from "../helpers/pc-capsule-competition.mjs";
 import { SqliteStore, isSqliteAvailable, SQLITE_REQUIREMENT } from "../../project-control/sqlite-store.mjs";
 import { capsules, seedCapsuleFixture, generate, dispatch } from "../helpers/pc-capsule-fixture.mjs";
 import { MemoryStore } from "../../project-control/memory-store.mjs";
@@ -101,18 +102,9 @@ const awaitImportSqlite = () => createRequire(import.meta.url)("node:sqlite");
 
 test("two independent SQLite processes compete for one Capsule reservation and one external call", { skip }, async t => {
   const f = files(t); child("prepare", f);
-  const processes = ["a", "b"].map(tag => {
-    const proc = spawn(process.execPath, [helper, "race", f.database, f.artifact, tag], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    let stdout = "", stderr = ""; proc.stdout.on("data", x => stdout += x); proc.stderr.on("data", x => stderr += x);
-    const done = new Promise((resolve, reject) => { proc.on("error", reject); proc.on("close", code => code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr))); });
-    t.after(() => { if (proc.exitCode === null) proc.kill(); }); return { tag, done };
-  });
-  const deadline = Date.now() + 10000;
-  while (!processes.every(p => fs.existsSync(`${f.artifact}.${p.tag}.ready`))) {
-    assert.ok(Date.now() < deadline, "writer readiness deadline"); await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  fs.writeFileSync(`${f.artifact}.go`, "go");
-  const results = await Promise.all(processes.map(p => p.done));
+  const { results, writerOutcomes } = await runCapsuleCompetition({ mode: "race", database: f.database, artifact: f.artifact });
+  assert.equal(new Set(writerOutcomes.map(writer => writer.pid)).size, 2);
+  assert.ok(writerOutcomes.every(writer => writer.closed && writer.exitCode === 0));
   assert.equal(results.filter(r => r.won).length, 1); assert.equal(results.reduce((n, r) => n + r.calls, 0), 1);
   const stored = child("read", f);
   assert.equal(stored.events.filter(e => e.type === "capsule.dispatch-reserved").length, 1);
@@ -121,18 +113,9 @@ test("two independent SQLite processes compete for one Capsule reservation and o
 
 for (const mode of ["snapshot-put", "snapshot-insert"]) test(`${mode}: independent SQLite writers cannot replace the winning immutable payload`, { skip }, async t => {
   const f = files(t); child("prepare", f);
-  const processes = ["a", "b"].map(tag => {
-    const proc = spawn(process.execPath, [helper, mode, f.database, f.artifact, tag], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    let stdout = "", stderr = ""; proc.stdout.on("data", x => stdout += x); proc.stderr.on("data", x => stderr += x);
-    const done = new Promise((resolve, reject) => { proc.on("error", reject); proc.on("close", code => code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr))); });
-    t.after(() => { if (proc.exitCode === null) proc.kill(); }); return { tag, done };
-  });
-  const deadline = Date.now() + 10000;
-  while (!processes.every(p => fs.existsSync(`${f.artifact}.${p.tag}.ready`))) {
-    assert.ok(Date.now() < deadline, "immutable writer readiness deadline"); await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  fs.writeFileSync(`${f.artifact}.go`, "go");
-  const results = await Promise.all(processes.map(p => p.done));
+  const { results, writerOutcomes } = await runCapsuleCompetition({ mode, database: f.database, artifact: f.artifact });
+  assert.equal(new Set(writerOutcomes.map(writer => writer.pid)).size, 2);
+  assert.ok(writerOutcomes.every(writer => writer.closed && writer.exitCode === 0));
   assert.equal(results.filter(r => r.won).length, 1);
   assert.match(results.find(r => !r.won).error, /immutable|conflict/);
   const winner = results.find(r => r.won), loser = results.find(r => !r.won);

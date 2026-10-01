@@ -4,7 +4,16 @@ import { createContextCapsule } from "../../project-control/domain.mjs";
 import { CapsuleInputRefusedError } from "../../project-control/capsule-receipt.mjs";
 import { capsules, seedCapsuleFixture, generate, reserve, dispatch, generateInput, fileWorkspaceObserver } from "./pc-capsule-fixture.mjs";
 
-const [mode, database, artifact, tag] = process.argv.slice(2);
+const [mode, database, artifact, tag, barrierTimeout = "10000"] = process.argv.slice(2);
+async function awaitBarrier() {
+  const timeoutMs = Number(barrierTimeout);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("invalid Capsule writer barrier timeout");
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(`${artifact}.go`)) {
+    if (Date.now() >= deadline) throw new Error(`writer ${tag} Capsule barrier deadline exceeded`);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
 const store = new SqliteStore(database);
 const control = capsules(store, { observeWorkspace: fileWorkspaceObserver(artifact) });
 try {
@@ -44,7 +53,7 @@ try {
     const archived = control.history("capsule-1");
     const record = createContextCapsule({ id: "writer-capsule", payload: { ...archived.payload, capsuleId: "writer-capsule", assemblerVersion: tag } });
     fs.writeFileSync(`${artifact}.${tag}.ready`, "ready");
-    while (!fs.existsSync(`${artifact}.go`)) await new Promise(resolve => setTimeout(resolve, 10));
+    await awaitBarrier();
     let won = false, error = null;
     try {
       if (mode === "snapshot-put") { store.putRecord("context_capsule", record.id, record); won = true; }
@@ -63,7 +72,7 @@ try {
   if (mode === "race") {
     // Both writers start only when the parent opens this barrier.
     fs.writeFileSync(`${artifact}.${tag}.ready`, "ready");
-    while (!fs.existsSync(`${artifact}.go`)) await new Promise(resolve => setTimeout(resolve, 10));
+    await awaitBarrier();
     let won = false, error = null;
     try {
       const result = await control.dispatch({ capsuleId: generateInput.id, attemptId: "cat", expectedDeliveryVersion: 1 }, { commandId: `race:${tag}` });
