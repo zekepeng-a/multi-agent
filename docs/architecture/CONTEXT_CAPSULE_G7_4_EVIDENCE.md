@@ -157,8 +157,15 @@ both on local Node 24.19.0 with SQLite and zero skips. The targeted suite includ
 the real process-death/restart and independent-writer cases above. Initial sandbox
 execution could not spawn children (EPERM); successful reruns executed outside that
 restriction. These are local proofs, not substitutes for the required Node 22 CI.
-Repair CI is pending at this commit and must be recorded from the actual workflow
-result before claiming the Node 22 exit proof. Node 20 remains compatibility only.
+Repair implementation commit: `2fb2ec8cb38b5bcb1420c6cce33912f716bb0cfe`.
+[Repair CI run 36813735243](https://github.com/zekepeng-a/multi-agent/actions/runs/36813735243)
+completed **success**. Directly observed job/step results confirm Node 22 passed
+the mandatory SQLite availability check and full npm test; Node 20 passed npm test
+with its existing capability-gated SQLite skips. Node 20 remains compatibility only.
+This Evidence-only follow-up records that observed run; its own final HEAD CI must
+also be checked. All 25 exit criteria have implementation/test mappings, but this
+repair self-check does not supply the separately required independent re-review
+or authorize a COMPLETE governance update.
 
 ## Review limits
 
