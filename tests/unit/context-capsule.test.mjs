@@ -7,6 +7,7 @@ import { CapsuleInputRefusedError } from "../../project-control/capsule-receipt.
 import { FakeRuntime } from "../../project-control/fake-runtime.mjs";
 import { Controller } from "../../project-control/controller.mjs";
 import { FakeVerifier } from "../../project-control/fake-verifier.mjs";
+import { ReconcileOutcome } from "../../project-control/domain.mjs";
 import { createAcceptance, createGoal, createMilestone, createAttempt, createRun, createTask } from "../../project-control/domain.mjs";
 import { capsules, capsuleBoundary, seedCapsuleFixture, generate, reserve, dispatch, generateInput, fixedTime } from "../helpers/pc-capsule-fixture.mjs";
 import { seedMemoryFixture, boundary, promote, candidate, inferred, decisionInput } from "../helpers/pc-memory-fixture.mjs";
@@ -299,6 +300,49 @@ for (const backend of ["MemoryStore", "SQLite"]) {
     assert.equal(delivered.delivery.status, "RECEIVED");
     assert.ok(delivered.delivery.freshness.sourceObservations.find(s => s.id === "m").sourceChecks.every(c => c.validity === "CURRENT"));
     assert.equal(store.getRecord("memory", "m").status, "ACTIVE");
+  });
+  test(`${backend}: no-effect recovery does not invent Capsule non-receipt after lost receipt`, options, async t => {
+    const { store } = fixture(t);
+    store.updateAttempt("cat", { status: "RUNNING" });
+    const runtime = new FakeRuntime({ reconcileOutcome: ReconcileOutcome.CONFIRMED_NO_EFFECT });
+    const start = runtime.start.bind(runtime);
+    let loseReceipt = true;
+    runtime.start = async input => {
+      const result = await start(input);
+      if (loseReceipt) { delete result.capsuleReceipt; loseReceipt = false; }
+      return result;
+    };
+    const control = capsules(store, { runtime }); generate(control); await dispatch(control);
+    assert.equal([...runtime.executions.values()][0].capsuleInput.binding.capsuleId, "capsule-1");
+    const delivery = structuredClone(store.getAttempt("cat").capsuleDelivery);
+    assert.equal(delivery.status, "UNKNOWN");
+    let sequence = 0;
+    const controller = new Controller({ store, runtime, verifier: new FakeVerifier(),
+      capsuleBoundary: capsuleBoundary(store, { runtime }), idFactory: kind => `recovery-${kind}-${++sequence}` });
+    const result = await controller.reconcileTask("ct");
+    assert.equal(result.reconciliation.outcome, ReconcileOutcome.CONFIRMED_NO_EFFECT);
+    assert.notEqual(store.getTask("ct").currentRunId, "cr");
+    assert.equal(runtime.started.length, 2); // Recovery executes only the new Run.
+    assert.deepEqual(store.getAttempt("cat").capsuleDelivery, delivery);
+    assert.equal(store.allEvents().filter(e => e.type === "capsule.delivery-observed" && e.payload.status === "NOT_RECEIVED").length, 0);
+  });
+  test(`${backend}: refusal delivery, terminal execution, event and replay roll back together`, options, async t => {
+    const { store, control, runtime } = fixture(t);
+    store.updateAttempt("cat", { status: "RUNNING" }); generate(control);
+    runtime.start = async () => { throw new CapsuleInputRefusedError("explicit input refusal"); };
+    const updateRun = store.updateRun.bind(store);
+    store.updateRun = (...args) => { if (args[2]?.status === "FAILED") throw new Error("terminal write interrupted"); return updateRun(...args); };
+    await assert.rejects(dispatch(control), /terminal write interrupted/);
+    store.updateRun = updateRun;
+    assert.equal(store.getAttempt("cat").capsuleDelivery.status, "DISPATCHING");
+    assert.equal(store.getAttempt("cat").status, "RUNNING");
+    assert.equal(store.getRun("cr").status, "RUNNING");
+    assert.equal(store.getCommand("dispatch-1:observation"), null);
+    assert.equal(store.allEvents().filter(e => e.type === "capsule.delivery-observed").length, 0);
+    control.recoverInterruptedDispatch("cat", { commandId: "recover-refusal-interruption" });
+    assert.equal(store.getAttempt("cat").capsuleDelivery.status, "UNKNOWN");
+    assert.equal(store.getAttempt("cat").status, "LOST");
+    assert.equal(store.getRun("cr").status, "BLOCKED");
   });
   test(`${backend}: inactive Decision has no historical escape; unselected supplemental change is harmless`, options, t => {
     const { store, control } = fixture(t, {}, true); generate(control);

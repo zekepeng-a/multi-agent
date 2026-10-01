@@ -20,9 +20,9 @@ function files(t) {
   const artifact = path.join(dir, "reality.txt"); fs.writeFileSync(artifact, "reality-1");
   return { database: path.join(dir, "control.db"), artifact, stores };
 }
-function child(mode, fixture) {
+function child(mode, fixture, expectedStatus = 0) {
   const result = spawnSync(process.execPath, [helper, mode, fixture.database, fixture.artifact], { encoding: "utf8", timeout: 15000 });
-  assert.equal(result.status, 0, result.stderr || String(result.error));
+  assert.equal(result.status, expectedStatus, result.stderr || String(result.error));
   return result.stdout ? JSON.parse(result.stdout) : null;
 }
 test("Capsule true process restart preserves exact delivered archive, receipt, binding, history and replay", { skip }, t => {
@@ -59,6 +59,32 @@ test("Capsule restart re-observes actual filesystem; missing/corrupt archive fai
   assert.throws(() => capsules(store).history("capsule-1"), /integrity/);
   assert.throws(() => capsules(store).reserve({ capsuleId: "missing", attemptId: "cat", expectedDeliveryVersion: 1 }, { commandId: "missing" }), /missing/);
 });
+test("refusal transaction process death rolls back the old partial-commit window; restart never redispatches", { skip }, t => {
+  const f = files(t); child("prepare", f); child("refuse-crash", f, 77);
+  assert.ok(fs.existsSync(`${f.artifact}.refusal-window`));
+  const interrupted = child("read", f);
+  assert.equal(interrupted.attempt.capsuleDelivery.status, "DISPATCHING");
+  assert.equal(interrupted.attempt.capsuleDelivery.observations?.length ?? 0, 0);
+  assert.equal(interrupted.run.status, "RUNNING");
+  assert.equal(interrupted.events.filter(e => e.type === "capsule.delivery-observed").length, 0);
+  child("recover", f);
+  const recovered = child("read", f);
+  assert.equal(recovered.attempt.capsuleDelivery.status, "UNKNOWN");
+  assert.equal(recovered.attempt.status, "LOST"); assert.equal(recovered.run.status, "BLOCKED");
+  child("recover", f); assert.deepEqual(child("read", f), recovered);
+  assert.equal(child("try-dispatch", f).calls, 0);
+  assert.equal(fs.readFileSync(`${f.artifact}.refusal-calls`, "utf8"), "call\n");
+});
+test("committed refusal survives lost response/restart with terminal execution and immutable delivery history", { skip }, t => {
+  const f = files(t); child("prepare", f); child("refuse-commit", f, 78);
+  const refused = child("read", f);
+  assert.equal(refused.attempt.capsuleDelivery.status, "NOT_RECEIVED");
+  assert.equal(refused.attempt.status, "FAILED"); assert.equal(refused.run.status, "FAILED");
+  assert.equal(refused.events.filter(e => e.type === "capsule.delivery-observed").length, 1);
+  child("recover", f); assert.deepEqual(child("read", f), refused);
+  assert.equal(child("try-dispatch", f).calls, 0);
+  assert.equal(fs.readFileSync(`${f.artifact}.refusal-calls`, "utf8"), "call\n");
+});
 // Lazy import keeps Node 20 compatibility; the SQLite tests themselves are skipped.
 import { createRequire } from "node:module";
 const awaitImportSqlite = () => createRequire(import.meta.url)("node:sqlite");
@@ -81,6 +107,34 @@ test("two independent SQLite processes compete for one Capsule reservation and o
   const stored = child("read", f);
   assert.equal(stored.events.filter(e => e.type === "capsule.dispatch-reserved").length, 1);
   assert.equal(stored.attempt.capsuleDelivery.status, "RECEIVED");
+});
+
+for (const mode of ["snapshot-put", "snapshot-insert"]) test(`${mode}: independent SQLite writers cannot replace the winning immutable payload`, { skip }, async t => {
+  const f = files(t); child("prepare", f);
+  const processes = ["a", "b"].map(tag => {
+    const proc = spawn(process.execPath, [helper, mode, f.database, f.artifact, tag], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let stdout = "", stderr = ""; proc.stdout.on("data", x => stdout += x); proc.stderr.on("data", x => stderr += x);
+    const done = new Promise((resolve, reject) => { proc.on("error", reject); proc.on("close", code => code === 0 ? resolve(JSON.parse(stdout)) : reject(new Error(stderr))); });
+    t.after(() => { if (proc.exitCode === null) proc.kill(); }); return { tag, done };
+  });
+  const deadline = Date.now() + 10000;
+  while (!processes.every(p => fs.existsSync(`${f.artifact}.${p.tag}.ready`))) {
+    assert.ok(Date.now() < deadline, "immutable writer readiness deadline"); await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  fs.writeFileSync(`${f.artifact}.go`, "go");
+  const results = await Promise.all(processes.map(p => p.done));
+  assert.equal(results.filter(r => r.won).length, 1);
+  assert.match(results.find(r => !r.won).error, /immutable|conflict/);
+  const winner = results.find(r => r.won), loser = results.find(r => !r.won);
+  const store = new SqliteStore(f.database); f.stores.push(store);
+  const committed = store.getRecord("context_capsule", "writer-capsule");
+  assert.equal(committed.payloadHash, winner.payloadHash);
+  assert.notEqual(committed.payloadHash, loser.payloadHash);
+  assert.equal(JSON.parse(committed.payloadJson).assemblerVersion, winner.tag);
+  const losingPayload = { ...committed, payloadJson: "different payload" };
+  assert.throws(() => store.putRecord("context_capsule", committed.id, losingPayload), /immutable/);
+  assert.equal(store.insertRecord("context_capsule", committed.id, losingPayload), false);
+  assert.deepEqual(store.getRecord("context_capsule", committed.id), committed);
 });
 
 for (const kind of ["LocalProcess", "DSH"]) test(`${kind} Adapter accepts exact Capsule bytes and separate live launch config`, async () => {

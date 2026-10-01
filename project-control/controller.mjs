@@ -275,9 +275,8 @@ export class Controller {
     if (this.capsules && attempt.capsuleDelivery?.status === "UNKNOWN") {
       if (observation?.capsuleReceipt) this.capsules.reconcileDelivery(attempt.id, { receipt: observation.capsuleReceipt, runtimeRef: observation.runtimeRef },
         { commandId: `capsule-receipt-reconcile:${attempt.id}:${attempt.capsuleDelivery.version}`, expectedDeliveryVersion: attempt.capsuleDelivery.version });
-      else if (outcome === ReconcileOutcome.CONFIRMED_NO_EFFECT) this.capsules.reconcileDelivery(attempt.id,
-        { noExecution: true, observationRef: observation.observationRef ?? `runtime-reconcile:${attempt.id}`, reason: "Adapter confirmed no effect" },
-        { commandId: `capsule-nonreceipt-reconcile:${attempt.id}:${attempt.capsuleDelivery.version}`, expectedDeliveryVersion: attempt.capsuleDelivery.version });
+      // An execution/effect observation is not proof about Adapter input receipt.
+      // Recovery may create a new Run below while this delivery remains UNKNOWN.
     }
 
     // External work already happened: its result becomes Evidence for the Run

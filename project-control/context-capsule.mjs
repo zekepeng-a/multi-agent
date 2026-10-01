@@ -365,8 +365,18 @@ export class ContextCapsuleControl {
       if (status === "NOT_RECEIVED" && (!facts.reason || facts.noExecution !== true)) fail("trusted explicit non-receipt requires no-execution proof");
       if (!["RECEIVED", "NOT_RECEIVED", "UNKNOWN"].includes(status)) fail("invalid delivery observation");
       const updated = this.#delivery(attempt, { ...delivery, status, observations: [...(delivery.observations ?? []), { status, ...facts,
-        observer: { type: "CONTROL_PLANE", actorId: this.controlActorId }, observedAt: this.clock() }] }, facts.runtimeRef ? { runtimeRef: structuredClone(facts.runtimeRef) } : {});
+        observer: { type: "CONTROL_PLANE", actorId: this.controlActorId }, observedAt: this.clock() }] }, {
+          ...(facts.runtimeRef ? { runtimeRef: structuredClone(facts.runtimeRef) } : {}),
+          ...(status === "NOT_RECEIVED" ? { status: "FAILED" } : {}),
+        });
       this.#event("delivery-observed", record.id, { attemptId, status, facts }, commandId);
+      // Refusal history, execution termination, event and replay commit together.
+      // A crash before commit leaves the dispatch intent uncertain, not a partial
+      // terminal delivery attached to a RUNNING execution.
+      if (status === "NOT_RECEIVED") {
+        const run = this.store.getRun(attempt.runId);
+        this.store.updateRun(run.id, run.version, { status: "FAILED" });
+      }
       return updated.capsuleDelivery;
     }).value;
   }
@@ -385,7 +395,7 @@ export class ContextCapsuleControl {
     if (d?.status === "DISPATCHING") this.#observe(attemptId, "UNKNOWN", { reason: "interrupted dispatch; delivery not proven" }, { commandId, expectedDeliveryVersion: d.version });
     const current = this.#required("attempt", attemptId);
     if (current.capsuleDelivery?.status === "UNKNOWN") this.store.runInTransaction(() => {
-      this.store.updateAttempt(attemptId, { status: "LOST" });
+      if (current.status !== "LOST") this.store.updateAttempt(attemptId, { status: "LOST" });
       const run = this.store.getRun(current.runId);
       if (run.status !== "BLOCKED") this.store.updateRun(run.id, run.version, { status: "BLOCKED" });
     });
@@ -408,11 +418,7 @@ export class ContextCapsuleControl {
       const runtimeRef = started?.runtimeRef?.adapterId === this.runtime.capabilities().adapterId ? started.runtimeRef : null;
       this.#observe(attemptId, status, { reason: error.message, ...(runtimeRef ? { runtimeRef } : {}), ...(explicit ? { noExecution: true } : {}) },
         { commandId: `${commandId}:observation`, expectedDeliveryVersion: attempt.capsuleDelivery.version });
-      if (explicit) this.store.runInTransaction(() => {
-        this.store.updateAttempt(attemptId, { status: "FAILED" });
-        const latestRun = this.store.getRun(run.id); this.store.updateRun(run.id, latestRun.version, { status: "FAILED" });
-      });
-      else this.#recoverInterruptedDispatchAfterCall(attemptId);
+      if (!explicit) this.#recoverInterruptedDispatchAfterCall(attemptId);
       return { dispatched: true, started: null, delivery: this.store.getAttempt(attemptId).capsuleDelivery };
     } finally { this.inFlight.delete(attemptId); }
     const delivery = this.#observe(attemptId, "RECEIVED", { receipt: started.capsuleReceipt, runtimeRef: started.runtimeRef },

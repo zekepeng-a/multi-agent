@@ -526,13 +526,24 @@ export class SqliteStore extends ProjectControlStore {
   }
 
   putRecord(collection, key, record) {
-    if (collection === Collection.CAPSULE && this.getRecord(collection, key)) throw new Error("Capsule snapshots are immutable");
+    if (collection === Collection.CAPSULE) {
+      if (!this.insertRecord(collection, key, record)) throw new Error("Capsule snapshots are immutable");
+      return;
+    }
     const shape = shapeFor(collection);
     this.#upsert(shape, key, record);
   }
 
   insertRecord(collection, key, record) {
     const shape = shapeFor(collection);
+    if (collection === Collection.CAPSULE) {
+      const columns = shape.columns(record);
+      const names = Object.keys(columns);
+      const info = this.#db.prepare(
+        `INSERT INTO ${shape.table} (${names.join(", ")}, body) VALUES (${names.map(() => "?").join(", ")}, ?) ON CONFLICT(id) DO NOTHING`,
+      ).run(...names.map(name => columns[name]), JSON.stringify(record));
+      return Number(info.changes) === 1;
+    }
     const where = shape.scope === "revision" ? "id = ? AND version = ?" : "id = ?";
     const exists = this.#db.prepare(`SELECT 1 AS present FROM ${shape.table} WHERE ${where}`).get(...keyParams(shape, key));
     if (exists) return false;

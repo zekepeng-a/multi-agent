@@ -68,13 +68,14 @@ Targeted command:
 node --test tests/unit/context-capsule.test.mjs tests/integration/context-capsule-restart.test.mjs
 ```
 
-Local Node 24.19.0: **67 passed, 0 failed, 0 skipped**. Full regression:
+After the review repairs below, local Node 24.19.0: **75 passed, 0 failed,
+0 skipped**. Full regression:
 
 ```sh
 node --test tests/unit/*.test.mjs tests/integration/*.test.mjs
 ```
 
-Local Node 24.19.0: **659 passed, 0 failed, 0 skipped**. This is additional local
+After the review repairs, local Node 24.19.0: **667 passed, 0 failed, 0 skipped**. This is additional local
 validation; Node 22 CI remains the authoritative SQLite baseline. The existing CI
 matrix retains Node 20 compatibility and mandatory Node 22 SQLite availability.
 
@@ -100,18 +101,18 @@ independent SQLite writer race; it does not simulate restart by reopening an obj
 | 13 | U exact archive/hash at Fake Adapter; R LocalProcess/DSH exact Adapter bytes |
 | 14 | U detached Runtime mutation and separate secret/live launch configuration; R both real adapters |
 | 15 | U missing/wrong hash/wrong Attempt receipts; matching receipt and RuntimeRef validation |
-| 16 | U PREPARED/reservation/receipt distinctions; refusal versus exception; reservation rollback before start |
-| 17 | U crash UNKNOWN and no substitute/retry; R interrupted reservation and restart |
-| 18 | U attributable non-receipt and recovered receipt append-only facts; terminal observations cannot be rewritten |
+| 16 | U PREPARED/reservation/receipt distinctions; atomic refusal/terminal/event/replay rollback; R refusal process death before commit and lost response after commit |
+| 17 | U crash UNKNOWN and no substitute/retry; R interrupted reservation/refusal restart, idempotent recovery and zero redispatch |
+| 18 | U attributable non-receipt and recovered receipt append-only facts; Controller no-effect recovery preserves original UNKNOWN delivery after input receipt/lost receipt |
 | 19 | U cross-Attempt reuse/history/substitution refusal; R delivered history remains readable without another call |
 | 20 | U snapshot/event/replay and reservation rollback; whole-record CAS; R independent writer processes, one winner/one call |
 | 21 | U intent-bound replay adds no events or external starts; R restarted replay |
 | 22 | R exact archive/receipt and UNKNOWN after true restart; corruption/missing record fails closed |
-| 23 | U shared backend suite; R SQLite durability and independent writer competition |
+| 23 | U shared backend suite; R SQLite durability, reservation race, and separate putRecord/insertRecord immutable creation races |
 | 24 | Full regression includes Decision, Memory, Acceptance, Policy, Approval, Workspace, Runtime Adapter and legacy runtime; U Controller integration |
 | 25 | Node 22 SQLite availability and full npm test, plus Node 20 compatibility, passed in the immutable CI proof below; independent review and separate governance closure remain required |
 
-## CI proof
+## Original implementation CI proof (historical, before review repairs)
 
 Implementation commit: `83cdb4c8266bfe815e61e772ad56a9428d080fca`.
 [CI run 36743726349](https://github.com/zekepeng-a/multi-agent/actions/runs/36743726349)
@@ -123,6 +124,41 @@ capability-gated SQLite skips; it is not the full SQLite proof.
 The follow-up commit records this observed result only. It does not alter the
 implementation/test tree, architecture, ROADMAP or stage classification. Final HEAD
 CI is checked separately before reporting task completion.
+
+## Independent-review repairs — A / Implementation Bug and proof gap
+
+Repair baseline: `7fb33dadb3e86bf7ffb00999700814a6ee7a26f2`.
+The independent review rejected completion on three implementation defects. Its
+findings are not superseded merely by passing tests; independent re-review remains
+required. ADR-0009 and stage governance have not changed.
+
+1. Controller no longer derives Capsule NOT_RECEIVED from CONFIRMED_NO_EFFECT.
+   Execution recovery may create a new Run while the original input delivery
+   remains UNKNOWN. U's `no-effect recovery does not invent Capsule non-receipt
+   after lost receipt` runs on both backends, proves the Adapter accepted the input,
+   deliberately loses the receipt, and verifies new-Run recovery without changing
+   the original delivery history or producing a non-receipt event.
+2. Refusal observation, Attempt FAILED, Run FAILED, event and replay row now share
+   the existing mutation transaction. U injects a terminal-write failure and
+   checks total rollback. R kills a child process after the refusal delivery/event
+   writes but before Run termination; a new process observes rolled-back
+   DISPATCHING and recovers UNKNOWN/LOST/BLOCKED without another dispatch. A second
+   R case dies after commit and proves NOT_RECEIVED/FAILED/FAILED survives without
+   history rewriting or redispatch. Repeated uncertain recovery is a no-op for an
+   already LOST Attempt, preserving its original terminal timestamp/events.
+3. SQLite Capsule putRecord and insertRecord use atomic INSERT ON CONFLICT DO
+   NOTHING, never UPSERT UPDATE or a pre-read immutability guard. R runs two actual
+   independent writer processes with distinct payloads and a readiness barrier,
+   separately for each API: one succeeds, the other explicitly rejects/conflicts,
+   and the winner's exact payload/hash survives later replacement attempts.
+
+Observed repair verification: targeted **75/75**, full regression **667/667**,
+both on local Node 24.19.0 with SQLite and zero skips. The targeted suite includes
+the real process-death/restart and independent-writer cases above. Initial sandbox
+execution could not spawn children (EPERM); successful reruns executed outside that
+restriction. These are local proofs, not substitutes for the required Node 22 CI.
+Repair CI is pending at this commit and must be recorded from the actual workflow
+result before claiming the Node 22 exit proof. Node 20 remains compatibility only.
 
 ## Review limits
 
