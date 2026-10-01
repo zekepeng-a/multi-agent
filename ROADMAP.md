@@ -531,7 +531,7 @@ for completeness.
 
 This gate is satisfied by G7.1–G7.4's evidenced boundaries and the explicit deferrals above. Human authorized this governance-only closure; it changes no accepted ADR or frozen invariant.
 
-## G8 readiness audit and hierarchy repair closure
+## G8 readiness audit and hierarchy repair closure — historical before Slice 1–4
 
 The read-only audit found a foundation for bounded G8 integration validation, not proof of a complete G8 control loop. Roadmap, a new Observability identity system and leases/fencing are not known blockers. Existing Event / Command / Run / Attempt / Effect / Capsule / RuntimeRef identities suffice to begin bounded dogfood; no multi-coordinator ownership need was demonstrated.
 
@@ -543,7 +543,7 @@ Remaining G8 composition proof gaps are authorization ↔ actual execution bindi
 
 # G8 — End-to-end dogfood and release convergence
 
-**Status: NEXT — End-to-end dogfood and release convergence; execution requires a separately authorized task**
+**Status: FINAL CONVERGENCE REVIEW READY — final exit review and separate completion decision required**
 
 ## Goal
 
@@ -567,6 +567,34 @@ Use Project Control OS to govern meaningful work on a real project and test the 
 
 A release is justified by end-to-end evidence, not by module count.
 
+## G8 reviewed bounded evidence convergence — 2026-10-01
+
+**Current status: FINAL CONVERGENCE REVIEW READY — not COMPLETE.** Human authorized this governance convergence after independent PASS for Slice 1–4 and CLOSED stability A1/A2. Reviewed test/Evidence HEAD: `7dad1894f802bdd6076a9320731c918a7a765e0a`; final CI [36857097373](https://github.com/zekepeng-a/multi-agent/actions/runs/36857097373) succeeded (Node 22 810 pass / 0 fail / 0 skip; Node 20 481 pass / 0 fail / 329 expected SQLite capability skips). This is not a production implementation expansion. No further B Slice is currently required. Final exit review and separate Human completion decision/commit remain necessary.
+
+| Required proof area | Current reviewed bounded evidence |
+|---|---|
+| Human Goal → Task/Acceptance | SATISFIED BY BOUNDED EVIDENCE — Slice 1/4 intent, hierarchy, pinned contract |
+| Controlled Command | SATISFIED BY BOUNDED EVIDENCE — Slice 1/2/4 concrete authorization/execution binding |
+| Real runtime execution | SATISFIED BY BOUNDED EVIDENCE — real LocalProcess |
+| Real Workspace | SATISFIED BY BOUNDED EVIDENCE — READ_ONLY actual files/root/revision |
+| Effect/reconciliation | SATISFIED BY BOUNDED EVIDENCE — Slice 2 real filesystem provider/Reality |
+| Evidence/Verification/Acceptance | SATISFIED BY BOUNDED EVIDENCE — Slice 1/3/4 real content and control-owned Acceptance |
+| Restart/recovery | SATISFIED BY BOUNDED EVIDENCE — Effect UNKNOWN and completed-result process checkpoints |
+| Approval/Policy | SATISFIED BY BOUNDED EVIDENCE — scoped permission and current authorization |
+| Hierarchy propagation | SATISFIED BY BOUNDED EVIDENCE — contract-free Goal/Milestone/Project |
+| Auditable history | SATISFIED BY BOUNDED EVIDENCE — identities, receipt, lineage, events, replay/reopen |
+| Runtime replacement/substitution | SATISFIED BY BOUNDED EVIDENCE — Slice 4 LocalProcess↔DSH public contract |
+
+**SATISFIED BY BOUNDED EVIDENCE != universal capability support.** Original authorization/execution, real Effect, durable/readable completed-result, meaningful Verification and adapter-substitution gaps are closed within reviewed scopes. Whole-chain in-flight and whole-project recovery remain unproven.
+
+Real runtime in-flight reconciliation is **DEFERRED — D architecture gap candidate**, not implemented or silently treated as B. LocalProcess and DSH Workflow still declare resume=false/reconcile=false; provider-specific Reality re-binding semantics are not frozen. It is not a current G8 exit blocker under the Human-authorized reviewed bounded release scope. Future activation requires separate Human authorization and focused research/ADR; this governance task resolves no provider observation or recovery semantics.
+
+Live DSH remains valuable future dogfood / not a current G8 exit blocker. Slice 4 proves DshWorkflowRuntimeAdapter public-contract substitution through an injected engine, not live installation/Harness host, parent Agent/model execution, filesystem isolation or live result durability. G8 uses real READ_ONLY Workspace. G6's bounded WRITE/overlay/integration implementation remains separate; extra real write dogfood is not required or activated.
+
+G7.5 remains DEFERRED / D unresolved; G7.6 remains DEFERRED; leases/fencing remain NOT CURRENTLY REQUIRED. Slice 1–4 exposed no new concrete dependency requiring reactivation. No new Slice, production capability, domain, state, invariant or accepted ADR is introduced.
+
+Evidence: [Slice 1](docs/architecture/G8_DOGFOOD_SLICE_1_EVIDENCE.md), [stability repair](docs/architecture/G8_SLICE_1_STABILITY_REPAIR_EVIDENCE.md), [Slice 2](docs/architecture/G8_DOGFOOD_SLICE_2_EFFECT_EVIDENCE.md), [Slice 3](docs/architecture/G8_DOGFOOD_SLICE_3_DURABLE_RUNTIME_RESULT_EVIDENCE.md), [Slice 4](docs/architecture/G8_DOGFOOD_SLICE_4_ADAPTER_SUBSTITUTION_EVIDENCE.md).
+
 ## 6. Current active boundary
 
 Current durable phase boundary:
@@ -587,8 +615,8 @@ COMPLETE: G7.4 Context Capsule — ADR-0009; independent review #3 PASSED
 DEFERRED: G7.5 Roadmap domain — unresolved D; no demonstrated control-loop or G8 dependency
 DEFERRED: G7.6 Observability — reactivate only on demonstrated G8 auditability need
 NOT CURRENTLY REQUIRED: leases/fencing
-NEXT:     G8 End-to-end dogfood + release convergence
-          Actual dogfood execution requires a separate Human-authorized task.
+FINAL CONVERGENCE REVIEW READY: G8 reviewed bounded evidence
+          Final exit review + separate Human completion commit required.
 BLOCKED FROM BUNDLE CODING:
           Roadmap / Decision / Memory / Context Capsule / Project Acceptance /
           Observability / leases-fencing may not be implemented as one

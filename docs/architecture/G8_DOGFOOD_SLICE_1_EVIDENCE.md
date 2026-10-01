@@ -223,3 +223,10 @@ Roadmap/Observability/leases remain deferred/not currently required.
 Suggested next separately authorized slice: a concrete real Effect action with
 existing dispatch/reconciliation and uncertainty proof, chosen from the actual
 remaining gap; do not automatically run it or bundle restart/DSH/write features.
+
+
+## Independent review closure — recorded 2026-10-01
+
+**Current reviewed disposition: PASS — stability A closed.** Initial independent review: PASS WITH OPEN A; bounded composition proof accepted, with A1 SQLite initialization lock-wait and A2 competition barrier/cleanup forwarded to repair Evidence. Subsequent repair and independent stability review CLOSED A1/A2. Production-wide Task→Command enforcement is still not claimed.
+
+Human authorized this governance review-record convergence at baseline `7dad1894f802bdd6076a9320731c918a7a765e0a`. Original submission status, historical wording, test counts and failure/repair evidence above are retained. This section supplies current disposition. G8 is FINAL CONVERGENCE REVIEW READY, not COMPLETE; final exit review and separate governance completion remain necessary.

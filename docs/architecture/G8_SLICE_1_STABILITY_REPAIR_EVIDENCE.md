@@ -94,3 +94,10 @@ Runtime or Capsule dispatch/replay/reservation semantics changed. No lease,
 distributed lock, new authority or SQLite persistence architecture is added.
 No new C/D/E problem was found during this repair. Independent review must
 decide whether these two A findings are closed; Slice 2 remains unauthorized.
+
+
+## Independent review closure — recorded 2026-10-01
+
+**Current reviewed disposition: CLOSED.** A1 CLOSED; A2 CLOSED; independent stability review passed. Real contention proof and bounded fail-fast child/parent cleanup accepted; reservation and immutable writer race semantics preserved. Finite repeated runs do not imply an absolute race-free guarantee. No new C/D/E.
+
+Human authorized this governance review-record convergence at baseline `7dad1894f802bdd6076a9320731c918a7a765e0a`. Original submission status, historical wording, test counts and failure/repair evidence above are retained. This section supplies current disposition. G8 is FINAL CONVERGENCE REVIEW READY, not COMPLETE; final exit review and separate governance completion remain necessary.

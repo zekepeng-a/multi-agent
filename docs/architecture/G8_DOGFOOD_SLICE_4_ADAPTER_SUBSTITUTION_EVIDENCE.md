@@ -146,3 +146,10 @@ No new A/C/D/E was found in this implementation; independent review is still req
 A later candidate should address a demonstrated remaining proof gap (e.g. live-host
 integration or whole-chain restart); runtime-specific in-flight observation remains
 a D candidate requiring its own boundary decision. No next Slice is executed here.
+
+
+## Independent review closure — recorded 2026-10-01
+
+**Current reviewed status: PASS. Independent review outcome: PASS.** Equivalent independent fixture substitution, real LocalProcess, DSH public seam, provider-neutral Acceptance, decoder/common-verifier separation, authorization/Capsule boundaries and wrong-content symmetry accepted. Independent direct Controller probes confirmed terminal NOOP and UNKNOWN no-blind-retry for both adapters/backends. Live DSH/in-flight recovery remain excluded; no new C/D/E.
+
+Human authorized this governance review-record convergence at baseline `7dad1894f802bdd6076a9320731c918a7a765e0a`. Original submission status, historical wording, test counts and failure/repair evidence above are retained. This section supplies current disposition. G8 is FINAL CONVERGENCE REVIEW READY, not COMPLETE; final exit review and separate governance completion remain necessary.
