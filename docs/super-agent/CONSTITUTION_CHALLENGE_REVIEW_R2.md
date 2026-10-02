@@ -115,3 +115,9 @@ Before SA0 can close:
 Optional but valuable:
 - recover legacy local GPT↔DSH reports for drift forensics;
 - obtain an independent external/model review as additional evidence, never as authority.
+
+## 7. Later governance annotation — 2026-10-02
+
+Sections 1–6 above remain the historical internal R2 review, including its verdict. Its PASS FOR HUMAN CONSIDERATION predates the subsequent independent Codex review and is **not the final review outcome or Human acceptance**.
+
+The subsequent independent review returned PASS WITH REQUIRED REVISIONS. The Human-authorized [SA0 Convergence Record](SA0_CONVERGENCE_RECORD.md) records the three P1 and three P2 revisions, Constitution/Evaluation R3 and the two later audit/design artifacts. Current gate: READY FOR FINAL HUMAN ACCEPT / REVISE; not accepted, no implementation authorization. Applying revisions is not another independent PASS.

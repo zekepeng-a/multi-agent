@@ -119,19 +119,19 @@ Implication:
 - restart/replay design must not blindly repeat nondeterministic effects;
 - hierarchy should not be introduced merely for code organization.
 
-## 7. Cross-source recurring patterns
+## 7. Cross-source recurring patterns — external precedents, not comparative proof
 
-Across these systems, recurring patterns are:
+The following synthesize reported design choices and candidate implications. The references are not controlled comparisons or benchmark evidence of superiority; this governance sync does not claim to have rerun or revalidated those external implementations.
 
-1. **Small core primitives beat permanent role hierarchies.**
+1. **Small core primitives appear as a design tendency in the cited precedents; their advantage over permanent role hierarchies remains a candidate hypothesis.**
 2. **Single-agent / deterministic workflow remain first-class options.**
 3. **Multi-agent is conditional, not synonymous with advanced capability.**
 4. **Durable state and recovery are runtime/control concerns.**
 5. **External side effects require explicit boundaries.**
 6. **Context isolation/offloading is a legitimate delegation driver.**
 7. **Human approval and guardrails are independent from model reasoning.**
-8. **Tracing/evaluation are necessary to improve complex systems.**
-9. **Provider/runtime replaceability is common and valuable.**
+8. **Tracing/evaluation appear as supporting mechanisms in the cited designs; this does not demonstrate a need for a new observability subsystem here.**
+9. **Provider/runtime replaceability is an observed design tendency, with value to be evaluated under explicit contracts.**
 10. **Production systems expose limitations rather than converting them into model assumptions.**
 
 ## 8. Tensions / open questions
@@ -151,4 +151,6 @@ The strongest shared precedent is not “use many agents.” It is:
 
 > Keep the control model durable and observable, make execution strategy replaceable, and increase orchestration complexity only when the task demonstrates a need.
 
-This conclusion supports — but does not itself accept — the proposed Super Agent constitution.
+This is a candidate engineering direction informed by external precedent, not a measured superiority result or accepted architecture. It supports discussion of the proposed constitution only.
+
+2026-10-02 governance clarification (P2-03): comparative wording was narrowed to observed design tendency / candidate hypothesis / external precedent. Source links and the first-pass historical research date are retained; no new framework research was performed.

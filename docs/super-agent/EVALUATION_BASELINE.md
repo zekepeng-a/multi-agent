@@ -1,6 +1,6 @@
 # Super Agent Evaluation Baseline
 
-**Status:** PROPOSED EVALUATION PROTOCOL — REVISION 2 — NO BENCHMARK RESULTS YET  
+**Status:** PROPOSED EVALUATION PROTOCOL — REVISION 3 — NO BENCHMARK RESULTS YET  
 **Purpose:** prevent architectural complexity from being justified by narrative confidence or benchmark gaming.
 
 ## 1. Core rule
@@ -29,7 +29,7 @@ Baseline fairness requires, where applicable:
 - pinned time/token/cost budgets;
 - baseline prompt/harness tuned competently rather than intentionally weakened.
 
-Separate experiments may test provider substitution after orchestration effects are isolated.
+Separate experiments may test provider substitution after orchestration effects are isolated. If different provider/model choices cannot be controlled or isolated, label the result a whole-system comparison; do not claim causal orchestration improvement.
 
 ## 3. Evaluation dimensions
 
@@ -105,6 +105,22 @@ Required controls:
 
 Where feasible, evaluators should be blinded to which strategy produced an artifact.
 
+### Trial preregistration — freeze before the experiment
+
+A versioned evaluation profile must freeze:
+- primary success metric, required meaningful gain, permitted degradation by metric, and correctness/safety/recovery floors;
+- tuning opportunity for each strategy, permitted tuning data and tuning budgets; competent baseline tuning must not be intentionally restricted;
+- isolated holdout corpus, access controls and no holdout-informed prompt/routing changes;
+- trial count, repetition policy, stopping rule and treatment of aborted trials; no optional stopping after favorable results;
+- failure denominator and inclusion rules: started trials, errors, timeouts and failed/aborted trials remain visible; unavailable/skipped trials are reported separately and never silently removed;
+- environment reset protocol: repository/workspace revision, generated artifacts, caches, provider sessions and residual Workspace state;
+- Human intervention accounting: approvals, corrections, evidence gathering, prompt edits, timing and all costs;
+- shared Memory/context isolation and provenance; no prior benchmark answer or candidate output leaking into either strategy;
+- cross-strategy answer isolation, including shared artifacts, transcripts and outputs;
+- cleanup/reset checks for residual Workspace contamination before each trial.
+
+Separate development/tuning data from holdout. Record reset failures and contamination; contaminated trials cannot support an uncontaminated performance claim and remain in reporting under the frozen inclusion rule. Deviations require a versioned amendment and separately labeled results, not retrospective changes that improve the reported outcome.
+
 ## 6. Budget modes
 
 At least two comparison modes are useful:
@@ -137,14 +153,21 @@ Each run should pin or record:
 
 ## 8. Promotion rule
 
-A complex strategy may become a **default** only if:
-1. it shows reproducible improvement on a task family that actually needs it;
-2. the improvement matters on at least one declared product metric;
-3. added failure modes and operational cost are measured;
-4. a simpler strategy remains available where complexity adds no value;
-5. the claim is scoped to the tested task families and versions.
+Authority, permission, Acceptance and UNKNOWN-effect safety are **non-tradeable constraints**, not weighted metrics. A strategy violating them is ineligible for default promotion; better cost, latency or average benchmark score cannot offset the violation.
 
-A strategy may exist as an optional capability without becoming default.
+A complex strategy may become a **default** only if:
+1. before trials, a versioned profile declares the primary success metric(s), meaningful gain criteria, permitted degradation on other dimensions, and correctness/safety/recovery floors;
+2. results prove the declared primary benefit over a competitive simpler baseline on the tested task family;
+3. results satisfy every declared floor and stay within all allowed degradation limits, while preserving the non-tradeable constraints;
+4. failure modes, operational cost, variance and Human intervention are measured under the preregistered protocol;
+5. a simpler strategy remains available where complexity adds no value, and the claim is scoped to tested task families/configurations/versions;
+6. evidence and independent review support a separate authorized default-setting decision; the benchmark or strategy never promotes itself.
+
+Numerical thresholds live in the evaluation profile and must be frozen before trials. No current profile results or default promotion are claimed.
+
+Required Verification is not optional orchestration. It cannot be removed because an extra Reviewer/Planner/Agent mechanism lacks demonstrated incremental benefit. An optional mechanism may be omitted only while the current Contract and all mandatory Verification/control checks remain satisfied.
+
+A strategy may exist as an optional capability without becoming default; that status does not authorize implementation or unsafe use.
 
 ## 9. Model-judge restriction
 
@@ -173,3 +196,7 @@ Therefore SA0 makes **no claim** that:
 - a planner improves project success;
 - DSH is superior/inferior to Codex or Claude;
 - any proposed execution pattern should be default.
+
+## 12. Revision provenance
+
+R2 is the historical protocol reviewed before the independent Codex findings. R3 resolves P1-01 (non-tradeable promotion floors) and P1-03 (preregistration/fairness) under Human-authorized governance convergence. See [SA0 Convergence Record](SA0_CONVERGENCE_RECORD.md). No benchmark or production capability was added.
